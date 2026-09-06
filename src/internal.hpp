@@ -198,6 +198,9 @@ struct Inflated {
   Bytes bytes;
   size_t consumed = 0;
 };
+void read_presenter(PresenterData &, Cursor &, uint32_t, bool, const Options &);
+void read_presenter_lights(PresenterLights &, Cursor &, uint32_t,
+                           const Options &);
 Inflated inflate_one(std::span<const uint8_t> input, uint64_t limit,
                      size_t hint = 65536);
 std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file,

@@ -604,7 +604,8 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
   }
 }
 bool supported(std::string_view kind) {
-  return kind == "LcOpNwdSpatialHierarchy" ||
+  return kind == "LcOwPresenterElement" || kind == "LcOwLightsElement" ||
+         kind == "LcOpNwdSpatialHierarchy" ||
          kind == "LcOpTextureSpaceElement" || kind == "LcOpDBCache" ||
          kind == "LcOpNwdPublish" || kind == "LcOpShadOverridesElement" ||
          kind == "LcOpNwdSerial" || kind == "LcOpNwdGeometryCompress" ||
@@ -642,7 +643,15 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
   if (kind == "LcOpClashElement" &&
       ((version < 301 && version != 103 && version != 112) || version > 450))
     throw Unsupported("clash container version not yet validated");
-  if (kind == "LcOpClashElement" && version < 301) {
+  if (kind == "LcOwPresenterElement") {
+    read_presenter(b.value.emplace<PresenterData>(), r, version,
+                   implicit_node_map, options);
+    return;
+  } else if (kind == "LcOwLightsElement") {
+    read_presenter_lights(b.value.emplace<PresenterLights>(), r, version,
+                          options);
+    return;
+  } else if (kind == "LcOpClashElement" && version < 301) {
     auto &v = b.value.emplace<SavedItems>();
     ObjectReader objects(r.data, v.objects, version, options);
     for (auto n = count(r, options.max_objects); n; --n) {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nwd_reader VERSION 0.12.0 LANGUAGES C CXX)
+project(nwd_reader VERSION 0.13.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 find_package(Threads REQUIRED)
@@ -14,7 +14,8 @@ add_library(nwd_sqlite STATIC third_party/sqlite/sqlite3.c)
 set_target_properties(nwd_sqlite PROPERTIES EXPORT_NAME sqlite)
 target_compile_definitions(nwd_sqlite PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_TEMP_STORE=3 SQLITE_DQS=0)
 target_link_libraries(nwd_sqlite PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
-add_library(nwd_reader STATIC src/container.cpp src/geometry.cpp src/attributes.cpp src/scene.cpp src/metadata.cpp src/viewpoints.cpp src/access.cpp src/nwf.cpp src/project.cpp src/assets.cpp src/schema.cpp src/products.cpp src/blowfish.cpp src/database.cpp)
+add_library(nwd_reader STATIC src/container.cpp src/geometry.cpp src/attributes.cpp src/scene.cpp src/metadata.cpp src/viewpoints.cpp src/access.cpp src/nwf.cpp src/project.cpp src/assets.cpp src/schema.cpp src/products.cpp src/blowfish.cpp src/database.cpp src/lightworks.cpp third_party/tiny-aes/aes.c)
+set_source_files_properties(third_party/tiny-aes/aes.c PROPERTIES COMPILE_DEFINITIONS "CBC=0;CTR=0;AES_init_ctx=nwd_lwa_aes_init;AES_ECB_decrypt=nwd_lwa_aes_decrypt;AES_ECB_encrypt=nwd_lwa_aes_encrypt")
 add_library(nwd::reader ALIAS nwd_reader)
 set_target_properties(nwd_reader PROPERTIES EXPORT_NAME reader)
 target_compile_features(nwd_reader PUBLIC cxx_std_20)
@@ -38,3 +39,5 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/nwdConfigVersion.cm
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/nwdConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/nwdConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nwd)
 
 install(FILES third_party/sqlite/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses RENAME sqlite.txt)
+
+install(FILES third_party/tiny-aes/unlicense.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses RENAME tiny-aes.txt)

@@ -47,6 +47,19 @@ static int run(const std::filesystem::path &path) {
         std::cout << "  spatial nodes=" << spatial->nodes.size()
                   << " associations verified=" << spatial->associations_verified
                   << '\n';
+      if (const auto *presenter =
+              std::get_if<nwd::PresenterData>(&block.value)) {
+        std::cout << "  Presenter materials=" << presenter->materials.size()
+                  << " texture mappings=" << presenter->texture_bindings.size()
+                  << '\n';
+        for (const auto &archive : presenter->archives)
+          for (const auto &object : archive.objects)
+            for (const auto &field : object.fields)
+              if (const auto *text = std::get_if<std::string>(&field.value))
+                std::cout << "    " << field.name << ": " << *text << '\n';
+      }
+      if (const auto *lights = std::get_if<nwd::PresenterLights>(&block.value))
+        std::cout << "  Presenter lights=" << lights->lights.size() << '\n';
       if (const auto *publish =
               std::get_if<nwd::PublishInformation>(&block.value))
         std::cout << "  title=" << publish->title

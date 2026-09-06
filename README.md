@@ -21,6 +21,7 @@
 - **数据库链接**：读取保存的 SQL、连接字符串、开关和字段映射，保留共享名称与原始编码字节。
 - **文件数据库**：在内存中读取 SQLite 表结构、行、列、原始单元格类型、外键和定义，不执行源视图或外部数据库查询。
 - **空间树**：读取原生空间层级及分片槽引用，保留父子结构并关联模型实例。
+- **旧式 Presenter**：读取 LightWorks 实体树、有类型的着色参数、编码图像、灯光、材质槽分配和纹理映射，保留归档内共享身份与路径关联。
 - **灯光与文档信息**：读取现代灯光资产、位置/目标点、图纸目录、默认图纸、发布字段、缓存配置、超链接、序列号和几何压缩参数。
 - **文档辅助数据**：读取 GUID 仓库、统计报告、节点覆盖、工具与图形设置。
 - **读取状态**：保留块目录，区分已解析、部分解析、读取失败和尚未由产品模块处理的内容。
@@ -114,6 +115,8 @@ cmake --build build-examples --config Release --parallel
 | `SavedItems` / `SavedItem` | 保存项层级、注释、GUID、视点、选择、关键帧、任务、图纸、现代灯光和材质资产 |
 | `FileDatabase` | SQLite 普通表、列、行、动态单元格类型、DDL 与外键 |
 | `SpatialHierarchy` | 紧凑空间树及源分片槽引用；`read_scene()` 可校验模型关联 |
+| `PresenterData` / `PresenterLights` | 旧式背景、材质、灯光与纹理映射；归档内对象树和引用 |
+| `LightWorksArchive` | 引擎版本、类型定义、字段语义及保留身份的实体记录 |
 | `PublishInformation` / `CacheMetadata` | 发布属性与源文件缓存配置 |
 | `HyperlinkOverrides` / `NodeOverrides` | 保存的超链接、位置和路径覆盖记录 |
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
@@ -202,13 +205,20 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `HyperlinkOverrides`、`NodeOverrides` 保留源PathLink，尚未统一绑定到模型对象。`TextureSpaceOverrides` 复用NWF纹理空间记录，保留路径/节点范围及候选列表。`ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
 
+`PresenterData` 包含背景、材质槽、材质分配和纹理映射；`PresenterLights` 返回旧式灯光列表。实体的 `archive` 索引指向各自的 `archives`，同一个归档内用 `LightWorksObject.parent/first_child/next_sibling` 访问层级。`identity` 保留源编号，`reference` 指向同归档的已有对象，`null_reference` 区分显式空引用。不同归档不能按名称或数字ID合并。
+
+`LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。
+
+通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF的隐式候选列表只保留源选择条件，尚不自动解析为联合模型中的匹配对象。单独 `read_products()` 不绑定模型。
+
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
 
 NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`；内部版本不等同于软件发布年份。NWF 当前主要支持内部版本 `448` 的引用与完整材质覆盖。
 
 以下内容仍存在限制：
 
-- 旧版 LightWorks Presenter/灯光归档、碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
+- 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
+- LightWorks支持encoding 1、Blowfish/AES128和zlib的流式单帧归档；其他封装、索引/多帧链接、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、图像codec和复杂别名分支尚未完整覆盖。
 - 超链接/节点覆盖的非空节点字典、Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
 - 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
@@ -231,4 +241,4 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 ## 第三方组件
 
-使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产，使用 SQLite 在内存中读取嵌入数据库。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产，使用 SQLite 在内存中读取嵌入数据库，复用 tiny-AES-c 与 Blowfish 实现读取格式内的编码载荷。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

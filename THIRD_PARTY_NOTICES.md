@@ -9,4 +9,7 @@ This library bundles the following source dependencies. Their copyright notices 
 | [SQLite](https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip) | 3.53.4 | In-memory embedded database reading | [Public domain](third_party/sqlite/LICENSE) |
 | [Go cryptography Blowfish constants](https://github.com/golang/crypto/tree/master/blowfish) | Vendored constants | Format cipher initialization | [BSD 3-Clause](third_party/blowfish-LICENSE) |
 
+| [tiny-AES-c](https://github.com/kokke/tiny-AES-c/tree/23856752fbd139da0b8ca6e471a13d5bcc99a08d) | `23856752fbd1` | LightWorks AES128 decoding | [Unlicense](third_party/tiny-aes/unlicense.txt) |
+| [ISAAC32](https://burtleburtle.net/bob/c/rand.c) | Algorithm reference | Archive default key derivation | Public domain |
+
 Only the zlib source files and build inputs needed by this project are bundled. Upstream examples, documentation and development files are omitted. The public parser API does not expose these dependencies’ types.

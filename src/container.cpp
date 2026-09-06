@@ -426,6 +426,34 @@ Scene Document::read_scene() const {
     auto products = std::make_shared<ProductData>(read_products());
     for (size_t i = 0; i < products->blocks.size(); ++i) {
       auto &b = products->blocks[i];
+      if (auto *presenter = std::get_if<PresenterData>(&b.value);
+          presenter && b.status == ProductStatus::decoded) {
+        for (size_t m = 0; m < out.models.size(); ++m) {
+          const auto &model = out.models[m];
+          const auto name = (model.name.empty() ? "" : model.name + "\\") +
+                            "LcOwPresenterElement";
+          if (out.chunks[i].name != name)
+            continue;
+          require(presenter->model == none,
+                  "ambiguous Presenter model namespace");
+          presenter->model = static_cast<Id>(m);
+          auto valid = [&](const auto &binding) {
+            return std::all_of(
+                binding.paths.begin(), binding.paths.end(),
+                [&](Id id) { return id == none || id < model.paths.size(); });
+          };
+          presenter->associations_verified =
+              !presenter->implicit_node_map &&
+              std::all_of(presenter->material_bindings.begin(),
+                          presenter->material_bindings.end(), valid) &&
+              std::all_of(presenter->texture_bindings.begin(),
+                          presenter->texture_bindings.end(), valid);
+        }
+        if (!presenter->associations_verified) {
+          b.status = ProductStatus::partial;
+          b.diagnostic = "Presenter path association missing/outside model";
+        }
+      }
       auto *tree = std::get_if<SpatialHierarchy>(&b.value);
       if (!tree || b.status != ProductStatus::decoded)
         continue;

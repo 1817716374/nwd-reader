@@ -766,6 +766,84 @@ struct PublishInformation {
   int64_t published = 0, expires = 0;
   ObjectGraph objects;
 };
+// LightWorks values retain their wire type separately from the C++ storage.
+using LightWorksValue =
+    std::variant<uint32_t, double, std::string, std::vector<uint8_t>,
+                 std::vector<uint32_t>, std::vector<double>>;
+struct LightWorksField {
+  uint32_t id = 0, type = 0;
+  std::string name; // empty when the file and known schema supply no name
+  LightWorksValue value;
+};
+struct LightWorksFieldDefinition {
+  uint32_t id = 0, type = 0;
+  std::string name;
+};
+struct LightWorksDefinition {
+  uint32_t type = 0, version = 0;
+  std::string name;
+  bool stored = false;
+  std::vector<LightWorksFieldDefinition> fields;
+};
+struct LightWorksObject {
+  uint32_t type = 0, flags = 0, header_flags = 0;
+  std::optional<uint32_t> identity;
+  std::optional<std::array<uint8_t, 4>> extension;
+  Id parent = none, first_child = none, next_sibling = none;
+  Id reference = none; // same archive's object index; no copied object payload
+  bool null_reference = false;
+  std::vector<LightWorksField> fields;
+};
+struct LightWorksArchive {
+  uint32_t engine_version = 0, encoding = 0, flags = 0, block_bits = 0;
+  uint32_t compression = 0, cipher = 0, stream_flags = 0;
+  std::string key_name;
+  std::vector<uint8_t> cipher_parameters;
+  std::vector<LightWorksDefinition> definitions;
+  std::vector<LightWorksObject> objects;
+};
+struct LegacyShaderArgument {
+  std::string name;
+  uint32_t type = 0;
+  LightWorksValue value;
+};
+struct LegacyShader {
+  std::string name;
+  std::vector<LegacyShaderArgument> arguments;
+};
+struct PresenterEntity {
+  uint32_t mode = 0;
+  Id archive = none; // PresenterData.archives / PresenterLights.archives
+  std::string legacy_material_name;
+  std::optional<LegacyShader> legacy_shader;
+  std::array<std::optional<LegacyShader>, 5> legacy_material_shaders;
+};
+struct PresenterBinding {
+  bool node_scope = false;
+  std::vector<uint32_t> paths; // exact link or node candidate IDs, file-local
+  Id material = none;          // index in PresenterData.materials
+};
+struct PresenterTextureBinding {
+  bool node_scope = false;
+  std::vector<uint32_t> paths;
+  uint32_t mapping = 0;
+  std::optional<PresenterEntity> entity;
+};
+struct PresenterData {
+  std::optional<bool> enabled;
+  bool implicit_node_map = false;
+  PresenterEntity background;
+  std::vector<PresenterEntity> materials;
+  std::vector<PresenterBinding> material_bindings;
+  std::vector<PresenterTextureBinding> texture_bindings;
+  std::vector<LightWorksArchive> archives;
+  Id model = none; // Scene.models index, assigned by read_scene()
+  bool associations_verified = false; // selectors checked against Model.paths
+};
+struct PresenterLights {
+  std::vector<PresenterEntity> lights;
+  std::vector<LightWorksArchive> archives;
+};
 using ProductValue = std::variant<
     std::monostate, CurrentView, Background, Headlight, Culling,
     NavigationSpeed, CommentIds, SavedItems, TimeLinerGui, TimeLinerClock,
@@ -773,7 +851,8 @@ using ProductValue = std::variant<
     Grids, SceneStatistics, SceneProperties, ToolState, GraphicsSystemState,
     ExternalReferenceTable, FileDatabase, HyperlinkOverrides,
     GeometryCompression, FileSerial, NodeOverrides, PublishInformation,
-    CacheMetadata, TextureSpaceOverrides, SpatialHierarchy>;
+    CacheMetadata, TextureSpaceOverrides, SpatialHierarchy, PresenterData,
+    PresenterLights>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;
