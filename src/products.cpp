@@ -745,6 +745,8 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     v.keywords = r.string();
   } else if (kind == "LcOpShadOverridesElement") {
     auto &v = b.value.emplace<NodeOverrides>();
+    v.implicit_node_map = implicit_node_map;
+    v.mask_value_encoding = version >= 437;
     if (version >= 437) {
       for (auto n = count(r, options.max_objects); n; --n) {
         auto &entry = v.paths.emplace_back();
@@ -752,10 +754,18 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
         entry.flags = r.byte();
         entry.flags |= uint32_t(r.byte()) << 8;
       }
-      if (count(r, options.max_objects))
-        throw Unsupported(
-            "node override node dictionary needs source path-map context");
+      uint64_t budget = options.max_objects - v.paths.size();
+      auto nodes = count(r, budget);
+      budget -= nodes;
+      for (; nodes; --nodes) {
+        auto &entry = v.nodes.emplace_back();
+        entry.paths = read_path_selector(r, implicit_node_map, true, budget);
+        entry.flags = r.byte();
+        entry.flags |= uint32_t(r.byte()) << 8;
+      }
     } else {
+      if (version < 34)
+        throw Unsupported("legacy node override implicit path map");
       for (;;) {
         auto flags = r.u32();
         if (!flags)
@@ -780,11 +790,16 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
                        kind == "LcOpFileDatabaseElement", options);
   } else if (kind == "LcOpHyperlinksOverrideElement") {
     auto &v = b.value.emplace<HyperlinkOverrides>();
+    v.implicit_node_map = implicit_node_map;
     ObjectReader objects(r.data, v.objects, version, options);
-    for (auto n = count(r, options.max_objects); n; --n) {
-      auto &entry = v.paths.emplace_back();
-      entry.path_link = r.u32();
-      for (auto k = count(r, options.max_objects); k; --k) {
+    uint64_t budget = options.max_objects;
+    auto bounded_count = [&] {
+      auto n = count(r, budget);
+      budget -= n;
+      return n;
+    };
+    auto links = [&](auto &entry) {
+      for (auto k = bounded_count(); k; --k) {
         auto &link = entry.links.emplace_back();
         link.url = r.string();
         link.label = r.string();
@@ -792,16 +807,23 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
         require(link.category == none ||
                     v.objects.objects.at(link.category).type == 52,
                 "hyperlink category type");
-        for (auto p = count(r, options.max_objects); p; --p) {
+        for (auto p = bounded_count(); p; --p) {
           auto &xyz = link.positions.emplace_back();
           for (auto &x : xyz)
             x = r.read<double>();
         }
       }
+    };
+    for (auto n = bounded_count(); n; --n) {
+      auto &entry = v.paths.emplace_back();
+      entry.path_link = r.u32();
+      links(entry);
     }
-    if (count(r, options.max_objects))
-      throw Unsupported(
-          "hyperlink node dictionary needs its source path-map context");
+    for (auto n = bounded_count(); n; --n) {
+      auto &entry = v.nodes.emplace_back();
+      entry.paths = read_path_selector(r, implicit_node_map, true, budget);
+      links(entry);
+    }
   } else if (kind == "LcOpOdyScenePropsChunk") {
     auto &v = b.value.emplace<SceneProperties>();
     v.saved_filename = r.string();
@@ -1079,6 +1101,66 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
   }
 }
 } // namespace
+void detail::bind_product_paths(ProductBlock &block, std::string_view chunk,
+                                const std::vector<Model> &models) {
+  if (block.status != ProductStatus::decoded)
+    return;
+  std::visit(
+      [&](auto &v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, PresenterData> ||
+                      std::is_same_v<T, TextureSpaceOverrides> ||
+                      std::is_same_v<T, NodeOverrides> ||
+                      std::is_same_v<T, HyperlinkOverrides>) {
+          auto split = chunk.rfind('\\');
+          auto source =
+              split == chunk.npos ? std::string_view{} : chunk.substr(0, split);
+          v.model = none;
+          v.associations_verified = false;
+          for (size_t i = 0; i < models.size(); ++i) {
+            if (models[i].name != source)
+              continue;
+            if (v.model != none) {
+              v.model = none;
+              block.status = ProductStatus::partial;
+              block.diagnostic = "ambiguous product model namespace";
+              return;
+            }
+            v.model = static_cast<Id>(i);
+          }
+          if (v.model != none && !v.implicit_node_map) {
+            auto valid_id = [&](Id id) {
+              return id == none || id < models[v.model].paths.size();
+            };
+            auto valid_selectors = [&](const auto &entries) {
+              return std::all_of(entries.begin(), entries.end(),
+                                 [&](const auto &entry) {
+                                   return entry.paths.size() == 1 &&
+                                          valid_id(entry.paths.front());
+                                 });
+            };
+            if constexpr (std::is_same_v<T, PresenterData>)
+              v.associations_verified = valid_selectors(v.material_bindings) &&
+                                        valid_selectors(v.texture_bindings);
+            else if constexpr (std::is_same_v<T, TextureSpaceOverrides>)
+              v.associations_verified = valid_selectors(v.records);
+            else
+              v.associations_verified =
+                  valid_selectors(v.nodes) &&
+                  std::all_of(v.paths.begin(), v.paths.end(),
+                              [&](const auto &entry) {
+                                return valid_id(entry.path_link);
+                              });
+          }
+          if (!v.associations_verified) {
+            block.status = ProductStatus::partial;
+            block.diagnostic =
+                "product path association missing/outside model or implicit";
+          }
+        }
+      },
+      block.value);
+}
 ProductData Document::read_products() const {
   ProductData out;
   out.version = version();

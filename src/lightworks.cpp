@@ -145,6 +145,16 @@ LightWorksValue value(BE &r, uint32_t type, Budget &budget) {
     return std::bit_cast<double>(r.wide());
   case 10:
     return r.text();
+  case 32: {
+    auto n = r.u();
+    budget.items(n);
+    require(n <= (r.data.size() - r.pos) / 4, "LightWorks string array");
+    std::vector<std::string> out;
+    out.reserve(n);
+    for (uint32_t i = 0; i < n; ++i)
+      out.push_back(r.text());
+    return out;
+  }
   case 47: {
     auto s = r.raw(r.u());
     return Bytes(s.begin(), s.end());
@@ -288,19 +298,27 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
   }
   out.block_bits = h.byte();
   out.flags = h.byte();
-  if (out.flags != 3 || out.encoding != 1)
+  if ((out.flags & ~3u) || out.encoding > 1 ||
+      ((out.flags & 1) && out.encoding != 1))
     throw UnsupportedLayout("LightWorks archive encoding/envelope");
-  require(out.block_bits >= 8 && out.block_bits <= 24,
+  require(out.block_bits >= 7 && out.block_bits <= 24,
           "LightWorks block size exponent");
-  out.compression = h.u();
-  auto parameters = h.u();
-  out.cipher = h.u();
-  out.key_name = h.text();
-  auto p = h.raw(parameters);
-  out.cipher_parameters.assign(p.begin(), p.end());
+  const bool compressed = (out.flags & 2) != 0;
+  const bool encrypted = (out.flags & 1) != 0;
+  if (compressed)
+    out.compression = h.u();
+  if (encrypted) {
+    auto parameters = h.u();
+    out.cipher = h.u();
+    if (parameters) {
+      out.key_name = h.text();
+      auto p = h.raw(parameters);
+      out.cipher_parameters.assign(p.begin(), p.end());
+    }
+  }
   auto index = h.u();
   require(h.pos == h.data.size(), "LightWorks header tail");
-  if (index != none || out.compression != 1)
+  if (index != none || (compressed && out.compression != 1))
     throw UnsupportedLayout("LightWorks indexed archive/compression");
   BE meta(r.raw(r.u()), "LightWorks definitions");
   out.stream_flags = meta.u();
@@ -335,41 +353,76 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
   }
   require(meta.pos == meta.data.size(), "LightWorks definition table tail");
   add_known_definitions(out);
-  auto frame_size = r.u();
-  require(frame_size >= 12, "LightWorks frame size");
-  auto next = r.u();
-  auto valid = r.u();
-  if (next != none)
-    throw UnsupportedLayout("LightWorks linked archive blocks");
-  auto raw = r.raw(frame_size - 12);
-  if (out.cipher != 1 && out.cipher != 4)
-    throw UnsupportedLayout("LightWorks archive cipher");
-  const size_t block = out.cipher == 4 ? 8 : 16;
-  require(!raw.empty() && (raw.size() % block == 0 || raw.size() % block == 1),
-          "LightWorks cipher frame size");
-  auto wrapped = base64(out.key_name);
-  require(wrapped.size() == 17 && wrapped.front() < 64,
-          "LightWorks archive key identifier");
-  static const auto keys = default_keys();
-  auto key_index = wrapped.front();
-  Bytes key(wrapped.begin() + 1, wrapped.end());
-  // The wrapping key selects its own algorithm, independently of the payload.
-  decrypt(key, keys[key_index], key_index < 32 ? 4 : 1);
-  Bytes compressed(raw.begin(), raw.begin() + raw.size() / block * block);
-  decrypt(compressed, key, out.cipher);
-  if (raw.size() % block) {
-    require(raw.back() < block && raw.back() <= compressed.size(),
-            "LightWorks cipher padding length");
-    compressed.resize(compressed.size() - raw.back());
+  Bytes key;
+  if (encrypted) {
+    if (out.cipher != 1 && out.cipher != 4)
+      throw UnsupportedLayout("LightWorks archive cipher");
+    auto wrapped = base64(out.key_name);
+    require(wrapped.size() == 17 && wrapped.front() < 64,
+            "LightWorks archive key identifier");
+    static const auto keys = default_keys();
+    auto key_index = wrapped.front();
+    key.assign(wrapped.begin() + 1, wrapped.end());
+    // The wrapping key selects its own algorithm, independently of the payload.
+    decrypt(key, keys[key_index], key_index < 32 ? 4 : 1);
   }
   auto size = uint64_t(1) << out.block_bits;
-  budget.decoded(size);
-  auto plain = inflate_one(compressed, size, static_cast<size_t>(size));
-  require(plain.consumed == compressed.size() && plain.bytes.size() == size &&
-              valid <= size,
-          "LightWorks compressed frame length");
-  BE payload(std::span(plain.bytes).first(valid), "LightWorks objects");
-  objects(out, payload, budget);
+  Bytes stream;
+  for (;;) {
+    budget.items();
+    budget.decoded(size);
+    require(out.frame_count < none, "LightWorks frame count overflow");
+    ++out.frame_count;
+    uint64_t raw_size = size;
+    if (compressed) {
+      auto frame_size = r.u();
+      require(frame_size >= 12, "LightWorks frame size");
+      raw_size = frame_size - 12;
+    }
+    auto next = r.u();
+    auto valid = r.u();
+    require(valid <= size, "LightWorks frame valid byte count");
+    // Linked IDs address physical pages. Sequential chains need no index or
+    // seeking, and can be concatenated before reading cross-page fields.
+    if (next != none && next != out.frame_count)
+      throw UnsupportedLayout("LightWorks nonsequential/indexed page chain");
+    auto raw = r.raw(static_cast<size_t>(raw_size));
+    Bytes decoded;
+    if (encrypted) {
+      const size_t block = out.cipher == 4 ? 8 : 16;
+      require(!raw.empty() &&
+                  (raw.size() % block == 0 || raw.size() % block == 1),
+              "LightWorks cipher frame size");
+      decoded.assign(raw.begin(), raw.begin() + raw.size() / block * block);
+      decrypt(decoded, key, out.cipher);
+      if (raw.size() % block) {
+        require(raw.back() < block && raw.back() <= decoded.size(),
+                "LightWorks cipher padding length");
+        decoded.resize(decoded.size() - raw.back());
+      }
+      raw = decoded;
+    }
+    if (compressed) {
+      auto plain = inflate_one(raw, size, static_cast<size_t>(size));
+      require(plain.consumed == raw.size() && plain.bytes.size() == size,
+              "LightWorks compressed frame length");
+      decoded = std::move(plain.bytes);
+      raw = decoded;
+    }
+    require(raw.size() == size, "LightWorks decoded frame length");
+    // Keep the usual one-page path free of an extra payload copy.
+    if (out.frame_count == 1 && next == none) {
+      BE payload(raw.first(valid), "LightWorks objects");
+      objects(out, payload, budget);
+      break;
+    }
+    stream.insert(stream.end(), raw.begin(), raw.begin() + valid);
+    if (next == none) {
+      BE payload(stream, "LightWorks objects");
+      objects(out, payload, budget);
+      break;
+    }
+  }
   source.pos += r.pos;
   return out;
 }
@@ -442,18 +495,7 @@ PresenterEntity entity(Cursor &r, std::vector<LightWorksArchive> &archives,
   return out;
 }
 std::vector<uint32_t> selector(Cursor &r, bool implicit, bool node, Budget &b) {
-  std::vector<uint32_t> out;
-  if (implicit && node) {
-    for (;;) {
-      auto id = r.u32();
-      if (id == none)
-        break;
-      b.items();
-      out.push_back(id);
-    }
-  } else
-    out.push_back(r.u32());
-  return out;
+  return read_path_selector(r, implicit, node, b.objects);
 }
 } // namespace
 void read_presenter(PresenterData &out, Cursor &r, uint32_t version,

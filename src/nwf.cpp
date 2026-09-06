@@ -293,17 +293,7 @@ void detail::read_texture_spaces(Cursor &r,
       // NWF ReadContentsImplicit leaves the native map's explicit-mode flag
       // clear for all three map kinds. ReadNode therefore reads a sentinel-
       // terminated candidate list, even when the path map kind is 2.
-      if (scope && implicit_node_map) {
-        for (;;) {
-          auto id = r.u32();
-          if (id == none)
-            break;
-          require(budget > 0, "NWF texture node lookup resource limit");
-          --budget;
-          t.paths.push_back(id);
-        }
-      } else
-        t.paths.push_back(r.u32());
+      t.paths = read_path_selector(r, implicit_node_map, scope != 0, budget);
       t.value = space();
       records.push_back(std::move(t));
     }

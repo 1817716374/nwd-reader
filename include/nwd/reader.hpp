@@ -614,6 +614,8 @@ struct NwfTextureSpace {
 struct TextureSpaceOverrides {
   bool implicit_node_map = false;
   std::vector<NwfTextureSpace> records;
+  Id model = none; // read_scene(): exact source model namespace
+  bool associations_verified = false;
 };
 enum class ProductStatus { not_handled, decoded, partial, failed };
 struct DatabaseFieldMapping {
@@ -724,15 +726,34 @@ struct HyperlinkOverride {
   uint32_t path_link = none;
   std::vector<Hyperlink> links;
 };
+struct NodeHyperlinkOverride {
+  std::vector<Id> paths; // explicit PathLink or implicit node candidates
+  std::vector<Hyperlink> links;
+};
 struct HyperlinkOverrides {
   std::vector<HyperlinkOverride> paths;
   ObjectGraph objects;
+  std::vector<NodeHyperlinkOverride> nodes;
+  bool implicit_node_map = false;
+  Id model = none;
+  bool associations_verified = false;
 };
 struct NodeOverride {
   uint32_t path_link = none, flags = 0;
 };
+struct NodeScopedOverride {
+  std::vector<Id> paths; // node identity, not one specific occurrence
+  uint32_t flags = 0;
+};
 struct NodeOverrides {
   std::vector<NodeOverride> paths;
+  std::vector<NodeScopedOverride> nodes;
+  bool implicit_node_map = false;
+  // Version >= 437: low byte is the override mask, high byte the values.
+  // effective = (base & ~mask) | (values & mask). Older words remain raw.
+  bool mask_value_encoding = false;
+  Id model = none;
+  bool associations_verified = false;
 };
 struct CacheMetadata {
   int32_t version = 0;
@@ -769,7 +790,8 @@ struct PublishInformation {
 // LightWorks values retain their wire type separately from the C++ storage.
 using LightWorksValue =
     std::variant<uint32_t, double, std::string, std::vector<uint8_t>,
-                 std::vector<uint32_t>, std::vector<double>>;
+                 std::vector<uint32_t>, std::vector<double>,
+                 std::vector<std::string>>;
 struct LightWorksField {
   uint32_t id = 0, type = 0;
   std::string name; // empty when the file and known schema supply no name
@@ -801,6 +823,8 @@ struct LightWorksArchive {
   std::vector<uint8_t> cipher_parameters;
   std::vector<LightWorksDefinition> definitions;
   std::vector<LightWorksObject> objects;
+  uint32_t frame_count =
+      0; // decoded linked pages; object fields may span pages
 };
 struct LegacyShaderArgument {
   std::string name;

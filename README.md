@@ -118,7 +118,7 @@ cmake --build build-examples --config Release --parallel
 | `PresenterData` / `PresenterLights` | 旧式背景、材质、灯光与纹理映射；归档内对象树和引用 |
 | `LightWorksArchive` | 引擎版本、类型定义、字段语义及保留身份的实体记录 |
 | `PublishInformation` / `CacheMetadata` | 发布属性与源文件缓存配置 |
-| `HyperlinkOverrides` / `NodeOverrides` | 保存的超链接、位置和路径覆盖记录 |
+| `HyperlinkOverrides` / `NodeOverrides` | 保存的超链接、位置及路径/节点级覆盖记录 |
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
 | `Project.sources` / `Project.nodes` | 共享源文件与独立引用出现构成的文件树 |
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
@@ -203,11 +203,15 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `SpatialHierarchy.nodes` 使用 `parent/first_child/next_sibling` 表达邻接关系。类型1/4的 `fragment` 是模型分片槽，只有 `associations_verified` 为true时才能结合 `model` 访问 `Scene.models[model].instances[fragment]`。通过 `Options.products = true` 调用 `read_scene()` 才会校验此关联；单独 `read_products()` 保留未绑定状态。实例仍引用共享几何。
 
-`HyperlinkOverrides`、`NodeOverrides` 保留源PathLink，尚未统一绑定到模型对象。`TextureSpaceOverrides` 复用NWF纹理空间记录，保留路径/节点范围及候选列表。`ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
+`HyperlinkOverrides.paths/nodes` 和 `NodeOverrides.paths/nodes` 分别保存路径级、节点级覆盖；节点记录的 `paths` 保留显式选择器或隐式候选列表。`TextureSpaceOverrides` 复用纹理空间记录。三种类型通过 `read_scene()` 读取时，共用与 Presenter 相同的模型命名空间和路径校验：只有 `associations_verified` 为true时，才能用 `model` 访问所属模型、将选择器视为该模型的路径索引。节点范围通过 `path_reference()` 取得共享节点身份；单独 `read_products()` 不绑定模型。
+
+`NodeOverrides.mask_value_encoding` 为true时，`flags` 的低字节是覆盖掩码，高字节是覆盖值。以 `mask = flags & 0xff`、`values = (flags >> 8) & 0xff` 计算，基础状态的覆盖结果为 `(base & ~mask) | (values & mask)`。旧版位字保持原值。
+
+`ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
 
 `PresenterData` 包含背景、材质槽、材质分配和纹理映射；`PresenterLights` 返回旧式灯光列表。实体的 `archive` 索引指向各自的 `archives`，同一个归档内用 `LightWorksObject.parent/first_child/next_sibling` 访问层级。`identity` 保留源编号，`reference` 指向同归档的已有对象，`null_reference` 区分显式空引用。不同归档不能按名称或数字ID合并。
 
-`LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。
+`LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。字符串数组使用 `vector<string>`，保留空字符串和内嵌 NUL；`LightWorksArchive.frame_count` 返回读取的分页数，跨页字段统一解码。
 
 通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF的隐式候选列表只保留源选择条件，尚不自动解析为联合模型中的匹配对象。单独 `read_products()` 不绑定模型。
 
@@ -218,8 +222,8 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 以下内容仍存在限制：
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
-- LightWorks支持encoding 1、Blowfish/AES128和zlib的流式单帧归档；其他封装、索引/多帧链接、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、图像codec和复杂别名分支尚未完整覆盖。
-- 超链接/节点覆盖的非空节点字典、Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
+- LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持流式单帧和从第0页开始的连续页链。encoding 0仅支持无加密情况，encoding 1支持格式内密钥标识。随机索引/非连续页链、未见内置类型与未支持的特殊值类型明确返回部分解析。部分标志语义、图像codec和复杂别名分支尚未完整覆盖。
+- Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
 - 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。

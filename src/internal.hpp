@@ -85,6 +85,24 @@ public:
         fail("nonzero record tail");
   }
 };
+// ReadNode uses one explicit PathLink, or an implicit candidate list ending
+// in none. The candidates are evidence for matching, not interchangeable IDs.
+inline std::vector<Id> read_path_selector(Cursor &r, bool implicit, bool node,
+                                          uint64_t &budget) {
+  std::vector<Id> out;
+  if (!implicit || !node) {
+    out.push_back(r.u32());
+    return out;
+  }
+  for (;;) {
+    auto id = r.u32();
+    if (id == none)
+      return out;
+    require(budget > 0, "node selector resource limit");
+    --budget;
+    out.push_back(id);
+  }
+}
 template <class StringReader, class ReferenceReader>
 Value read_data_value(Cursor &r, StringReader string_reader,
                       ReferenceReader reference_reader) {
@@ -201,6 +219,8 @@ struct Inflated {
 void read_presenter(PresenterData &, Cursor &, uint32_t, bool, const Options &);
 void read_presenter_lights(PresenterLights &, Cursor &, uint32_t,
                            const Options &);
+void bind_product_paths(ProductBlock &, std::string_view,
+                        const std::vector<Model> &);
 Inflated inflate_one(std::span<const uint8_t> input, uint64_t limit,
                      size_t hint = 65536);
 std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file,
