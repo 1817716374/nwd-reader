@@ -32,6 +32,10 @@ static int run(const std::filesystem::path &path) {
           std::cout << "  type=" << item.type << " parent=" << item.parent
                     << " name=" << item.name << " complete=" << item.complete
                     << '\n';
+          if (const auto *result = std::get_if<nwd::ClashResult>(&item.clash))
+            std::cout << "    distance=" << result->distance
+                      << " path links=" << result->path_links[0] << ','
+                      << result->path_links[1] << '\n';
           if (item.keyframe)
             std::cout << "    time=" << item.keyframe->time << '\n';
           if (const auto *task =

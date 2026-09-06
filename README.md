@@ -177,14 +177,18 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `SavedItems.objects` 保留共享名称和视点覆盖对象；选择记录的 `path_links` 是源PathLink标识，尚未绑定到模型节点，不能当成ObjectGraph或NWF路径索引。`SavedItem.complete` 表示该保存项布局及子项已读完，部分块中仍可能有成功读取的前序项。旋转、时间、枚举和未命名字段保留文件值，不自动执行搜索、动画或施工仿真。
 
+碰撞数据通过 `SavedItem.clash` 访问：`ClashTest` 返回选择、容差、规则与运行配置；`ClashResult` 返回距离、两侧位置、包围盒、状态、审批信息和模拟事件；`ClashResultGroup` 保留结果分组。组的子项使用 `SavedItem.parent` 关联。`SavedItems.source_references` 提供保存的模型来源，缓存属性与规则参数共用 `SavedItems.objects`。`legacy_clash` 标识旧容器，旧状态枚举保持源值；结果中的 `test_name` 是测试类型或自定义标签，与保存项的 `name` 分开使用。PathLink 和备用 PathLink 保留原始编号，调用方不能直接把它们当作模型路径索引。
+
+当前动画返回一个隐含类型为 1 的保存项根及其子项。`TimeLinerClock` 提供模拟时钟，`TimeLinerSimulation` 按序列化顺序返回时间、整数、布尔、字符串和动画路径。时间与枚举保留源值，模拟设置中的部分字段语义仍需解释。
+
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
 
 NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`；内部版本不等同于软件发布年份。NWF 当前主要支持内部版本 `448` 的引用与完整材质覆盖。
 
 以下内容仍存在限制：
 
-- 尚未完整支持碰撞、动画脚本/事件/动作、当前动画状态、TimeLiner旧式分散配置与模拟时钟、灯光/Presenter、网格、数据库和原生空间索引等块。
-- 动画和选择集中的PathLink与模型对象绑定尚未完成；部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
+- 尚未完整支持碰撞自定义字段/状态、动画脚本/事件/动作、TimeLiner旧式分散配置、灯光/Presenter、网格、数据库和原生空间索引等块。
+- 碰撞、动画和选择集中的PathLink与模型对象绑定尚未完成；部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
 - 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置和部分材质覆盖合成尚未完整支持。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。

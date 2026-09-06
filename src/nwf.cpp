@@ -12,23 +12,25 @@ static std::array<uint8_t, 16> guid(Cursor &r) {
 static std::array<double, 3> vector3(Cursor &r) {
   return {r.f64(), r.f64(), r.f64()};
 }
-NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
-  require(version >= 251 && version <= 448,
-          "NWF scene-set version not yet validated");
-  Cursor r(bytes, "NWF scene set");
-  NwfData out;
+void detail::read_source_references(Cursor &r,
+                                    std::vector<NwfReference> &references,
+                                    ObjectReader &object_reader,
+                                    uint32_t version, const Options &options) {
+  require(version >= 92 && version <= 450,
+          "source-reference version not yet validated");
+  auto bytes = r.data;
   auto count = [&]() {
     auto n = r.u32();
-    require(n < 1000000, "NWF count limit");
+    require(n <= std::min<uint64_t>(1000000, options.max_objects),
+            "NWF count limit");
     return n;
   };
-  ObjectReader object_reader(bytes, out.option_values, version);
   auto data_value = [&]() {
     return read_data_value(
         r, [&] { return object_reader.string(r); },
         [&] { return Reference{0, object_reader.object(r)}; });
   };
-  size_t budget = 1000000;
+  size_t budget = std::min<uint64_t>(1000000, options.max_objects);
   std::function<void(CacheOption &, unsigned)> option_set =
       [&](CacheOption &set, unsigned depth) {
         require(depth < 128, "cache option nesting limit");
@@ -60,17 +62,21 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
     return p;
   };
   auto n = count();
-  out.references.reserve(n);
+  references.reserve(n);
   for (uint32_t i = 0; i < n; ++i) {
     NwfReference x;
     x.name = r.string();
     x.original_path = r.string();
-    x.partition = r.string();
-    x.source_guid = guid(r);
-    x.display_name = r.string();
+    if (version >= 217)
+      x.partition = r.string();
+    if (version >= 251) {
+      x.source_guid = guid(r);
+      x.display_name = r.string();
+    }
     x.plugin = r.string();
     x.flags = r.u32();
-    x.load_flags = r.u32();
+    if (version >= 244)
+      x.load_flags = r.u32();
     for (auto &v : x.affine)
       v = r.f64();
     x.linear_units = r.u32();
@@ -103,10 +109,20 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
       o.value = data_value();
       x.cache_options.push_back(std::move(o));
     }
-    x.north = vector3(r);
-    x.reference_guid = guid(r);
-    out.references.push_back(std::move(x));
+    if (version >= 109)
+      x.north = vector3(r);
+    if (version >= 246)
+      x.reference_guid = guid(r);
+    references.push_back(std::move(x));
   }
+}
+NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
+  require(version >= 251 && version <= 448,
+          "NWF scene-set version not yet validated");
+  Cursor r(bytes, "NWF scene set");
+  NwfData out;
+  ObjectReader objects(bytes, out.option_values, version);
+  read_source_references(r, out.references, objects, version);
   out.linear_units = r.u32();
   out.angular_units = r.u32();
   out.up = vector3(r);

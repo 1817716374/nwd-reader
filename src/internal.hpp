@@ -220,7 +220,11 @@ public:
   Id object(Cursor &);
   Id string(Cursor &);
 };
+void read_source_references(Cursor &, std::vector<NwfReference> &,
+                            ObjectReader &, uint32_t version,
+                            const Options &options = {});
 CurrentView read_current_view(Cursor &, uint32_t version);
+CurrentView read_viewpoint(Cursor &, uint32_t version);
 Camera read_camera(Cursor &, uint32_t version);
 void read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
                       uint32_t version);

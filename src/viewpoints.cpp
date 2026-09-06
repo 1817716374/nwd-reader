@@ -12,7 +12,7 @@ Camera detail::read_camera(Cursor &r, uint32_t version) {
     c.parameters[i] = r.read<double>();
   return c;
 }
-CurrentView detail::read_current_view(Cursor &r, uint32_t version) {
+CurrentView detail::read_viewpoint(Cursor &r, uint32_t version) {
   using namespace detail;
   require(version >= 46, "unsupported legacy viewpoint version");
   CurrentView v;
@@ -72,6 +72,10 @@ CurrentView detail::read_current_view(Cursor &r, uint32_t version) {
     integer(f);
     doubles(f, 3);
   }
+  return v;
+}
+CurrentView detail::read_current_view(Cursor &r, uint32_t version) {
+  auto v = read_viewpoint(r, version);
   read_clip_planes(r, v.clip_planes, v.clip_set, version);
   return v;
 }

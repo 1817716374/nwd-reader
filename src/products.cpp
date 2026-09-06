@@ -130,7 +130,7 @@ uint32_t timeliner(Cursor &r, SavedItem &s, uint32_t version,
     if (boolean(r))
       find_selection(r, v.find_selection.emplace(), options);
     if (version < 229 && boolean(r))
-      throw Unsupported("legacy TimeLiner task viewpoint");
+      v.legacy_view = read_viewpoint(r, version);
     comments(r, v.task_comments, options);
     for (auto n = count(r, options.max_objects); n; --n)
       v.user_data.push_back(r.string());
@@ -265,9 +265,172 @@ Redline redline(Cursor &r, uint32_t version, const Options &options) {
   }
   return v;
 }
+Assignee assignee(Cursor &r, uint32_t version) {
+  Assignee v;
+  v.name = r.string();
+  if (version >= 450 && !v.name.empty())
+    v.id = r.string();
+  return v;
+}
+ProductRule rule(Cursor &r, ObjectReader &objects, const Options &options) {
+  ProductRule v;
+  v.plugin = r.string();
+  v.enabled = boolean(r);
+  v.name = r.string();
+  for (auto n = count(r, options.max_objects); n; --n) {
+    auto id = r.read<int32_t>();
+    auto value = read_data_value(
+        r, [&] { return objects.string(r); },
+        [&] { return Reference{0, objects.object(r)}; });
+    v.parameters.emplace_back(id, std::move(value));
+  }
+  return v;
+}
+void issue_view(Cursor &r, SavedItem &s, uint32_t version,
+                const Options &options) {
+  s.view = read_viewpoint(r, version);
+  s.redline_count = count(r, options.max_objects);
+  for (uint32_t n = 0; n < s.redline_count; ++n)
+    s.redlines.push_back(redline(r, version, options));
+}
+uint32_t clash(Cursor &r, SavedItem &s, uint32_t version, ObjectReader &objects,
+               const Options &options, bool legacy = false) {
+  if (s.type == 50) {
+    auto &v = s.clash.emplace<ClashTest>();
+    v.type = r.u32();
+    if (v.type == 4)
+      v.custom_test = r.string();
+    else {
+      for (size_t i = 0; i < 2; ++i) {
+        find_selection(r, v.selections[i], options);
+        v.self_intersect[i] = boolean(r);
+      }
+      for (auto &x : v.primitive_flags)
+        x = r.u32();
+      v.tolerance = r.read<double>();
+      v.simulation_step = r.read<double>();
+      v.simulation_type = r.u32();
+      if (v.simulation_type > 2)
+        throw Unsupported("clash simulation type");
+      if (v.simulation_type == 2)
+        v.animation_path = string_pair(r);
+      for (auto n = count(r, options.max_objects); n; --n)
+        v.rules.push_back(rule(r, objects, options));
+      if (v.type == 1) {
+        v.relative_touch = boolean(r);
+        v.relative_tolerance = r.read<double>();
+        v.absolute_tolerance = r.read<double>();
+      }
+    }
+    v.status = r.u32();
+    if (version >= 304)
+      v.run_time = r.read<int64_t>();
+    if (version >= 424)
+      v.merge_composites = boolean(r);
+    if (version >= 450) {
+      v.priority = r.read<int32_t>();
+      v.assignee = assignee(r, version);
+    }
+    return count(r, options.max_objects);
+  }
+  if (s.type == 52) {
+    auto &v = s.clash.emplace<ClashResultGroup>();
+    issue_view(r, s, version, options);
+    if (legacy)
+      comments(r, s.comments, options);
+    if (version >= 450) {
+      v.test_name = r.string();
+      v.priority = r.read<int32_t>();
+    }
+    return count(r, options.max_objects);
+  }
+  auto &v = s.clash.emplace<ClashResult>();
+  v.test_name = r.string();
+  if (version >= 450)
+    v.priority = r.read<int32_t>();
+  v.distance = r.read<double>();
+  for (auto &x : v.path_links)
+    x = r.u32();
+  if (version >= 423)
+    for (auto &x : v.fallback_path_links.emplace())
+      x = r.u32();
+  for (auto &p : v.points)
+    for (auto &x : p)
+      x = r.read<double>();
+  for (auto &p : v.bounds)
+    for (auto &x : p)
+      x = r.read<double>();
+  v.created_time = r.read<int64_t>();
+  v.status = r.u32();
+  auto approval_status = legacy && version < 113 ? 2u : 3u;
+  if (version >= 450 || v.status == approval_status) {
+    v.approved_time = r.read<int64_t>();
+    v.approved_by = assignee(r, version);
+    if (version >= 450) {
+      v.resolved_time = r.read<int64_t>();
+      v.resolved_by = assignee(r, version);
+    }
+  }
+  issue_view(r, s, version, options);
+  if (legacy)
+    comments(r, s.comments, options);
+  auto &e = v.simulation;
+  e.type = r.u32();
+  if (e.type) {
+    if (e.type > 2)
+      throw Unsupported("clash result simulation event");
+    for (auto &x : e.times)
+      x = r.read<int64_t>();
+    e.time = r.read<double>();
+    e.name = r.string();
+    if (e.type == 1)
+      for (auto &x : e.task_names)
+        x = r.string();
+    else {
+      if (version >= 98)
+        e.item_paths[0] = string_pair(r);
+      e.item_paths[1] = string_pair(r);
+    }
+  }
+  if (version >= (legacy ? 228u : 303u))
+    v.assigned_to = assignee(r, version);
+  if (version >= 412)
+    v.run_test_type = r.u32();
+  return 0;
+}
+void legacy_clash_items(Cursor &r, SavedItems &out, Id parent, uint32_t n,
+                        uint32_t version, ObjectReader &objects,
+                        const Options &options, unsigned depth = 0) {
+  require(depth < 128, "legacy clash nesting limit");
+  for (uint32_t i = 0; i < n; ++i) {
+    require(out.items.size() < options.max_objects && out.items.size() < none,
+            "legacy clash item limit");
+    Id id = static_cast<Id>(out.items.size());
+    out.items.emplace_back();
+    auto &s = out.items.back();
+    s.offset = r.pos;
+    s.parent = parent;
+    if (parent == none)
+      s.type = 50;
+    else {
+      auto type = version >= 106 ? r.u32() : 0;
+      if (type > 1)
+        throw Unsupported("legacy clash issue type " + std::to_string(type));
+      s.type = type == 0 ? 51 : 52;
+    }
+    s.name = r.string();
+    auto children = clash(r, s, version, objects, options, true);
+    if (children)
+      legacy_clash_items(r, out, id, children, version, objects, options,
+                         depth + 1);
+    out.items[id].complete = true;
+    out.items[id].end_offset = r.pos;
+  }
+}
 void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
            std::span<const SchemaDefinition> schemas, const Options &options,
-           ObjectReader &objects, unsigned depth, uint32_t child_list = 0) {
+           ObjectReader &objects, unsigned depth, uint32_t child_list = 0,
+           Id fixed_type = none) {
   require(depth < 128, "saved item nesting limit");
   for (uint32_t k = 0; k < n; ++k) {
     require(out.items.size() < options.max_objects && out.items.size() < none,
@@ -278,7 +441,7 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
     s.parent = parent;
     s.child_list = child_list;
     s.offset = r.pos;
-    s.type = r.u32();
+    s.type = fixed_type == none ? r.u32() : fixed_type;
     s.name = r.string();
     comments(r, s.comments, options);
     if (version >= 246)
@@ -309,7 +472,13 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
       break;
     case 4:
     case 34:
+    case 53:
       children = count(r, options.max_objects);
+      break;
+    case 54:
+    case 55:
+      if (count(r, options.max_objects))
+        throw Unsupported("nonempty clash field/status root");
       break;
     case 32:
     case 33:
@@ -330,6 +499,11 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
     case 63:
     case 64:
       children = timeliner(r, s, version, objects, options);
+      break;
+    case 50:
+    case 51:
+    case 52:
+      children = clash(r, s, version, objects, options);
       break;
     case 5: {
       auto &selection = s.selection.emplace();
@@ -365,7 +539,10 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
   }
 }
 bool supported(std::string_view kind) {
-  return kind == "LcOpCurrentViewElement" || kind == "LcOpHomeViewElement" ||
+  return kind == "LcTlSimulateDurationElement" ||
+         kind == "LcTlSimulateTimeElement" ||
+         kind == "LcOpCurrentAnimationElement" || kind == "LcOpClashElement" ||
+         kind == "LcOpCurrentViewElement" || kind == "LcOpHomeViewElement" ||
          kind == "LcOpPlanViewElement" || kind == "LcOpSectionViewElement" ||
          kind == "LcOpBackgroundElement" || kind == "LcOpHeadlightElement" ||
          kind == "LcOpCullingElement" || kind == "LcOpSpeedElement" ||
@@ -380,6 +557,23 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
             std::span<const SchemaDefinition> schemas, const Options &options) {
   if (version < 82)
     throw Unsupported("product version below 82");
+  if (kind == "LcOpClashElement" &&
+      ((version < 431 && version != 103 && version != 112) || version > 450))
+    throw Unsupported("clash container version not yet validated");
+  if (kind == "LcOpClashElement" && version < 431) {
+    auto &v = b.value.emplace<SavedItems>();
+    ObjectReader objects(r.data, v.objects, version, options);
+    for (auto n = count(r, options.max_objects); n; --n) {
+      auto name = r.string();
+      auto value = r.read<int32_t>();
+      v.ignore_plugins.emplace_back(std::move(name), value);
+    }
+    read_source_references(r, v.source_references, objects, version, options);
+    v.legacy_clash = true;
+    v.root_count = count(r, options.max_objects);
+    legacy_clash_items(r, v, none, v.root_count, version, objects, options);
+    return;
+  }
   if (kind == "LcOpCurrentViewElement" || kind == "LcOpHomeViewElement" ||
       kind == "LcOpPlanViewElement" || kind == "LcOpSectionViewElement") {
     b.value = read_current_view(r, version);
@@ -396,6 +590,60 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
       v.paper_style = objects.object(r);
     if (version >= 252)
       v.asset = objects.object(r);
+  } else if (kind == "LcTlSimulateTimeElement" ||
+             kind == "LcTlSimulateDurationElement") {
+    std::optional<int32_t> module;
+    if (version < 241) {
+      module = r.read<int32_t>();
+      if (*module > 8)
+        throw Unsupported("TimeLiner simulation module version");
+    }
+    if (kind == "LcTlSimulateTimeElement") {
+      auto &v = b.value.emplace<TimeLinerClock>();
+      v.module_version = module;
+      v.time = version < 90 ? r.read<int32_t>() : r.read<int64_t>();
+    } else {
+      auto &v = b.value.emplace<TimeLinerSimulation>();
+      v.module_version = module;
+      int m = module.value_or(8);
+      auto time = [&](uint32_t boundary) {
+        v.times.push_back(version < boundary ? r.read<int32_t>()
+                                             : r.read<int64_t>());
+      };
+      auto integer = [&] { v.integers.push_back(r.read<int32_t>()); };
+      auto flag = [&] { v.booleans.push_back(boolean(r)); };
+      auto string = [&] { v.strings.push_back(r.string()); };
+      time(233);
+      integer();
+      time(233);
+      integer();
+      if (m >= 4) {
+        flag();
+        string();
+      }
+      if (m >= 6)
+        integer();
+      if (m >= 7) {
+        flag();
+        if (version >= 56)
+          integer();
+        if (version >= 85) {
+          string();
+          integer();
+          integer();
+          time(0);
+          time(0);
+          flag();
+          flag();
+        }
+        if (version >= 89)
+          flag();
+        if (version >= 95) {
+          integer();
+          v.animation_path = string_pair(r);
+        }
+      }
+    }
   } else if (kind == "LcTlGUISettingsElement") {
     auto &v = b.value.emplace<TimeLinerGui>();
     if (version < 241) {
@@ -440,9 +688,20 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
       v.second_counter = r.u64();
   } else {
     auto &v = b.value.emplace<SavedItems>();
-    v.root_count = count(r, options.max_objects);
+    v.root_count = kind == "LcOpCurrentAnimationElement"
+                       ? 1
+                       : count(r, options.max_objects);
     ObjectReader objects(r.data, v.objects, version, options);
-    items(r, v, none, v.root_count, version, schemas, options, objects, 0);
+    items(r, v, none, v.root_count, version, schemas, options, objects, 0, 0,
+          kind == "LcOpCurrentAnimationElement" ? 1 : none);
+    if (kind == "LcOpClashElement") {
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto name = r.string();
+        auto value = r.read<int32_t>();
+        v.ignore_plugins.emplace_back(std::move(name), value);
+      }
+      read_source_references(r, v.source_references, objects, version, options);
+    }
   }
 }
 } // namespace

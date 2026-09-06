@@ -369,6 +369,7 @@ struct TimeLinerTask {
   // enabled, start-date flag, end-date flag
   std::array<bool, 3> actual_flags{}, planned_flags{};
   std::optional<SavedSelection> implicit_selection, find_selection;
+  std::optional<CurrentView> legacy_view;  // viewpoint only; no clip set
   std::vector<SavedComment> task_comments; // separate serialized list
   std::vector<std::string> user_data;
   uint32_t animation_behavior = 0;
@@ -400,6 +401,60 @@ struct TimeLinerDataSource {
 using TimeLinerValue =
     std::variant<std::monostate, TimeLinerTask, TimeLinerTaskType,
                  TimeLinerAppearance, TimeLinerStatus, TimeLinerDataSource>;
+struct ProductRule {
+  std::string plugin, name;
+  bool enabled = false;
+  std::vector<std::pair<int32_t, Value>>
+      parameters; // values use SavedItems.objects
+};
+struct Assignee {
+  std::string name;
+  std::optional<std::string> id;
+};
+struct ClashTest {
+  uint32_t type = 0, status = 0, simulation_type = 0;
+  std::string custom_test;
+  std::array<SavedSelection, 2> selections;
+  std::array<bool, 2> self_intersect{};
+  std::array<uint32_t, 2> primitive_flags{};
+  double tolerance = 0, simulation_step = 0;
+  std::pair<std::string, std::string> animation_path;
+  std::vector<ProductRule> rules;
+  bool relative_touch = false;
+  double relative_tolerance = 0, absolute_tolerance = 0;
+  std::optional<int64_t> run_time;
+  std::optional<bool> merge_composites;
+  std::optional<int32_t> priority;
+  std::optional<Assignee> assignee;
+};
+struct ClashSimulationEvent {
+  uint32_t type = 0;
+  std::array<int64_t, 2> times{};
+  double time = 0;
+  std::string name;
+  std::array<std::string, 2> task_names;
+  std::array<std::pair<std::string, std::string>, 2> item_paths;
+};
+struct ClashResult {
+  std::string test_name;
+  std::optional<int32_t> priority;
+  double distance = 0;
+  std::array<uint32_t, 2> path_links{none, none};
+  std::optional<std::array<uint32_t, 2>> fallback_path_links;
+  std::array<std::array<double, 3>, 2> points{}, bounds{};
+  int64_t created_time = 0;
+  uint32_t status = 0;
+  std::optional<uint32_t> run_test_type;
+  std::optional<int64_t> approved_time, resolved_time;
+  std::optional<Assignee> approved_by, assigned_to, resolved_by;
+  ClashSimulationEvent simulation;
+};
+struct ClashResultGroup {
+  std::string test_name; // serialized from version 450
+  std::optional<int32_t> priority;
+};
+using ClashValue =
+    std::variant<std::monostate, ClashTest, ClashResult, ClashResultGroup>;
 struct SavedItem {
   uint32_t type = 0;
   Id parent = none;
@@ -416,6 +471,7 @@ struct SavedItem {
   bool infinite = false;
   std::optional<AnimationKeyFrame> keyframe;
   TimeLinerValue timeliner;
+  ClashValue clash;
   uint32_t child_list =
       0; // distinguishes the two serialized lists in animation folders
   std::optional<SavedSelection> selection;
@@ -423,7 +479,39 @@ struct SavedItem {
   std::vector<Id> element_records; // SavedItems.objects, type 89
   std::vector<Redline> redlines;
 };
+struct CachedReference {
+  std::string name, path;
+  uint64_t timestamp = 0, size = 0;
+};
+struct CacheOption {
+  std::string name;
+  Value value; // strings and graph=0 object references: NwfData.option_values
+               // or SavedItems.objects
+  uint32_t flags = 0; // nested option-set flags when value.tag == 0
+  std::vector<CacheOption> children;
+};
+struct CachePlugin {
+  std::string name;
+  int32_t version = 0;
+  bool has_options = false;
+  CacheOption options; // root option set; unnamed
+};
+struct NwfReference {
+  std::string name, original_path, partition, display_name, plugin, extra;
+  std::array<uint8_t, 16> source_guid{}, reference_guid{};
+  uint32_t flags = 0, load_flags = 0, linear_units = 0, angular_units = 0,
+           orientation_flag = 0, extra_enum = 0;
+  std::array<double, 12> affine{}; // native row-major 3x3, then translation
+  std::array<double, 3> up{}, front{}, north{};
+  std::vector<CachedReference> cached_files;
+  std::vector<CachePlugin> cache_plugins; // primary plugin first
+  std::vector<CacheOption> cache_options;
+};
 struct SavedItems {
+  bool legacy_clash =
+      false; // types mapped to 50/51/52; result status retains old enum
+  std::vector<std::pair<std::string, int32_t>> ignore_plugins;
+  std::vector<NwfReference> source_references; // cache values use objects below
   uint32_t root_count = 0;
   std::vector<SavedItem> items; // preorder; parent is an index in this vector
   ObjectGraph objects; // shared name/variant objects across the entire block
@@ -434,10 +522,26 @@ struct TimeLinerGui {
   std::optional<int32_t> legacy_value;
   std::vector<std::array<int32_t, 2>> legacy_pairs;
 };
+struct TimeLinerClock {
+  std::optional<int32_t> module_version;
+  int64_t time = 0;
+};
+struct TimeLinerSimulation {
+  std::optional<int32_t> module_version;
+  // Each array retains fields of its type in serialized order. Enum meanings
+  // and time units are not normalized; see the format version and module
+  // version.
+  std::vector<int64_t> times;
+  std::vector<int32_t> integers;
+  std::vector<bool> booleans;
+  std::vector<std::string> strings;
+  std::optional<std::pair<std::string, std::string>> animation_path;
+};
 enum class ProductStatus { not_handled, decoded, partial, failed };
 using ProductValue =
     std::variant<std::monostate, CurrentView, Background, Headlight, Culling,
-                 NavigationSpeed, CommentIds, SavedItems, TimeLinerGui>;
+                 NavigationSpeed, CommentIds, SavedItems, TimeLinerGui,
+                 TimeLinerClock, TimeLinerSimulation>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;
@@ -471,33 +575,6 @@ struct Scene {
   std::shared_ptr<const ProductData> products;
   Timing timing;
   std::vector<std::string> warnings;
-};
-struct CachedReference {
-  std::string name, path;
-  uint64_t timestamp = 0, size = 0;
-};
-struct CacheOption {
-  std::string name;
-  Value value; // strings and graph=0 object references: NwfData.option_values
-  uint32_t flags = 0; // nested option-set flags when value.tag == 0
-  std::vector<CacheOption> children;
-};
-struct CachePlugin {
-  std::string name;
-  int32_t version = 0;
-  bool has_options = false;
-  CacheOption options; // root option set; unnamed
-};
-struct NwfReference {
-  std::string name, original_path, partition, display_name, plugin, extra;
-  std::array<uint8_t, 16> source_guid{}, reference_guid{};
-  uint32_t flags = 0, load_flags = 0, linear_units = 0, angular_units = 0,
-           orientation_flag = 0, extra_enum = 0;
-  std::array<double, 12> affine{}; // native row-major 3x3, then translation
-  std::array<double, 3> up{}, front{}, north{};
-  std::vector<CachedReference> cached_files;
-  std::vector<CachePlugin> cache_plugins; // primary plugin first
-  std::vector<CacheOption> cache_options;
 };
 struct NwfPath {
   Id parent = none;
