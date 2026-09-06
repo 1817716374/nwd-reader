@@ -22,10 +22,42 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
     require(n < 1000000, "NWF count limit");
     return n;
   };
+  ObjectReader object_reader(bytes, out.option_values, version);
+  auto data_value = [&]() {
+    return read_data_value(
+        r, [&] { return object_reader.string(r); },
+        [&] { return Reference{0, object_reader.object(r)}; });
+  };
+  size_t budget = 1000000;
+  std::function<void(CacheOption &, unsigned)> option_set =
+      [&](CacheOption &set, unsigned depth) {
+        require(depth < 128, "cache option nesting limit");
+        set.flags = r.u32();
+        if (set.flags & 8)
+          return;
+        auto n = count();
+        require(n <= budget, "cache option count limit");
+        budget -= n;
+        set.children.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+          CacheOption o;
+          o.name = r.string();
+          o.value = data_value();
+          if (o.value.tag == 0)
+            option_set(o, depth + 1);
+          set.children.push_back(std::move(o));
+        }
+      };
   auto plugin = [&]() {
-    r.string();
-    r.u32();
-    require(r.u32() == 0, "NWF cache option set unsupported");
+    CachePlugin p;
+    p.name = r.string();
+    p.version = r.read<int32_t>();
+    auto has = r.u32();
+    require(has <= 1, "invalid cache option boolean");
+    p.has_options = has != 0;
+    if (p.has_options)
+      option_set(p.options, 0);
+    return p;
   };
   auto n = count();
   out.references.reserve(n);
@@ -48,9 +80,9 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
     x.front = vector3(r);
     x.extra_enum = r.u32();
     x.extra = r.string();
-    plugin();
+    x.cache_plugins.push_back(plugin());
     for (auto c = count(); c; --c)
-      plugin();
+      x.cache_plugins.push_back(plugin());
     for (auto c = count(); c; --c) {
       CachedReference f;
       f.name = r.string();
@@ -65,7 +97,12 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
       }
       x.cached_files.push_back(std::move(f));
     }
-    require(count() == 0, "NWF cache options unsupported");
+    for (auto c = count(); c; --c) {
+      CacheOption o;
+      o.name = r.string();
+      o.value = data_value();
+      x.cache_options.push_back(std::move(o));
+    }
     x.north = vector3(r);
     x.reference_guid = guid(r);
     out.references.push_back(std::move(x));
@@ -137,6 +174,29 @@ void decode_nwf_path_map(NwfData &out, std::span<const uint8_t> bytes) {
   }
   r.exact();
 }
+void decode_nwf_transforms(NwfData &out, std::span<const uint8_t> bytes) {
+  Cursor r(bytes, "NWF fragment transform overrides");
+  auto count = r.u32();
+  require(count <= 1000000, "NWF transform override count limit");
+  std::vector<NwfTransformOverride> records;
+  records.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    NwfTransformOverride t;
+    t.path = r.u32();
+    t.flags = r.u32();
+    unsigned size = !t.flags           ? 0
+                    : (t.flags & 32)   ? 16
+                    : !(t.flags & ~7u) ? 9
+                    : t.flags == 16    ? 3
+                                       : 12;
+    t.values.reserve(size);
+    for (unsigned j = 0; j < size; ++j)
+      t.values.push_back(r.f64());
+    records.push_back(std::move(t));
+  }
+  r.exact();
+  out.transform_overrides = std::move(records);
+}
 NwfData Document::read_nwf() const {
   NwfData out;
   bool found = false;
@@ -153,8 +213,9 @@ NwfData Document::read_nwf() const {
       decode_nwf_path_map(out, read_chunk(i));
     else if (name.ends_with("LcOpShadFragMaterialElement"))
       read_nwf_appearances(out, read_chunk(i), version(), options());
-    else if (name.ends_with("LcOpShadFragTransformElement2") ||
-             name.ends_with("LcOpTextureSpaceElement")) {
+    else if (name.ends_with("LcOpShadFragTransformElement2"))
+      decode_nwf_transforms(out, read_chunk(i));
+    else if (name.ends_with("LcOpTextureSpaceElement")) {
       auto b = read_chunk(i);
       Cursor r(b, "NWF transform overrides");
       if (r.u32() != 0)
@@ -183,6 +244,9 @@ NwfData Document::read_nwf() const {
     for (auto p : a.paths)
       require(p == none || p < out.paths.size(),
               "appearance override outside NWF path map");
+  for (const auto &t : out.transform_overrides)
+    require(t.path == 0 || t.path < out.paths.size(),
+            "transform override outside NWF path map");
   return out;
 }
 } // namespace nwd

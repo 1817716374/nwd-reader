@@ -82,6 +82,48 @@ public:
         fail("nonzero record tail");
   }
 };
+template <class StringReader, class ReferenceReader>
+Value read_data_value(Cursor &r, StringReader string_reader,
+                      ReferenceReader reference_reader) {
+  Value v;
+  v.tag = r.u32();
+  switch (v.tag) {
+  case 0:
+    break;
+  case 1:
+  case 6:
+  case 7:
+  case 10:
+  case 11:
+    v.number[0] = r.read<double>();
+    break;
+  case 2:
+  case 3:
+    v.integer = r.read<int32_t>();
+    break;
+  case 4:
+  case 9:
+    v.string = string_reader();
+    break;
+  case 5:
+    v.integer = static_cast<int64_t>(r.u64());
+    break;
+  case 8:
+    v.reference = reference_reader();
+    break;
+  case 12:
+    for (auto &x : v.number)
+      x = r.read<double>();
+    break;
+  case 13:
+    v.number[0] = r.read<double>();
+    v.number[1] = r.read<double>();
+    break;
+  default:
+    r.fail("unsupported property variant " + std::to_string(v.tag));
+  }
+  return v;
+}
 inline EmbeddedAssetFile read_embedded_asset(Cursor &r, std::string name,
                                              Id owner, uint32_t ordinal) {
   EmbeddedAssetFile file;
@@ -147,7 +189,22 @@ void read_geometry(Model &, std::span<const uint8_t>, const Chunk &,
                    const Options &);
 void read_instances(Model &, std::span<const uint8_t>, uint32_t,
                     const Options &);
-void read_nwf_appearances(NwfData&,std::span<const uint8_t>,uint32_t,const Options&);
+void read_nwf_appearances(NwfData &, std::span<const uint8_t>, uint32_t,
+                          const Options &);
+void decode_external_payload(ExternalGeometry &,
+                             std::span<const SchemaDefinition>, uint32_t);
+class ObjectReader {
+  struct Impl;
+  std::unique_ptr<Impl> impl;
+
+public:
+  ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t);
+  ~ObjectReader();
+  Id object(Cursor &);
+  Id string(Cursor &);
+};
+void read_partition(Model &, std::span<const uint8_t>, uint32_t,
+                    const Options &);
 void read_metadata(Model &, std::span<const uint8_t>,
                    const std::vector<Chunk> &, uint32_t, const Options &,
                    std::vector<bool> &);

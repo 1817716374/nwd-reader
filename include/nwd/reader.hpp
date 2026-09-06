@@ -107,11 +107,38 @@ struct AttributeArray {
   std::vector<uint8_t> packed_palette;
   std::vector<int32_t> indices;
 };
+struct SchemaValue {
+  uint32_t type =
+      20; // 0 double, 1 GUID, 2 int32, 3 bool, 4 string, 20 struct, 21 vector
+  double number = 0;
+  int32_t integer = 0;
+  std::string text;
+  std::array<uint8_t, 16> guid{};
+  std::vector<SchemaValue> children; // ordered fields or vector elements
+};
+struct SchemaField {
+  uint32_t type = 20, qualifier = 0;
+  std::string name, display_name, qualifier_name;
+  std::vector<std::string> concepts;
+  SchemaValue default_value;
+  std::vector<SchemaField> children;
+};
+struct SchemaDefinition {
+  std::vector<std::string> names;
+  SchemaField root;
+};
+std::vector<SchemaDefinition> decode_schemas(std::span<const uint8_t>,
+                                             uint32_t version);
 struct ExternalGeometry {
   std::string loader, format, source_path;
   uint64_t payload_record_offset = 0;
-  std::vector<uint8_t>
-      unparsed_payload; // schema-dependent fields retained verbatim
+  std::vector<uint8_t> unparsed_payload; // legacy raw payload, retained even
+                                         // when payload_decoded
+  bool payload_decoded = false;
+  Id schema = none; // index into Scene.schemas
+  SchemaValue properties;
+  uint32_t flags = 0, flags2 = 0, geometry_kind = 0;
+  std::array<float, 6> bounds{};
 };
 struct Geometry {
   uint32_t type = 0, flags = 0;
@@ -190,6 +217,7 @@ struct Instance {
 };
 struct Model {
   std::string name;
+  std::vector<Id> schema_references; // Scene.schemas indices; none for null
   std::vector<Geometry> geometries;
   std::vector<GeometryReference> geometry_references;
   std::vector<Transform> transforms;
@@ -219,7 +247,7 @@ struct Camera {
   // Aspect, height/angle, near, far, then version >=425 lens fields.
   std::array<double, 6> parameters{};
 };
-// Optional view fields retain their original serialization order.
+// Secondary fields retain their source serialization order.
 struct ViewFields {
   std::vector<uint32_t> integers;
   std::vector<double> numbers;
@@ -244,6 +272,7 @@ struct Scene {
   std::vector<bool>
       parsed_chunks; // one per directory entry; false means opaque/unparsed
   std::vector<Model> models;
+  std::vector<SchemaDefinition> schemas;
   std::vector<CurrentView> current_views;
   std::vector<EmbeddedResource> resources;
   Timing timing;
@@ -253,6 +282,18 @@ struct CachedReference {
   std::string name, path;
   uint64_t timestamp = 0, size = 0;
 };
+struct CacheOption {
+  std::string name;
+  Value value; // strings and graph=0 object references: NwfData.option_values
+  uint32_t flags = 0; // nested option-set flags when value.tag == 0
+  std::vector<CacheOption> children;
+};
+struct CachePlugin {
+  std::string name;
+  int32_t version = 0;
+  bool has_options = false;
+  CacheOption options; // root option set; unnamed
+};
 struct NwfReference {
   std::string name, original_path, partition, display_name, plugin, extra;
   std::array<uint8_t, 16> source_guid{}, reference_guid{};
@@ -261,6 +302,8 @@ struct NwfReference {
   std::array<double, 12> affine{}; // native row-major 3x3, then translation
   std::array<double, 3> up{}, front{}, north{};
   std::vector<CachedReference> cached_files;
+  std::vector<CachePlugin> cache_plugins; // primary plugin first
+  std::vector<CacheOption> cache_options;
 };
 struct NwfPath {
   Id parent = none;
@@ -276,7 +319,16 @@ struct AppearanceSelection {
   Id appearance = none;
   std::vector<Id> paths; // NWF path-map IDs, not model path IDs
 };
+struct NwfTransformOverride {
+  Id path = none; // NWF path-map ID
+  uint32_t flags = 0;
+  // Native row-vector order: identity=0 values, linear=9, translation=3,
+  // affine=12, projective=16. Coordinate-space application is not yet
+  // supported.
+  std::vector<double> values;
+};
 struct NwfData {
+  ObjectGraph option_values;
   std::vector<NwfReference> references;
   uint32_t linear_units = 0, angular_units = 0, path_map_kind = 0,
            path_map_flags = 0;
@@ -285,6 +337,7 @@ struct NwfData {
       paths;               // 0 null, 1 implicit root, 2+ serialized selectors
   Model appearance_values; // shared appearances/materials/assets only
   std::vector<AppearanceSelection> appearance_overrides;
+  std::vector<NwfTransformOverride> transform_overrides;
   Id global_asset = none;
   std::string saved_filename, xref_json;
   std::vector<std::pair<std::string, std::string>> path_remaps;
@@ -292,6 +345,7 @@ struct NwfData {
 };
 NwfData decode_nwf_scene_set(std::span<const uint8_t>, uint32_t version);
 void decode_nwf_path_map(NwfData &, std::span<const uint8_t>);
+void decode_nwf_transforms(NwfData &, std::span<const uint8_t>);
 class Document {
   struct Impl;
   std::shared_ptr<Impl> impl_;
@@ -326,6 +380,7 @@ struct ProjectNode {
   std::array<double, 16> to_parent{1, 0, 0, 0, 0, 1, 0, 0,
                                    0, 0, 1, 0, 0, 0, 0, 1}; // meters to meters
   bool placement_supported = true;
+  bool orientation_changed = false; // source/reference orientation hint differs
 };
 struct ProjectAppearance {
   Id source = none, model = none,
@@ -352,6 +407,11 @@ struct Project {
   bool complete = true;
 };
 Project load_project(const std::filesystem::path &, ProjectOptions = {});
+std::array<double, 16> model_base_matrix(const Model &);
+// Replaces the stored base transform. Throws for unvalidated unit overrides.
+std::array<double, 16> reference_placement_matrix(const Model &,
+                                                  const NwfReference &,
+                                                  uint32_t parent_units);
 ProjectAppearance effective_appearance(const Project &, Id node, Id instance);
 const Model &appearance_arena(const Project &, ProjectAppearance);
 std::array<double, 16> project_world_matrix(const Project &, Id node,

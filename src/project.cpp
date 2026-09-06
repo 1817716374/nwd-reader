@@ -15,6 +15,62 @@ Matrix multiply(const Matrix &a, const Matrix &b) {
         c[col * 4 + row] += a[k * 4 + row] * b[col * 4 + k];
   return c;
 }
+Matrix affine(std::span<const double> a) {
+  require(a.size() == 12, "invalid base affine size");
+  auto out = identity();
+  // Native affine storage uses row vectors; public matrices use column vectors.
+  for (unsigned col = 0; col < 3; ++col)
+    for (unsigned row = 0; row < 3; ++row)
+      out[col * 4 + row] = a[col * 3 + row];
+  for (unsigned i = 0; i < 3; ++i)
+    out[12 + i] = a[9 + i];
+  for (double v : out)
+    require(std::isfinite(v), "nonfinite base affine");
+  return out;
+}
+Matrix inverse(const Matrix &m) {
+  double a[4][8]{};
+  for (unsigned row = 0; row < 4; ++row) {
+    for (unsigned col = 0; col < 4; ++col)
+      a[row][col] = m[col * 4 + row];
+    a[row][4 + row] = 1;
+  }
+  for (unsigned col = 0; col < 4; ++col) {
+    unsigned pivot = col;
+    for (unsigned row = col + 1; row < 4; ++row)
+      if (std::abs(a[row][col]) > std::abs(a[pivot][col]))
+        pivot = row;
+    require(a[pivot][col] != 0 && std::isfinite(a[pivot][col]),
+            "singular source base transform");
+    for (unsigned j = 0; j < 8; ++j)
+      std::swap(a[pivot][j], a[col][j]);
+    double scale = a[col][col];
+    for (double &v : a[col])
+      v /= scale;
+    for (unsigned row = 0; row < 4; ++row)
+      if (row != col) {
+        double factor = a[row][col];
+        for (unsigned j = 0; j < 8; ++j)
+          a[row][j] -= factor * a[col][j];
+      }
+  }
+  Matrix out{};
+  for (unsigned col = 0; col < 4; ++col)
+    for (unsigned row = 0; row < 4; ++row) {
+      out[col * 4 + row] = a[row][4 + col];
+      require(std::isfinite(out[col * 4 + row]),
+              "nonfinite inverse base transform");
+    }
+  return out;
+}
+const Object *base_attribute(const Model &m) {
+  for (auto ref : path_object(m, 0).attributes) {
+    const auto &o = resolve_object(m, ref);
+    if (o.type >= 38 && o.type <= 41)
+      return &o;
+  }
+  return nullptr;
+}
 std::string utf8(const std::filesystem::path &p) {
   auto u = p.u8string();
   return {reinterpret_cast<const char *>(u.data()), u.size()};
@@ -191,6 +247,14 @@ class Loader {
     for (size_t i = owner + 1; i < end; ++i)
       if (out.nodes[i].model != none)
         leaves.push_back(static_cast<Id>(i));
+    if (std::any_of(data->transform_overrides.begin(),
+                    data->transform_overrides.end(),
+                    [](const auto &t) { return t.path != 0; })) {
+      missing("NWF object transform overrides decoded but coordinate-space "
+              "application unsupported");
+      for (Id leaf : leaves)
+        out.nodes[leaf].placement_supported = false;
+    }
     if (data->appearance_overrides.empty())
       return;
     using Location = std::pair<Id, Id>;
@@ -320,13 +384,6 @@ class Loader {
       n.reference = static_cast<Id>(i);
       n.name = r.display_name.empty() ? r.name : r.display_name;
       n.requested_path = r.original_path;
-      // Keep reference placement separate from shared source geometry.
-      n.to_parent = identity();
-      for (unsigned row = 0; row < 3; ++row)
-        for (unsigned col = 0; col < 3; ++col)
-          n.to_parent[col * 4 + row] = r.affine[row * 3 + col];
-      for (unsigned row = 0; row < 3; ++row)
-        n.to_parent[12 + row] = r.affine[9 + row] * unit(nwf->linear_units);
       auto resolved = resolve(file, r.original_path, nwf->path_remaps);
       auto child = static_cast<Id>(out.nodes.size());
       n.status = resolved.status;
@@ -345,23 +402,38 @@ class Loader {
                                    utf8(resolved.file));
         }
       visit(resolved.file, child, depth + 1, r.partition);
-      bool identity_ref = r.affine == std::array<double, 12>{1, 0, 0, 0, 1, 0,
-                                                             0, 0, 1, 0, 0, 0};
-      bool units_ok = true;
       auto csid = out.nodes[child].source;
       if (csid != none) {
         const auto &cs = out.sources[csid];
-        if (cs.scene)
-          for (const auto &m : cs.scene->models)
-            if ((r.partition.empty() || r.partition == m.name) &&
-                m.linear_units != static_cast<int>(r.linear_units))
-              units_ok = false;
-      }
-      if (!identity_ref || r.orientation_flag || !units_ok) {
-        out.nodes[child].placement_supported = false;
-        missing("NWF reference placement requires unvalidated "
-                "base-transform/unit override: " +
-                r.name);
+        try {
+          if (cs.scene) {
+            Id leaf = none;
+            for (Id j = child + 1; j < out.nodes.size(); ++j)
+              if (out.nodes[j].parent == child && out.nodes[j].model != none) {
+                require(leaf == none,
+                        "aggregate NWF reference placement not supported");
+                leaf = j;
+              }
+            require(leaf != none, "reference has no model partition");
+            const auto &m = cs.scene->models[out.nodes[leaf].model];
+            out.nodes[leaf].to_parent =
+                reference_placement_matrix(m, r, nwf->linear_units);
+            auto base = base_attribute(m);
+            bool old_orientation = base && base->type == 39 &&
+                                   !base->integers.empty() &&
+                                   base->integers[0] != 0;
+            out.nodes[leaf].orientation_changed =
+                old_orientation != (r.orientation_flag != 0);
+          } else {
+            require(cs.nwf && affine(r.affine) == identity() &&
+                        r.linear_units == cs.nwf->linear_units &&
+                        r.orientation_flag == 0,
+                    "nested NWF placement override not supported");
+          }
+        } catch (const Error &e) {
+          out.nodes[child].placement_supported = false;
+          missing(r.name + ": " + e.what());
+        }
       }
     }
     bind(node, out.nodes.size());
@@ -539,6 +611,42 @@ public:
 Project load_project(const std::filesystem::path &path,
                      ProjectOptions options) {
   return Loader(std::move(options)).run(path);
+}
+Matrix model_base_matrix(const Model &m) {
+  auto o = base_attribute(m);
+  if (!o || o->type == 38)
+    return identity();
+  if (o->type == 39)
+    return affine(o->numbers);
+  detail::require(o->numbers.size() == (o->type == 40 ? 3u : 7u),
+                  "invalid source base transform");
+  Model temporary;
+  Transform t;
+  t.type = o->type == 40 ? 14 : 15;
+  std::copy(o->numbers.begin(), o->numbers.end(), t.values.begin());
+  for (double v : o->numbers)
+    detail::require(std::isfinite(v), "nonfinite source base transform");
+  temporary.transforms.push_back(t);
+  Instance i;
+  i.transform = 0;
+  return world_matrix(temporary, i);
+}
+Matrix reference_placement_matrix(const Model &m, const NwfReference &r,
+                                  uint32_t parent_units) {
+  detail::require(m.linear_units >= 0 &&
+                      r.linear_units == static_cast<uint32_t>(m.linear_units),
+                  "NWF source unit override not supported");
+  detail::require(r.orientation_flag <= 1, "invalid NWF orientation hint");
+  auto old = model_base_matrix(m), next = affine(r.affine);
+  // An unchanged base needs no conversion even with a different parent unit.
+  if (old == next)
+    return identity();
+  detail::require(parent_units == r.linear_units,
+                  "NWF mixed-unit placement override not supported");
+  auto delta = multiply(next, inverse(old));
+  for (unsigned i = 0; i < 3; ++i)
+    delta[12 + i] *= unit(r.linear_units);
+  return delta;
 }
 const Model &appearance_arena(const Project &p, ProjectAppearance a) {
   const auto &s = p.sources.at(a.source);

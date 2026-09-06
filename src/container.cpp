@@ -273,6 +273,14 @@ Scene Document::read_scene() const {
   out.chunks = impl_->chunks;
   out.parsed_chunks.resize(out.chunks.size(), false);
   out.timing.container_ms = impl_->container_ms;
+  bool schemas_seen = false;
+  for (size_t i = 0; i < out.chunks.size(); ++i)
+    if (out.chunks[i].name == "LcOpCommonSchemas") {
+      require(!schemas_seen, "duplicate common schema table");
+      schemas_seen = true;
+      out.schemas = decode_schemas(read_chunk(i), version());
+      out.parsed_chunks[i] = true;
+    }
   for (auto &c : out.chunks)
     if (c.name == "LcOpNwdGeometry" || c.name.ends_with("\\LcOpNwdGeometry")) {
       Model m;
@@ -282,15 +290,19 @@ Scene Document::read_scene() const {
       auto phase = std::chrono::steady_clock::now();
       read_geometry(m, impl_->file, c, impl_->options);
       size_t external_count = 0;
-      for (const auto &g : m.geometries)
-        if (g.external)
+      for (auto &g : m.geometries)
+        if (g.external) {
           ++external_count;
+          auto e = std::make_shared<ExternalGeometry>(*g.external);
+          decode_external_payload(*e, out.schemas, version());
+          g.external = std::move(e);
+        }
       if (external_count)
         out.warnings.push_back(
             m.name + ": " + std::to_string(external_count) +
             " external geometry descriptors retained; point/mesh coordinates "
-            "not decoded from external descriptors; schema payload remains "
-            "unparsed");
+            "not decoded from external descriptors; schema properties and "
+            "bounds decoded");
       out.parsed_chunks[static_cast<size_t>(&c - out.chunks.data())] = true;
       size_t invalid_uv = 0;
       for (const auto &g : m.geometries)
@@ -321,6 +333,9 @@ Scene Document::read_scene() const {
         phase = std::chrono::steady_clock::now();
         read_metadata(m, impl_->file, out.chunks, version(), impl_->options,
                       out.parsed_chunks);
+        for (Id schema : m.schema_references)
+          require(schema == none || schema < out.schemas.size(),
+                  "partition schema reference outside global table");
         out.timing.metadata_ms += elapsed(phase);
         for (auto &instance : m.instances)
           require(instance.path < m.paths.size(),

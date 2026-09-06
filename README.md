@@ -9,6 +9,7 @@
 - **几何**：读取三角带、折线、点、文字及圆、圆柱等参数化几何，保留坐标索引、法线、颜色和 UV。
 - **实例与变换**：共享几何通过实例引用，保留变换、单位和对象关联，避免按实例复制顶点。
 - **属性与结构树**：读取分区、模型层级、属性分组及有类型的属性值，提供子节点和实例查询索引。
+- **共享字段定义**：读取 common schema、分区引用及外部几何描述中的有类型字段、GUID和包围盒。
 - **材质**：读取环境色、漫反射、高光、自发光、光泽度和透明度，以及资产节点、参数和贴图连接。
 - **纹理**：保留内嵌文件的原始字节，支持外部纹理查找、路径重映射和可用状态查询。
 - **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点和材质覆盖。
@@ -105,6 +106,8 @@ cmake --build build-examples --config Release --parallel
 | `world_matrix()` / `project_world_matrix()` | 获取源单位矩阵或项目米制矩阵 |
 | `effective_appearance()` / `appearance_arena()` | 定位应用项目覆盖后的实例外观和所属材质存储区 |
 | `describe_asset()` | 获取材质资产节点、参数、连接和纹理 URI |
+| `Scene.schemas` / `Model.schema_references` | 共享字段定义及分区引用 |
+| `NwfData.option_values` / `NwfReference.cache_plugins` | 缓存插件配置、嵌套选项及枚举对象 |
 | `Project.textures` | 获取纹理归属、路径、状态和共享原始字节 |
 
 ### 几何、属性与对象身份
@@ -117,9 +120,15 @@ cmake --build build-examples --config Release --parallel
 
 对象引用和字符串视图依赖所属模型的生命周期；查询索引依赖原模型，模型修改后需要重建索引。
 
+`Scene.schemas` 保存字段名、显示名、类型、默认值和嵌套结构。`ExternalGeometry.schema` 与 `Model.schema_references` 使用这个表的零基 ID，`none` 表示空引用。外部描述的 `properties.children` 与定义中的字段顺序对应；`payload_decoded` 表示描述载荷已经读取，外部点坐标是否可用需要另外判断。GUID 保留原始16字节。
+
+NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字符串 ID 和对象引用属于 `NwfData.option_values`，枚举对象继续共享；这些设置仅供调用方读取。
+
 ### 单位、材质与纹理
 
 矩阵使用列主序。`world_matrix()` 保持源单位，`model.meters_per_unit` 提供到米的比例。`project_world_matrix()` 将受支持的引用放置和单位换算组合为米制矩阵；遇到不支持的引用放置会抛出异常。
+
+同单位 NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放和剪切；源几何仍共享。`model_base_matrix()` 返回源基准矩阵，`reference_placement_matrix()` 返回引用所需的米制修正矩阵。方向提示的变化单独保存在节点的 `orientation_changed` 中。
 
 材质通过 `Material` 的 `ambient()`、`diffuse()`、`specular()`、`emissive()`、`shininess()` 和 `transparency()` 访问。资产图保留原始参数类型、连接和 URI，完整 JSON 仍在 `Asset.json` 中，便于调用方处理扩展字段。
 
@@ -131,13 +140,16 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 以下内容仍存在限制：
 
-- 外部 RCS 等几何返回描述和源路径，尚不提供点云坐标。
-- NWF 的额外引用变换、单位重定义、非空片段变换、纹理空间覆盖和部分材质覆盖合成尚未完整支持。
+- 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
+- NWF 的混合单位变换、源单位重定义、多分区聚合放置、纹理空间覆盖和部分材质覆盖合成尚未完整支持。
+- 对象级变换覆盖通过 `NwfData.transform_overrides` 返回路径、标志和原始矩阵载荷；其坐标空间组合尚未应用，项目会报告不完整并拒绝提供对应世界矩阵。
 - 某些复杂联合树需要额外的 GUID 或校验值才能消歧；未知 schema、对象类型或资产变体可能无法解析。
 
 `Project.complete` 表示本次加载未检测到缺失或不支持项，不代表所有格式变体均受支持。调用方应同时检查 `warnings`、引用节点状态、`placement_supported` 和纹理状态。设置 `load_textures = false` 时，完整状态不包含纹理检查。
 
 缺失或歧义引用会保留诊断，不随意选择同名文件；未知布局和越界数据会报错。部分解码接口可能抛出 `nwd::Error`，文件及索引访问也可能产生标准 C++ 异常，调用方应设置异常边界。
+
+引用 RVT、DWG 等原始设计文件时，需要提供已导出的 NWC，并通过路径映射关联；本库不执行原生格式导出器。
 
 库负责提取模型信息。曲面离散化、图片解码、着色器和渲染由调用方实现。
 

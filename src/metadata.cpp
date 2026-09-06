@@ -145,44 +145,7 @@ class GraphReader {
     return p;
   }
   Value value() {
-    Value v;
-    v.tag = r.u32();
-    switch (v.tag) {
-    case 0:
-      break;
-    case 1:
-    case 6:
-    case 7:
-    case 10:
-    case 11:
-      v.number[0] = r.read<double>();
-      break;
-    case 2:
-    case 3:
-      v.integer = r.read<int32_t>();
-      break;
-    case 4:
-    case 9:
-      v.string = str();
-      break;
-    case 5:
-      v.integer = static_cast<int64_t>(r.u64());
-      break;
-    case 8:
-      v.reference = ref();
-      break;
-    case 12:
-      for (auto &x : v.number)
-        x = r.read<double>();
-      break;
-    case 13:
-      v.number[0] = r.read<double>();
-      v.number[1] = r.read<double>();
-      break;
-    default:
-      r.fail("unsupported property variant " + std::to_string(v.tag));
-    }
-    return v;
+    return read_data_value(r, [&] { return str(); }, [&] { return ref(); });
   }
 
 public:
@@ -266,9 +229,10 @@ public:
           auto has = r.u32();
           o.integers.push_back(has);
           if (has) {
-            auto schemas = r.u32();
-            require(schemas == 0, "nonempty partition schemas not supported");
+            auto schemas = count();
             o.integers.push_back(schemas);
+            for (uint32_t j = 0; j < schemas; ++j)
+              o.integers.push_back(r.u32());
           }
         }
       }
@@ -301,6 +265,7 @@ public:
       doubles(o, 12);
       o.integers.push_back(r.u32());
       break;
+    case 38:
     case 68:
     case 70:
       common(o);
@@ -444,6 +409,12 @@ public:
     graph.roots.push_back(object());
     r.exact();
   }
+  Id external(Cursor &input, bool is_string) {
+    r.pos = input.pos;
+    auto id = is_string ? str() : object();
+    input.pos = r.pos;
+    return id;
+  }
   std::vector<uint32_t> hierarchy() {
     auto n = count();
     std::vector<uint32_t> pages(n);
@@ -474,38 +445,22 @@ public:
     properties(n);
   }
 };
-void read_metadata(Model &model, std::span<const uint8_t> file,
-                   const std::vector<Chunk> &chunks, uint32_t version,
-                   const Options &options, std::vector<bool> &parsed) {
-  auto find = [&](const std::string &suffix) -> const Chunk & {
-    for (auto &c : chunks)
-      if (c.name == (model.name.empty() ? "" : model.name + "\\") + suffix) {
-        parsed[static_cast<size_t>(&c - chunks.data())] = true;
-        return c;
-      }
-    throw Error("missing metadata chunk " + suffix);
-  };
-  auto raw = [&](const std::string &suffix) {
-    auto blocks = chunk_blocks(file, find(suffix), options);
-    if (blocks.size() == 1)
-      return std::move(blocks.front());
-    Bytes data;
-    size_t size = 0;
-    for (auto &b : blocks)
-      size += b.size();
-    data.reserve(size);
-    for (auto &b : blocks)
-      data.insert(data.end(), b.begin(), b.end());
-    return data;
-  };
-  auto shared = raw("LcOpNwdSharedNodes");
-  GraphReader(shared, model.shared_nodes, none, version, options).shared();
-  for (const auto &geometry : model.geometries)
-    if (geometry.type == 103)
-      require(geometry.text_style < model.shared_nodes.roots.size(),
-              "text style outside shared nodes");
+struct ObjectReader::Impl {
+  Options options;
+  GraphReader reader;
+  Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v)
+      : reader(b, g, 0, v, options) {}
+};
+ObjectReader::ObjectReader(std::span<const uint8_t> b, ObjectGraph &g,
+                           uint32_t v)
+    : impl(std::make_unique<Impl>(b, g, v)) {}
+ObjectReader::~ObjectReader() = default;
+Id ObjectReader::object(Cursor &r) { return impl->reader.external(r, false); }
+Id ObjectReader::string(Cursor &r) { return impl->reader.external(r, true); }
+void read_partition(Model &model, std::span<const uint8_t> part,
+                    uint32_t version, const Options &options) {
   model.graphs.resize(2);
-  auto part = raw("LcOpNwdPartition");
+  model.schema_references.clear();
   GraphReader(part, model.graphs[0], 0, version, options, true).partition();
   auto &partition = model.graphs[0].objects[model.graphs[0].roots[0]];
   require(partition.integers.size() >= 7, "incomplete partition header");
@@ -547,6 +502,47 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
   default:
     break;
   }
+  if (version >= 421 && partition.integers.size() > 10 &&
+      partition.integers[9]) {
+    for (size_t i = 11; i < partition.integers.size(); ++i) {
+      auto id = partition.integers[i];
+      model.schema_references.push_back(id ? id - 1 : none);
+    }
+  }
+}
+void read_metadata(Model &model, std::span<const uint8_t> file,
+                   const std::vector<Chunk> &chunks, uint32_t version,
+                   const Options &options, std::vector<bool> &parsed) {
+  auto find = [&](const std::string &suffix) -> const Chunk & {
+    for (auto &c : chunks)
+      if (c.name == (model.name.empty() ? "" : model.name + "\\") + suffix) {
+        parsed[static_cast<size_t>(&c - chunks.data())] = true;
+        return c;
+      }
+    throw Error("missing metadata chunk " + suffix);
+  };
+  auto raw = [&](const std::string &suffix) {
+    auto blocks = chunk_blocks(file, find(suffix), options);
+    if (blocks.size() == 1)
+      return std::move(blocks.front());
+    Bytes data;
+    size_t size = 0;
+    for (auto &b : blocks)
+      size += b.size();
+    data.reserve(size);
+    for (auto &b : blocks)
+      data.insert(data.end(), b.begin(), b.end());
+    return data;
+  };
+  auto shared = raw("LcOpNwdSharedNodes");
+  GraphReader(shared, model.shared_nodes, none, version, options).shared();
+  for (const auto &geometry : model.geometries)
+    if (geometry.type == 103)
+      require(geometry.text_style < model.shared_nodes.roots.size(),
+              "text style outside shared nodes");
+  model.graphs.resize(2);
+  auto part = raw("LcOpNwdPartition");
+  read_partition(model, part, version, options);
   auto hierarchy = raw("LcOpNwdLogicalHierarchy");
   auto counts =
       GraphReader(hierarchy, model.graphs[1], 1, version, options).hierarchy();
