@@ -10,6 +10,7 @@
 #include <vector>
 #include <variant>
 #include <optional>
+#include <functional>
 namespace nwd {
 using Id = uint32_t;
 inline constexpr Id none = UINT32_MAX;
@@ -1129,6 +1130,47 @@ public:
                              uint64_t max_items = 10000000);
   SelectionLocatorResult resolve(std::string_view owner_chunk,
                                  const SelectionLocator &) const;
+};
+struct PropertyReference {
+  Reference attribute; // source Model.graphs attribute object
+  Id property = none;  // Object.properties; none denotes the category itself
+};
+struct PropertyIndexOptions {
+  bool include_internal = false;
+  uint64_t max_entries = 20000000;
+  // Limits owned name, display-label and typed-value-key bytes, not allocator
+  // overhead or allocations made inside the caller's formatter.
+  uint64_t max_label_bytes = 256ull << 20;
+  // Without a callback, only legacy string labels (CR/LF replaced by spaces)
+  // are known. Return nullopt when the display context cannot format a value.
+  std::function<std::optional<std::string>(const Model &, PropertyReference)>
+      format_value;
+};
+enum class PropertyLocatorStatus {
+  resolved,
+  tree_root,
+  missing,
+  ambiguous,
+  unsupported_root,
+  display_context_required,
+  unsupported_path,
+  unsupported_value
+};
+struct PropertyLocatorResult {
+  PropertyLocatorStatus status = PropertyLocatorStatus::missing;
+  // Borrowed from the index; records retain source graph/property identities.
+  std::span<const PropertyReference> records;
+};
+// Indexes directly attached serialized property attributes (types84/86).
+// Application/plugin-generated property categories are not stored here.
+class PropertyLocatorIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit PropertyLocatorIndex(const Model &, PropertyIndexOptions = {});
+  PropertyLocatorResult resolve(const SelectionLocatorPath &) const;
+  std::span<const Id> owners(Reference attribute) const;
 };
 struct TextureFile {
   Id source = none, model = none, asset = none;

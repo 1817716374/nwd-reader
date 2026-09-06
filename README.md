@@ -189,7 +189,7 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `ProductStatus::decoded` 表示受支持的块布局已读取并通过结尾检查，不保证所有源枚举含义和对象关联都已解释。`not_handled` 表示产品模块未处理该块，其中也包括由核心读取器负责的几何、属性等块。`Scene.parsed_chunks` 合并本次核心与产品读取结果；NWF 使用 `NwfData.parsed_chunks` 与产品状态共同检查。设置 `ProjectOptions.reader.products = true` 后，未处理或失败的块会使 `Project.complete` 为false。
 
-`SavedItems.objects` 保留共享名称和视点覆盖对象；选择记录的 `path_links` 是源PathLink标识，尚未绑定到模型节点，不能当成ObjectGraph或NWF路径索引。`SavedItem.complete` 表示该保存项布局及子项已读完，部分块中仍可能有成功读取的前序项。旋转、时间、枚举和未命名字段保留文件值，不自动执行搜索、动画或施工仿真。
+`SavedItems.objects` 保留共享名称和视点覆盖对象；选择记录的 `path_links` 是源PathLink标识，必须结合下述模型绑定或项目绑定接口使用，不能当成ObjectGraph或NWF路径索引。`SavedItem.complete` 表示该保存项布局及子项已读完，部分块中仍可能有成功读取的前序项。旋转、时间、枚举和未命名字段保留文件值，不自动执行搜索、动画或施工仿真。
 
 碰撞数据通过 `SavedItem.clash` 访问：`ClashTest` 返回选择、容差、规则与运行配置；`ClashResult` 返回距离、两侧位置、包围盒、状态、审批信息和模拟事件；`ClashResultGroup` 保留结果分组。组的子项使用 `SavedItem.parent` 关联。`SavedItems.source_references` 提供保存的模型来源，缓存属性与规则参数共用 `SavedItems.objects`。`legacy_clash` 标识旧容器，旧状态枚举保持源值；结果中的 `test_name` 是测试类型或自定义标签，与保存项的 `name` 分开使用。PathLink 和备用 PathLink 保留原始编号，调用方不能直接把它们当作模型路径索引。
 
@@ -214,6 +214,35 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 NWF 中的保存项路径通过 `Project.saved_path_bindings` 关联到引用出现位置。开启 `ProjectOptions.reader.products` 后，用 `saved_path_binding(project, owner, block, source_path_id)` 查询：`resolved` 返回目标 `node/path`；`project_root=true` 表示整个 NWF 出现的子树；`empty` 是空引用，`unresolved` 表示无法唯一匹配。这里的源 0 和 `none` 都为空，源 1 是项目根，不能按 NWD/NWC 的零起始模型路径解释。重复源 ID 共享绑定记录，原字段顺序和模型几何仍保留。缺失引用或歧义会使 `Project.complete=false`。
 
 `parse_selection_locator(selection.locator)` 读取名称路径及转义，`SelectionSetIndex(products)` 建立可复用的选择集索引。调用 `index.resolve(owner_chunk_name, locator)`，每个目标返回原 `ProductData.blocks` / `SavedItems.items` 身份或明确的缺失、歧义、不可用、未支持根状态。精确 `/` 返回 `select_all` 标志。索引按源块前缀区分选择树，支持 `lcop_selection_set_tree`；它定位保存项，不执行该项的动态搜索或把组展开为几何。
+
+`PropertyLocatorIndex(model)` 为单个模型中节点直接挂接的序列化属性（类型 84/86）建立可复用索引，支持 `lcop_property_tree` 的类别、属性和值三级名称路径。`resolve(path)` 返回源 `PropertyReference`；`attribute` 是 graph/object 引用，`property` 是该对象的属性下标，类别记录使用 `none`。`owners(attribute)` 返回挂接该属性的模型路径，保留共享节点的各次出现。查询结果中的 span 在索引仍存活时有效；解引用源记录仍需保留原模型。索引拥有名称和身份数据，源模型变化后应重建。
+
+```cpp
+auto scene = nwd::Document("model.nwd").read_scene();
+const auto& model = scene.models.at(0);
+nwd::PropertyLocatorIndex index(model);
+auto locator = nwd::parse_selection_locator("lcop_property_tree/类别/属性/值");
+for (const auto& path : locator.paths) {
+    auto found = index.resolve(path);
+    if (found.status != nwd::PropertyLocatorStatus::resolved)
+        continue; // 按状态处理缺失、歧义或未支持的显示规则。
+    for (const auto& ref : found.records) {
+        const auto& attribute = nwd::resolve_object(model, ref.attribute);
+        if (ref.property != nwd::none) {
+            const auto& value = attribute.properties.at(ref.property).value;
+            std::cout << "value type: " << value.tag << '\n';
+        }
+        for (auto owner : index.owners(ref.attribute))
+            std::cout << "model path: " << owner << '\n';
+    }
+}
+```
+
+索引默认忽略内部属性。`PropertyIndexOptions.include_internal` 可将其纳入；`max_entries` 限制记录及关联数量，`max_label_bytes` 限制索引持有的名称、显示文字和类型值键的字节数，超限抛出异常。格式化回调产生的临时分配不计入此字节限额。索引只在构建时扫描模型，同一共享源属性只格式化一次，查询不复制几何或展开子树。
+
+默认值标签仅采用旧式字符串规则（CR/LF 换为空格），不能自动判断任意来源文件的原生显示方式。单位、小数位、本地化和较新属性树的计数后缀需要调用方通过 `format_value(model, ref)` 提供完整标签；无法确定时返回 `nullopt`，查询返回 `display_context_required`。不同内部名称具有相同显示名称、或不同源值显示为同一文字时返回 `ambiguous`。非有限数值的比较语义未支持，提供格式化文字后仍返回 `unsupported_value`。类别和属性级定位不依赖值的显示格式。
+
+这里的 `resolved` / `missing` 仅描述索引中的直接序列化属性。应用程序及插件动态生成的属性类别、完整动态搜索、多个模型的联合属性树与显示计数不在此索引中自动合成；NWF 调用方应通过源文件和模型上下文分别查询并保留引用出现身份。`SelectionSetIndex` 仍只负责选择集名称定位。
 
 `ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
 
