@@ -322,8 +322,14 @@ NwfData Document::read_nwf() const {
     if (chunks()[i].name.ends_with("LcOpNwfSceneSet"))
       out.parsed_chunks[i] = true;
   // Resolve selectors independently of directory order.
+  bool have_path_map = false;
   for (size_t i = 0; i < chunks().size(); ++i)
     if (chunks()[i].name.ends_with("LcOpNwfPathMap")) {
+      require(!have_path_map, "multiple NWF path maps need separate contexts");
+      have_path_map = true;
+      const auto &name = chunks()[i].name;
+      auto split = name.rfind('\\');
+      out.path_map_namespace = split == name.npos ? "" : name.substr(0, split);
       decode_nwf_path_map(out, read_chunk(i));
       out.parsed_chunks[i] = true;
     }

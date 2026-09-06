@@ -298,8 +298,7 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
   }
   out.block_bits = h.byte();
   out.flags = h.byte();
-  if ((out.flags & ~3u) || out.encoding > 1 ||
-      ((out.flags & 1) && out.encoding != 1))
+  if ((out.flags & ~3u) || out.encoding > 1)
     throw UnsupportedLayout("LightWorks archive encoding/envelope");
   require(out.block_bits >= 7 && out.block_bits <= 24,
           "LightWorks block size exponent");
@@ -310,21 +309,31 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
   if (encrypted) {
     auto parameters = h.u();
     out.cipher = h.u();
+    if (out.cipher != 1 && out.cipher != 4)
+      throw UnsupportedLayout("LightWorks archive cipher");
     if (parameters) {
-      out.key_name = h.text();
+      if (out.encoding == 1)
+        out.key_name = h.text();
+      else {
+        // Both supported native cipher classes report a 16-byte key.
+        require(parameters >= 16, "LightWorks legacy key parameter length");
+        auto bytes = h.raw(16);
+        out.encoded_key.assign(bytes.begin(), bytes.end());
+        parameters -= 16;
+      }
       auto p = h.raw(parameters);
       out.cipher_parameters.assign(p.begin(), p.end());
     }
   }
-  auto index = h.u();
+  out.header_value = h.u();
   require(h.pos == h.data.size(), "LightWorks header tail");
-  if (index != none || (compressed && out.compression != 1))
-    throw UnsupportedLayout("LightWorks indexed archive/compression");
+  if (compressed && out.compression != 1)
+    throw UnsupportedLayout("LightWorks archive compression");
   BE meta(r.raw(r.u()), "LightWorks definitions");
   out.stream_flags = meta.u();
-  auto root = meta.u();
-  if (root != 0 || out.stream_flags & ~0x3fu)
-    throw UnsupportedLayout("LightWorks stream flags/root block");
+  out.root_page = meta.u();
+  if (out.stream_flags & ~0x3fu)
+    throw UnsupportedLayout("LightWorks stream flags");
   for (;;) {
     auto type = meta.u();
     if (type == none)
@@ -355,22 +364,34 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
   add_known_definitions(out);
   Bytes key;
   if (encrypted) {
-    if (out.cipher != 1 && out.cipher != 4)
-      throw UnsupportedLayout("LightWorks archive cipher");
-    auto wrapped = base64(out.key_name);
-    require(wrapped.size() == 17 && wrapped.front() < 64,
-            "LightWorks archive key identifier");
-    static const auto keys = default_keys();
-    auto key_index = wrapped.front();
-    key.assign(wrapped.begin() + 1, wrapped.end());
-    // The wrapping key selects its own algorithm, independently of the payload.
-    decrypt(key, keys[key_index], key_index < 32 ? 4 : 1);
+    if (out.encoding == 0) {
+      require(out.encoded_key.size() == 16, "LightWorks missing legacy key");
+      uint8_t cumulative = 0;
+      for (auto it = out.encoded_key.rbegin(); it != out.encoded_key.rend();
+           ++it) {
+        cumulative ^= *it;
+        key.push_back(cumulative);
+      }
+    } else {
+      auto wrapped = base64(out.key_name);
+      require(wrapped.size() == 17 && wrapped.front() < 64,
+              "LightWorks archive key identifier");
+      static const auto keys = default_keys();
+      auto key_index = wrapped.front();
+      key.assign(wrapped.begin() + 1, wrapped.end());
+      // Wrapping and payload algorithms are selected independently.
+      decrypt(key, keys[key_index], key_index < 32 ? 4 : 1);
+    }
   }
   auto size = uint64_t(1) << out.block_bits;
-  Bytes stream;
-  for (;;) {
+  struct Page {
+    Id next;
+    uint32_t valid;
+    std::span<const uint8_t> raw;
+    bool visited = false;
+  };
+  auto read_page = [&]() {
     budget.items();
-    budget.decoded(size);
     require(out.frame_count < none, "LightWorks frame count overflow");
     ++out.frame_count;
     uint64_t raw_size = size;
@@ -382,12 +403,11 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
     auto next = r.u();
     auto valid = r.u();
     require(valid <= size, "LightWorks frame valid byte count");
-    // Linked IDs address physical pages. Sequential chains need no index or
-    // seeking, and can be concatenated before reading cross-page fields.
-    if (next != none && next != out.frame_count)
-      throw UnsupportedLayout("LightWorks nonsequential/indexed page chain");
-    auto raw = r.raw(static_cast<size_t>(raw_size));
-    Bytes decoded;
+    return Page{next, valid, r.raw(static_cast<size_t>(raw_size))};
+  };
+  auto decode_page = [&](const Page &page, Bytes &decoded) {
+    budget.decoded(size);
+    auto raw = page.raw;
     if (encrypted) {
       const size_t block = out.cipher == 4 ? 8 : 16;
       require(!raw.empty() &&
@@ -410,18 +430,40 @@ LightWorksArchive archive(Cursor &source, Budget &budget) {
       raw = decoded;
     }
     require(raw.size() == size, "LightWorks decoded frame length");
-    // Keep the usual one-page path free of an extra payload copy.
-    if (out.frame_count == 1 && next == none) {
-      BE payload(raw.first(valid), "LightWorks objects");
-      objects(out, payload, budget);
-      break;
+    return raw.first(page.valid);
+  };
+  auto first = read_page();
+  if (out.root_page == 0 && first.next == none) {
+    // Usual single-page archives need no page index or payload concatenation.
+    Bytes decoded;
+    BE payload(decode_page(first, decoded), "LightWorks objects");
+    objects(out, payload, budget);
+    out.page_order.push_back(0);
+  } else {
+    // The native random-access index is built from physical frame lengths,
+    // not serialized as a separate directory. Build it only as far as needed.
+    std::vector<Page> pages{first};
+    Bytes stream, decoded;
+    Id id = out.root_page;
+    require(id != none, "LightWorks missing root page");
+    while (id != none) {
+      require(uint64_t(id) < uint64_t(pages.size()) + budget.objects,
+              "LightWorks page index resource limit");
+      while (pages.size() <= id)
+        pages.push_back(read_page());
+      auto &page = pages[id];
+      require(!page.visited, "LightWorks cyclic page chain");
+      page.visited = true;
+      out.page_order.push_back(id);
+      auto bytes = decode_page(page, decoded);
+      stream.insert(stream.end(), bytes.begin(), bytes.end());
+      id = page.next;
     }
-    stream.insert(stream.end(), raw.begin(), raw.begin() + valid);
-    if (next == none) {
-      BE payload(stream, "LightWorks objects");
-      objects(out, payload, budget);
-      break;
-    }
+    if (std::any_of(pages.begin(), pages.end(),
+                    [](const Page &p) { return !p.visited; }))
+      throw UnsupportedLayout("LightWorks physical pages outside root stream");
+    BE payload(stream, "LightWorks objects");
+    objects(out, payload, budget);
   }
   source.pos += r.pos;
   return out;
@@ -538,3 +580,53 @@ void read_presenter_lights(PresenterLights &out, Cursor &r, uint32_t version,
     out.lights.push_back(entity(r, out.archives, budget));
 }
 } // namespace nwd::detail
+namespace nwd {
+LightWorksImage decode_lightworks_image(const LightWorksObject &object,
+                                        uint64_t max_bytes) {
+  using namespace detail;
+  require(object.type == 0x12 && object.reference == none &&
+              !object.null_reference,
+          "LightWorks image requires a resolved LtImage object");
+  auto field = [&](uint32_t id, uint32_t type) -> const LightWorksValue & {
+    const LightWorksField *found = nullptr;
+    for (const auto &f : object.fields)
+      if (f.id == id) {
+        require(!found && f.type == type,
+                "LightWorks image field type/duplicate");
+        found = &f;
+      }
+    require(found != nullptr, "LightWorks image field missing");
+    return found->value;
+  };
+  auto integer = [&](uint32_t id, uint32_t type = 2) {
+    auto p = std::get_if<uint32_t>(&field(id, type));
+    require(p != nullptr, "LightWorks image integer storage");
+    return *p;
+  };
+  LightWorksImage image;
+  image.width = integer(1);
+  image.height = integer(2);
+  image.bits_per_pixel = integer(3);
+  auto codec = integer(11, 5);
+  auto pixels = uint64_t(image.width) * image.height;
+  auto bytes_per_pixel = (uint64_t(image.bits_per_pixel) + 7) / 8;
+  require(pixels && bytes_per_pixel && pixels <= max_bytes / bytes_per_pixel,
+          "LightWorks image decoded size/resource limit");
+  auto size = pixels * bytes_per_pixel;
+  require(size <= std::numeric_limits<size_t>::max(),
+          "LightWorks image exceeds addressable memory");
+  auto raw = std::get_if<Bytes>(&field(0, 47));
+  require(raw != nullptr, "LightWorks image byte storage");
+  if (codec == 1) {
+    require(raw->size() == size, "LightWorks raw image length");
+    image.pixels = *raw;
+  } else if (codec == 2) {
+    auto decoded = inflate_one(*raw, size, static_cast<size_t>(size));
+    require(decoded.consumed == raw->size() && decoded.bytes.size() == size,
+            "LightWorks image zlib length");
+    image.pixels = std::move(decoded.bytes);
+  } else
+    throw UnsupportedLayout("LightWorks image codec " + std::to_string(codec));
+  return image;
+}
+} // namespace nwd

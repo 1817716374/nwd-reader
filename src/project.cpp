@@ -121,6 +121,41 @@ struct Resolution {
   std::filesystem::path file;
   std::string status = "missing";
 };
+template <class F>
+void product_selectors(const ProductData &products, F callback) {
+  for (Id block = 0; block < products.blocks.size(); ++block) {
+    const auto &b = products.blocks[block];
+    if (b.status != ProductStatus::decoded)
+      continue;
+    std::visit(
+        [&](const auto &v) {
+          using T = std::decay_t<decltype(v)>;
+          auto lists = [&](const auto &records, ProductBindingKind kind) {
+            for (Id record = 0; record < records.size(); ++record)
+              callback(block, record, kind, records[record].node_scope,
+                       std::span<const Id>(records[record].paths));
+          };
+          if constexpr (std::is_same_v<T, PresenterData>) {
+            lists(v.material_bindings, ProductBindingKind::presenter_material);
+            lists(v.texture_bindings, ProductBindingKind::presenter_texture);
+          } else if constexpr (std::is_same_v<T, TextureSpaceOverrides>)
+            lists(v.records, ProductBindingKind::texture_space);
+          else if constexpr (std::is_same_v<T, HyperlinkOverrides> ||
+                             std::is_same_v<T, NodeOverrides>) {
+            constexpr auto kind = std::is_same_v<T, HyperlinkOverrides>
+                                      ? ProductBindingKind::hyperlink
+                                      : ProductBindingKind::node_override;
+            for (Id record = 0; record < v.paths.size(); ++record)
+              callback(block, record, kind, false,
+                       std::span<const Id>(&v.paths[record].path_link, 1));
+            for (Id record = 0; record < v.nodes.size(); ++record)
+              callback(block, record, kind, true,
+                       std::span<const Id>(v.nodes[record].paths));
+          }
+        },
+        b.value);
+  }
+}
 class Loader {
   ProjectOptions options;
   Project out;
@@ -259,6 +294,32 @@ class Loader {
   void bind(Id owner, size_t end) {
     const auto source_id = out.nodes[owner].source;
     auto data = out.sources[source_id].nwf;
+    const auto products = out.sources[source_id].products;
+    auto empty_selector = [](std::span<const Id> paths) {
+      return std::all_of(paths.begin(), paths.end(),
+                         [](Id id) { return id == 0 || id == none; });
+    };
+    bool have_product_selectors = false;
+    if (products)
+      product_selectors(*products, [&](Id, Id, auto, bool, auto paths) {
+        have_product_selectors |= !empty_selector(paths);
+      });
+    auto unresolved_products = [&] {
+      if (products)
+        product_selectors(*products,
+                          [&](Id block, Id record, ProductBindingKind kind,
+                              bool node_scope, std::span<const Id> paths) {
+                            ProductBinding b;
+                            b.owner = owner;
+                            b.block = block;
+                            b.record = record;
+                            b.kind = kind;
+                            b.node_scope = node_scope;
+                            if (empty_selector(paths))
+                              b.status = ProductBindingStatus::empty;
+                            out.product_bindings.push_back(b);
+                          });
+    };
     for (const auto &s : data->unparsed_core)
       missing("NWF core override unparsed: " + s);
     std::vector<Id> leaves;
@@ -266,8 +327,11 @@ class Loader {
       if (out.nodes[i].model != none)
         leaves.push_back(static_cast<Id>(i));
     if (data->appearance_overrides.empty() &&
-        data->transform_overrides.empty() && data->texture_spaces.empty())
+        data->transform_overrides.empty() && data->texture_spaces.empty() &&
+        !have_product_selectors) {
+      unresolved_products();
       return;
+    }
     using Location = std::pair<Id, Id>;
     std::vector<std::vector<Location>> mapping(data->paths.size());
     std::map<Id, ModelIndex> indices;
@@ -275,6 +339,7 @@ class Loader {
       indices.emplace(node, ModelIndex(model(node)));
       if (mapping.size() < 2) {
         missing("NWF overrides lack path root");
+        unresolved_products();
         if (!data->transform_overrides.empty())
           for (Id leaf : leaves)
             out.nodes[leaf].placement_supported = false;
@@ -331,20 +396,15 @@ class Loader {
           }
         }
       }
-    for (Id record = 0; record < data->texture_spaces.size(); ++record) {
-      const auto &t = data->texture_spaces[record];
-      if (t.paths.empty() ||
-          (t.paths.size() == 1 && (t.paths[0] == none || t.paths[0] == 0)))
-        continue;
+    auto select_node =
+        [&](std::span<const Id> paths) -> std::optional<Location> {
       std::vector<std::pair<Location, size_t>> candidates;
       std::map<std::tuple<Id, Id, Id>, size_t> candidate_indices;
-      bool unresolved = false;
-      for (auto id : t.paths) {
+      for (auto id : paths) {
         if (id == none || id == 0)
           continue;
         if (id >= mapping.size() || mapping[id].size() != 1) {
-          unresolved = true;
-          break;
+          return {};
         }
         auto location = mapping[id].front();
         auto ref = path_reference(model(location.first), location.second);
@@ -356,21 +416,57 @@ class Loader {
         else
           ++candidates[same->second].second;
       }
-      if (unresolved) {
-        missing("unresolved NWF texture space assignment " +
-                std::to_string(record));
-        continue;
-      }
       if (candidates.empty())
-        continue;
+        return {};
       // ReadNode chooses the most frequent shared node, retaining the first
       // candidate on ties. Keep reference occurrences in separate namespaces.
       auto best = std::max_element(
           candidates.begin(), candidates.end(),
           [](const auto &a, const auto &b) { return a.second < b.second; });
-      const auto [node, path] = best->first;
+      return best->first;
+    };
+    for (Id record = 0; record < data->texture_spaces.size(); ++record) {
+      const auto &t = data->texture_spaces[record];
+      if (empty_selector(t.paths))
+        continue;
+      auto selected = select_node(t.paths);
+      if (!selected) {
+        missing("unresolved NWF texture space assignment " +
+                std::to_string(record));
+        continue;
+      }
+      const auto [node, path] = *selected;
       out.texture_space_assignments.push_back({owner, node, path, record});
     }
+    if (products)
+      product_selectors(*products, [&](Id block, Id record,
+                                       ProductBindingKind kind, bool node_scope,
+                                       std::span<const Id> paths) {
+        auto &binding = out.product_bindings.emplace_back();
+        binding.owner = owner;
+        binding.block = block;
+        binding.record = record;
+        binding.kind = kind;
+        binding.node_scope = node_scope;
+        if (empty_selector(paths)) {
+          binding.status = ProductBindingStatus::empty;
+          return;
+        }
+        const auto &name = products->chunks[block].name;
+        auto split = name.rfind('\\');
+        auto prefix =
+            split == name.npos ? std::string{} : name.substr(0, split);
+        auto selected = prefix == data->path_map_namespace
+                            ? select_node(paths)
+                            : std::optional<Location>{};
+        if (selected) {
+          binding.status = ProductBindingStatus::resolved;
+          binding.node = selected->first;
+          binding.path = selected->second;
+        } else
+          missing("unresolved NWF product assignment " + name + " record " +
+                  std::to_string(record));
+      });
     if (!data->transform_overrides.empty()) {
       for (Id leaf : leaves) {
         const auto &m = model(leaf);

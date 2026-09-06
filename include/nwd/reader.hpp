@@ -825,7 +825,18 @@ struct LightWorksArchive {
   std::vector<LightWorksObject> objects;
   uint32_t frame_count =
       0; // decoded linked pages; object fields may span pages
+  uint32_t header_value = none, root_page = 0;
+  std::vector<uint8_t> encoded_key; // encoding0 key bytes, before restoration
+  std::vector<Id> page_order;       // logical traversal of physical pages
 };
+struct LightWorksImage {
+  uint32_t width = 0, height = 0, bits_per_pixel = 0;
+  std::vector<uint8_t> pixels; // packed source bytes; no color conversion
+};
+// On-demand codec1 (raw) or codec2 (zlib) image decoding. Pass a resolved
+// LtImage object, not an identity-reference record. Source fields stay intact.
+LightWorksImage decode_lightworks_image(const LightWorksObject &,
+                                        uint64_t max_bytes = 256ull << 20);
 struct LegacyShaderArgument {
   std::string name;
   uint32_t type = 0;
@@ -934,6 +945,7 @@ struct NwfTransformOverride {
   std::vector<double> values;
 };
 struct NwfData {
+  std::string path_map_namespace;  // directory prefix owning the implicit map
   std::vector<bool> parsed_chunks; // Document directory coverage; standalone
                                    // decoders leave empty
   ObjectGraph option_values;
@@ -1014,6 +1026,22 @@ struct TextureSpaceAssignment {
   // record indexes the owning NWF's texture_spaces. A node-scope record also
   // addresses other occurrences of the same source graph/object identity.
 };
+enum class ProductBindingKind {
+  presenter_material,
+  presenter_texture,
+  hyperlink,
+  node_override,
+  texture_space
+};
+enum class ProductBindingStatus { resolved, empty, unresolved };
+struct ProductBinding {
+  Id owner = none; // Project.nodes NWF occurrence; its source owns the block
+  Id block = none, record = none;
+  ProductBindingKind kind = ProductBindingKind::node_override;
+  bool node_scope = false;
+  ProductBindingStatus status = ProductBindingStatus::unresolved;
+  Id node = none, path = none; // target ProjectNode and source Model.paths
+};
 struct TextureFile {
   Id source = none, model = none, asset = none;
   std::string alias, requested_path, status;
@@ -1029,6 +1057,7 @@ struct Project {
   std::vector<AppliedTransform>
       transform_overrides; // sorted (owner,node,instance)
   std::vector<TextureSpaceAssignment> texture_space_assignments;
+  std::vector<ProductBinding> product_bindings; // NWF product selectors
   std::vector<TextureFile> textures;
   std::vector<std::string> warnings;
   bool complete = true;

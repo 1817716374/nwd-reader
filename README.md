@@ -211,9 +211,11 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `PresenterData` 包含背景、材质槽、材质分配和纹理映射；`PresenterLights` 返回旧式灯光列表。实体的 `archive` 索引指向各自的 `archives`，同一个归档内用 `LightWorksObject.parent/first_child/next_sibling` 访问层级。`identity` 保留源编号，`reference` 指向同归档的已有对象，`null_reference` 区分显式空引用。不同归档不能按名称或数字ID合并。
 
-`LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。字符串数组使用 `vector<string>`，保留空字符串和内嵌 NUL；`LightWorksArchive.frame_count` 返回读取的分页数，跨页字段统一解码。
+`LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。字符串数组使用 `vector<string>`，保留空字符串和内嵌 NUL；`LightWorksArchive.frame_count` 返回读取的分页数，跨页字段统一解码。`root_page/page_order` 返回起始页及逻辑读取顺序；`header_value` 保留尚未解释的头部值，`encoded_key` 保留旧式编码密钥。
 
-通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF的隐式候选列表只保留源选择条件，尚不自动解析为联合模型中的匹配对象。单独 `read_products()` 不绑定模型。
+对已解析、非引用的 `LtImage` 对象，可按需调用 `decode_lightworks_image(object, max_bytes)`，取得宽高、位深和源像素字节。支持原始数据和 zlib 两种内置 codec，默认输出上限为 256 MiB；不做颜色转换。压缩字节及其他图像字段仍保留在源对象中。未知插件 codec 抛出异常，不猜测其图片格式。
+
+通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF 通过 `load_project()` 并设置 `ProjectOptions.reader.products = true` 时，用 `Project.product_bindings` 返回 Presenter、TextureSpace、Hyperlink 和 NodeOverride 的候选关联。`owner` 是 NWF 的引用出现节点，`block/record` 指向该 source 的产品块和记录；`kind` 区分列表，`node_scope` 区分路径或节点范围。仅 `status == ProductBindingStatus::resolved` 时使用 `node/path` 访问联合模型目标。`empty` 表示空选择器，`unresolved` 表示缺少路径上下文或匹配不唯一，并使项目报告不完整。不同引用位置保持独立，源记录和共享几何不复制。单独 `read_products()` 不绑定模型。
 
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
 
@@ -222,7 +224,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 以下内容仍存在限制：
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
-- LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持流式单帧和从第0页开始的连续页链。encoding 0仅支持无加密情况，encoding 1支持格式内密钥标识。随机索引/非连续页链、未见内置类型与未支持的特殊值类型明确返回部分解析。部分标志语义、图像codec和复杂别名分支尚未完整覆盖。
+- LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持 encoding0 编码密钥、encoding1 密钥标识、任意起始页和非顺序页链。归档内不属于根页链的独立物理页、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、插件图像 codec 和复杂别名分支尚未完整覆盖。旧密钥与非顺序页链缺少充分的原生实样覆盖。
 - Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
 - 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
@@ -241,7 +243,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 引用 RVT、DWG 等原始设计文件时，需要提供已导出的 NWC，并通过路径映射关联；本库不执行原生格式导出器。
 
-库负责提取模型信息。曲面离散化、图片解码、着色器和渲染由调用方实现。
+库负责提取模型信息。曲面离散化、通用图片格式解码、着色器和渲染由调用方实现；LightWorks 内置图像 codec 可使用上述按需接口。
 
 ## 第三方组件
 
