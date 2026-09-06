@@ -18,6 +18,7 @@ static int run(const std::filesystem::path &path) {
     nwd::Options options;
     options.threads = 0;
     auto data = nwd::Document(path, options).read_products();
+    nwd::SelectionSetIndex selection_index(data);
     bool incomplete = false;
     for (std::size_t i = 0; i < data.blocks.size(); ++i) {
       const auto &block = data.blocks[i];
@@ -88,10 +89,41 @@ static int run(const std::filesystem::path &path) {
                     << " states=" << task.states.size() << '\n';
       }
       if (const auto *saved = std::get_if<nwd::SavedItems>(&block.value)) {
+        auto locate = [&](const nwd::SavedSelection &selection) {
+          if (selection.locator.empty())
+            return;
+          const auto locator = nwd::parse_selection_locator(selection.locator);
+          const auto result =
+              selection_index.resolve(data.chunks[i].name, locator);
+          if (result.select_all)
+            std::cout << "    selection scope: all\n";
+          for (const auto &target : result.targets) {
+            if (target.status == nwd::SelectionTargetStatus::resolved)
+              std::cout << "    selection target: block=" << target.block
+                        << " item=" << target.item << '\n';
+            else
+              std::cout << "    selection target status="
+                        << static_cast<int>(target.status) << '\n';
+          }
+          // A resolved saved item can itself contain a dynamic search.
+          // Identity lookup does not evaluate that search or expand geometry.
+        };
         for (const auto &item : saved->items) {
           std::cout << "  type=" << item.type << " parent=" << item.parent
                     << " name=" << item.name << " complete=" << item.complete
                     << '\n';
+          if (item.selection)
+            locate(*item.selection);
+          if (const auto *test = std::get_if<nwd::ClashTest>(&item.clash))
+            for (const auto &selection : test->selections)
+              locate(selection);
+          if (const auto *task =
+                  std::get_if<nwd::TimeLinerTask>(&item.timeliner)) {
+            if (task->implicit_selection)
+              locate(*task->implicit_selection);
+            if (task->find_selection)
+              locate(*task->find_selection);
+          }
           if (const auto *result = std::get_if<nwd::ClashResult>(&item.clash))
             std::cout << "    distance=" << result->distance
                       << " path links=" << result->path_links[0] << ','

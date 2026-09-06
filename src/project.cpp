@@ -2,6 +2,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <unordered_set>
 namespace nwd {
 namespace {
 using namespace detail;
@@ -291,6 +292,64 @@ class Loader {
     }
     return true;
   }
+  template <class Resolve> void bind_saved_paths(Id owner, Resolve resolve) {
+    const auto &source = out.sources[out.nodes[owner].source];
+    if (!source.products)
+      return;
+    for (Id block = 0; block < source.products->blocks.size(); ++block) {
+      const auto &b = source.products->blocks[block];
+      const auto *saved = std::get_if<SavedItems>(&b.value);
+      if (b.status != ProductStatus::decoded || !saved)
+        continue;
+      std::unordered_set<Id> unique;
+      require(saved_path_links(*saved,
+                               [&](Id id) {
+                                 if (!unique.contains(id)) {
+                                   require(out.saved_path_bindings.size() +
+                                                   unique.size() <
+                                               options.reader.max_objects,
+                                           "saved path binding resource limit");
+                                   unique.insert(id);
+                                 }
+                                 return true;
+                               }),
+              "malformed saved path fields");
+      std::vector<Id> ids(unique.begin(), unique.end());
+      std::sort(ids.begin(), ids.end());
+      const auto &name = source.products->chunks[block].name;
+      auto split = name.rfind('\\');
+      auto prefix = split == name.npos ? std::string{} : name.substr(0, split);
+      bool context = source.nwf && saved->implicit_node_map &&
+                     prefix == source.nwf->path_map_namespace;
+      for (Id id : ids) {
+        require(out.saved_path_bindings.size() < options.reader.max_objects,
+                "saved path binding resource limit");
+        auto &binding = out.saved_path_bindings.emplace_back();
+        binding.owner = owner;
+        binding.block = block;
+        binding.path_link = id;
+        if (id == 0 || id == none) {
+          binding.status = ProductBindingStatus::empty;
+          continue;
+        }
+        if (context && id == 1 && source.nwf->path_map_kind != 0) {
+          binding.status = ProductBindingStatus::resolved;
+          binding.node = owner;
+          binding.project_root = true;
+          continue;
+        }
+        if (context)
+          if (auto target = resolve(id)) {
+            binding.status = ProductBindingStatus::resolved;
+            binding.node = target->first;
+            binding.path = target->second;
+            continue;
+          }
+        missing("unresolved NWF saved path " + name + " ID " +
+                std::to_string(id));
+      }
+    }
+  }
   void bind(Id owner, size_t end) {
     const auto source_id = out.nodes[owner].source;
     auto data = out.sources[source_id].nwf;
@@ -304,6 +363,21 @@ class Loader {
       product_selectors(*products, [&](Id, Id, auto, bool, auto paths) {
         have_product_selectors |= !empty_selector(paths);
       });
+    bool have_saved_paths = false;
+    if (products)
+      for (const auto &b : products->blocks)
+        if (b.status == ProductStatus::decoded)
+          if (const auto *saved = std::get_if<SavedItems>(&b.value))
+            require(saved_path_links(*saved,
+                                     [&](Id id) {
+                                       have_saved_paths |=
+                                           id != 0 && id != none;
+                                       return true;
+                                     }),
+                    "malformed saved path fields");
+    auto no_saved_target = [](Id) -> std::optional<std::pair<Id, Id>> {
+      return {};
+    };
     auto unresolved_products = [&] {
       if (products)
         product_selectors(*products,
@@ -328,8 +402,9 @@ class Loader {
         leaves.push_back(static_cast<Id>(i));
     if (data->appearance_overrides.empty() &&
         data->transform_overrides.empty() && data->texture_spaces.empty() &&
-        !have_product_selectors) {
+        !have_product_selectors && !have_saved_paths) {
       unresolved_products();
+      bind_saved_paths(owner, no_saved_target);
       return;
     }
     using Location = std::pair<Id, Id>;
@@ -340,6 +415,7 @@ class Loader {
       if (mapping.size() < 2) {
         missing("NWF overrides lack path root");
         unresolved_products();
+        bind_saved_paths(owner, no_saved_target);
         if (!data->transform_overrides.empty())
           for (Id leaf : leaves)
             out.nodes[leaf].placement_supported = false;
@@ -467,6 +543,11 @@ class Loader {
           missing("unresolved NWF product assignment " + name + " record " +
                   std::to_string(record));
       });
+    bind_saved_paths(owner, [&](Id id) -> std::optional<Location> {
+      if (id < mapping.size() && mapping[id].size() == 1)
+        return mapping[id].front();
+      return {};
+    });
     if (!data->transform_overrides.empty()) {
       for (Id leaf : leaves) {
         const auto &m = model(leaf);
@@ -800,6 +881,11 @@ public:
       const auto [owner, node, instance] = key;
       out.transform_overrides.push_back({owner, node, instance, value});
     }
+    std::sort(out.saved_path_bindings.begin(), out.saved_path_bindings.end(),
+              [](const auto &a, const auto &b) {
+                return std::tie(a.owner, a.block, a.path_link) <
+                       std::tie(b.owner, b.block, b.path_link);
+              });
     return std::move(out);
   }
 };
@@ -807,6 +893,19 @@ public:
 Project load_project(const std::filesystem::path &path,
                      ProjectOptions options) {
   return Loader(std::move(options)).run(path);
+}
+const SavedPathBinding *saved_path_binding(const Project &project, Id owner,
+                                           Id block, Id path_link) {
+  auto key = std::tuple{owner, block, path_link};
+  auto it = std::lower_bound(
+      project.saved_path_bindings.begin(), project.saved_path_bindings.end(),
+      key, [](const auto &entry, const auto &key) {
+        return std::tie(entry.owner, entry.block, entry.path_link) < key;
+      });
+  if (it == project.saved_path_bindings.end() ||
+      std::tie(it->owner, it->block, it->path_link) != key)
+    return nullptr;
+  return &*it;
 }
 Matrix nwf_transform_matrix(const NwfTransformOverride &t) {
   const size_t count = !t.flags           ? 0

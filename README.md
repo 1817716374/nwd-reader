@@ -209,6 +209,10 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `SavedItems.model` 和 `SavedItems.associations_verified` 为保存项中的显式 PathLink 提供分区上下文。通过 `read_scene()` 并开启 `Options.products` 后，仅当标志为 true 时，才能将选择集、动画选择轨道、TimeLiner 选择数组、碰撞测试/结果主路径及备用路径、视点节点/材质覆盖中的非空路径编号用于 `Scene.models[model].paths`。零是有效根，`nwd::none` 是空引用，重复路径保留。用 `path_reference()` 再取得共享对象身份。此标志不表示名称 locator、搜索条件、GUID 或 item-path 字符串已经求值；直接 `read_products()` 保持未绑定。
 
+NWF 中的保存项路径通过 `Project.saved_path_bindings` 关联到引用出现位置。开启 `ProjectOptions.reader.products` 后，用 `saved_path_binding(project, owner, block, source_path_id)` 查询：`resolved` 返回目标 `node/path`；`project_root=true` 表示整个 NWF 出现的子树；`empty` 是空引用，`unresolved` 表示无法唯一匹配。这里的源 0 和 `none` 都为空，源 1 是项目根，不能按 NWD/NWC 的零起始模型路径解释。重复源 ID 共享绑定记录，原字段顺序和模型几何仍保留。缺失引用或歧义会使 `Project.complete=false`。
+
+`parse_selection_locator(selection.locator)` 读取名称路径及转义，`SelectionSetIndex(products)` 建立可复用的选择集索引。调用 `index.resolve(owner_chunk_name, locator)`，每个目标返回原 `ProductData.blocks` / `SavedItems.items` 身份或明确的缺失、歧义、不可用、未支持根状态。精确 `/` 返回 `select_all` 标志。索引按源块前缀区分选择树，支持 `lcop_selection_set_tree`；它定位保存项，不执行该项的动态搜索或把组展开为几何。
+
 `ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
 
 `PresenterData` 包含背景、材质槽、材质分配和纹理映射；`PresenterLights` 返回旧式灯光列表。实体的 `archive` 索引指向各自的 `archives`，同一个归档内用 `LightWorksObject.parent/first_child/next_sibling` 访问层级。`identity` 保留源编号，`reference` 指向同归档的已有对象，`null_reference` 区分显式空引用。不同归档不能按名称或数字ID合并。
@@ -232,7 +236,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
 - 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；`301–425` 的新增分支主要经过边界测试，缺少充分的真实文件验证，不能据此推断整文件兼容性。验证项为 `SavedItem.type == 58`，通过 `selection.path_links` 返回路径编号。
-- NWD/NWC 保存项的显式 PathLink 支持分区绑定；NWF 保存项仍需引用匹配，名称定位、动态搜索和跨保存项关系尚未全部求值。部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
+- NWD/NWC 保存项的显式 PathLink 支持分区绑定；NWF 保存项支持引用出现绑定及选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值。部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
 - 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置和部分材质覆盖合成尚未完整支持。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。

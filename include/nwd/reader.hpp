@@ -1046,6 +1046,52 @@ struct ProductBinding {
   ProductBindingStatus status = ProductBindingStatus::unresolved;
   Id node = none, path = none; // target ProjectNode and source Model.paths
 };
+struct SavedPathBinding {
+  Id owner = none, block = none, path_link = none;
+  ProductBindingStatus status = ProductBindingStatus::unresolved;
+  Id node = none, path = none;
+  // A resolved NWF implicit root addresses the owner's project subtree,
+  // rather than an arbitrary referenced model's path0.
+  bool project_root = false;
+};
+struct SelectionLocatorPath {
+  std::string root;
+  std::vector<std::string> parts;
+};
+struct SelectionLocator {
+  bool select_all = false;
+  std::vector<SelectionLocatorPath> paths; // source order; union of targets
+};
+SelectionLocator parse_selection_locator(std::string_view,
+                                         uint64_t max_parts = 1000000);
+enum class SelectionTargetStatus {
+  resolved,
+  tree_root,
+  missing,
+  ambiguous,
+  unsupported_root,
+  unavailable
+};
+struct SelectionTarget {
+  SelectionTargetStatus status = SelectionTargetStatus::missing;
+  Id block = none, item = none; // ProductData.blocks / SavedItems.items
+};
+struct SelectionLocatorResult {
+  bool select_all = false;
+  std::vector<SelectionTarget> targets; // one per locator path, same order
+};
+// Reusable name index. Owns its names/indices, not model or selection payloads.
+// Resolves saved-item identities; it does not evaluate their search conditions.
+class SelectionSetIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit SelectionSetIndex(const ProductData &,
+                             uint64_t max_items = 10000000);
+  SelectionLocatorResult resolve(std::string_view owner_chunk,
+                                 const SelectionLocator &) const;
+};
 struct TextureFile {
   Id source = none, model = none, asset = none;
   std::string alias, requested_path, status;
@@ -1065,7 +1111,12 @@ struct Project {
   std::vector<TextureFile> textures;
   std::vector<std::string> warnings;
   bool complete = true;
+  // One entry per distinct source identity, sorted by (owner,block,path_link).
+  // SavedItems keep the original repeated IDs and field positions.
+  std::vector<SavedPathBinding> saved_path_bindings;
 };
+const SavedPathBinding *saved_path_binding(const Project &, Id owner, Id block,
+                                           Id path_link);
 Project load_project(const std::filesystem::path &, ProjectOptions = {});
 std::array<double, 16> model_base_matrix(const Model &);
 std::array<double, 16> nwf_transform_matrix(const NwfTransformOverride &);
