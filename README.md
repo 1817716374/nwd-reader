@@ -124,6 +124,8 @@ cmake --build build-examples --config Release --parallel
 
 NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字符串 ID 和对象引用属于 `NwfData.option_values`，枚举对象继续共享；这些设置仅供调用方读取。
 
+旧式 Protein 材质属性保留有类型的字段、连接和 URI。`ProteinProperty.embedded_files` 索引所属 `ObjectGraph.embedded_files`，可取得内嵌 URI 与二进制资源的原始字节、前后缀及所属对象。此类资源直接通过属性图访问；`Project.textures` 的活动状态查询目前针对实例关联的 JSON 资产。
+
 ### 单位、材质与纹理
 
 矩阵使用列主序。`world_matrix()` 保持源单位，`model.meters_per_unit` 提供到米的比例。`project_world_matrix()` 将受支持的引用放置和单位换算组合为米制矩阵；遇到不支持的引用放置会抛出异常。

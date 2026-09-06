@@ -80,7 +80,7 @@ class GraphReader {
     }
     return s;
   }
-  ProteinProperty protein() {
+  ProteinProperty protein(Id owner) {
     ProteinProperty p;
     p.type = r.u32();
     p.flags = r.u32();
@@ -123,16 +123,36 @@ class GraphReader {
     case 5:
     case 10:
     case 12:
-    case 16:
       p.strings.push_back(str());
+      break;
+    case 16:
+      if (version >= 242)
+        p.strings.push_back(str());
       break;
     case 13:
       for (uint32_t j = 0; j < p.count; ++j) {
-        p.strings.push_back(str());
-        require(r.u32() == 0, "embedded protein URI unsupported");
+        auto name = str();
+        p.strings.push_back(name);
+        auto embedded = r.u32();
+        require(embedded <= 1, "invalid protein URI embedded flag");
+        if (embedded) {
+          auto file = read_embedded_asset(
+              r, name == none ? std::string{} : graph.strings[name], owner, j);
+          p.embedded_files.push_back(
+              static_cast<Id>(graph.embedded_files.size()));
+          graph.embedded_files.push_back(std::move(file));
+        }
       }
       break;
+    case 14: {
+      auto file = read_embedded_asset(r, {}, owner, 0);
+      p.embedded_files.push_back(static_cast<Id>(graph.embedded_files.size()));
+      graph.embedded_files.push_back(std::move(file));
+      break;
+    }
     case 15:
+      if (version < 242)
+        break;
       p.integers.push_back(r.read<int32_t>());
       for (uint32_t j = 0; j < p.count; ++j) {
         p.integers.push_back(r.read<int32_t>());
@@ -340,7 +360,7 @@ public:
       o.strings.push_back(str());
       auto n = count();
       for (uint32_t j = 0; j < n; ++j)
-        o.protein_properties.push_back(protein());
+        o.protein_properties.push_back(protein(index));
       if (version >= 254)
         o.references.push_back(ref());
       if (version >= 411) {

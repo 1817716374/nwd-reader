@@ -64,6 +64,7 @@ struct ProteinProperty {
   std::vector<int32_t> integers;
   std::vector<double> numbers;
   std::vector<uint8_t> bytes;
+  std::vector<Id> embedded_files; // owning ObjectGraph.embedded_files indices
 };
 // Immutable arenas: object IDs are local to each graph, never guessed across
 // pages.
