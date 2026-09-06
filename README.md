@@ -139,6 +139,8 @@ cmake --build build-examples --config Release --parallel
 
 对象属性使用 `(graph, object)` 引用，字符串 ID 只在所属图中有效。`Property.name` 指向同图的名称对象；`Value` 保留字符串、整数、数值、向量或对象引用等源类型。不要跨图直接比较对象 ID。
 
+`Value` 的整数类型还包括 tag14 无符号32位、tag15 有符号64位、tag16 无符号64位。有符号值读取 `integer`，无符号值读取 `unsigned_integer()`；后者复用原有存储位，不增加每个 Value 的内存大小，也不经过浮点转换。
+
 对象引用和字符串视图依赖所属模型的生命周期；查询索引依赖原模型，模型修改后需要重建索引。
 
 `Scene.schemas` 保存字段名、显示名、类型、默认值和嵌套结构。`ExternalGeometry.schema` 与 `Model.schema_references` 使用这个表的零基 ID，`none` 表示空引用。外部描述的 `properties.children` 与定义中的字段顺序对应；`payload_decoded` 表示描述载荷已经读取，外部点坐标是否可用需要另外判断。GUID 保留原始16字节。
@@ -210,6 +212,29 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 `SavedItems.model` 和 `SavedItems.associations_verified` 为保存项中的显式 PathLink 提供分区上下文。通过 `read_scene()` 并开启 `Options.products` 后，仅当标志为 true 时，才能将选择集、动画选择轨道、TimeLiner 选择数组、碰撞测试/结果主路径及备用路径、视点节点/材质覆盖中的非空路径编号用于 `Scene.models[model].paths`。零是有效根，`nwd::none` 是空引用，重复路径保留。用 `path_reference()` 再取得共享对象身份。此标志不表示名称 locator、搜索条件、GUID 或 item-path 字符串已经求值；直接 `read_products()` 保持未绑定。
 
 `SavedSelection.conditions` 保留搜索条件的类别/属性名称对象、比较操作、选项和带类型的值。`SearchCondition.condition` 是比较操作，`options` 是标志；磁盘中的顺序为先选项、后操作。`operation()` 返回已识别的 `SearchOperator`（存在、等值、次序、包含、通配符、日期范围等），未知编号返回空值；`has_option(SearchOption::...)` 检查名称模式、字符串处理、取反与分组标志，`unknown_options()` 返回尚未解释的位。原始编号和源值始终保留。这些接口描述保存的条件，不执行动态搜索。
+
+`search_value_match()` 可以执行已有候选属性的值比较阶段，支持类型匹配、相等/不等、数值次序、字符串包含/通配符及时间窗口。`SearchValueView` 提供源 Value、字符串图和对象图 span；名称类型的值通过图上下文比较名称内容。返回 `SearchValueStatus`，缺少显示处理或数值比较规则时有独立状态。它不执行类别/属性名称匹配、取反、分组、选择范围或节点遍历。
+
+```cpp
+// property / model / graph 是候选属性及其来源；condition / saved 是保存条件。
+if (auto op = condition.operation(); op && condition.unknown_options() == 0) {
+    nwd::SearchValueOptions options;
+    options.text.ignore_case = condition.has_option(nwd::SearchOption::ignore_value_case);
+    options.text.ignore_accents = condition.has_option(nwd::SearchOption::ignore_value_accents);
+    options.text.ignore_widths = condition.has_option(nwd::SearchOption::ignore_value_character_widths);
+    auto status = nwd::search_value_match(
+        *op,
+        {property.value, graph, model.graphs},
+        {condition.value, saved.objects, std::span(&saved.objects, 1)}, options);
+    // 按 status 处理 match、no_match 或缺少比较上下文等状态。
+}
+```
+
+比较保留源类型：浮点 tag1/6/7/10/11 属于同一存储类型族，整数、时间和其他类型分别处理；`search_storage_type_equal()` 可单独查询此规则。不同存储类型在“不等”操作中也返回不匹配。相等比较不把整数转为浮点；NaN 不等于自身，名称值比较内部名与显示名，空字符串与空引用分开。字符串操作以首个 NUL 为结束，通配符 `?` 匹配一个 UTF-16 单元，`*` 匹配任意长度；包含操作不匹配空参数。
+
+`SearchValueOptions.exact_numeric_order=true` 显式选择精确数值排序。需要应用容差时提供 `compare_numeric(candidate, target)`，返回负数、零或正数；无法判断时返回 `nullopt`。回调优先于精确策略。默认不猜测新版应用的单位容差，数值次序操作返回 `numeric_context_required`。时间比较使用有符号整数，`within_day` / `within_week` 判断 `(target − 86400/604800, target]` 秒窗口，不按日历日或自然周分组。
+
+`SearchValueOptions.text` 设置大小写、重音和字符宽度处理。启用任一标志时，`transform` 必须提供调用方应用的完整 UTF-16 规范化规则；不能确定则返回 `nullopt`。字符宽度处理后的通配符是全角 `＊` / `？`。`max_text_units` 和 `max_match_steps` 限制字符串及匹配工作量，超限抛出异常。未知值类型、无图上下文的名称值、非法 UTF-8 或非标准布尔编码明确返回未支持状态；源值不改写。类别/属性存在等操作需要节点上下文，不属于这个值比较接口。
 
 NWF 中的保存项路径通过 `Project.saved_path_bindings` 关联到引用出现位置。开启 `ProjectOptions.reader.products` 后，用 `saved_path_binding(project, owner, block, source_path_id)` 查询：`resolved` 返回目标 `node/path`；`project_root=true` 表示整个 NWF 出现的子树；`empty` 是空引用，`unresolved` 表示无法唯一匹配。这里的源 0 和 `none` 都为空，源 1 是项目根，不能按 NWD/NWC 的零起始模型路径解释。重复源 ID 共享绑定记录，原字段顺序和模型几何仍保留。缺失引用或歧义会使 `Project.complete=false`。
 

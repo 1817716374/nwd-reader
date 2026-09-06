@@ -8,10 +8,14 @@ using Key = std::pair<Id, Id>;
 Name property_name(const ObjectGraph &g, Id id) {
   detail::require(id < g.objects.size(), "property index name outside graph");
   const auto &o = g.objects[id];
-  detail::require(o.type == 52 && o.strings.size() == 2,
+  detail::require((o.type == 52 || o.type == 82) && o.strings.size() == 2,
                   "property index name type");
-  return {std::string(resolve_string(g, o.strings[0])),
-          std::string(resolve_string(g, o.strings[1]))};
+  // Equal distinguishes null names from allocated empty names. Keep that
+  // distinction in the identity key while the first field remains the label.
+  std::string internal(1, static_cast<char>((o.strings[0] == none ? 1 : 0) |
+                                            (o.strings[1] == none ? 2 : 0)));
+  internal.append(resolve_string(g, o.strings[1]));
+  return {std::string(resolve_string(g, o.strings[0])), std::move(internal)};
 }
 std::optional<std::string> legacy_label(const ObjectGraph &g, const Value &v) {
   if (v.tag != 4)
@@ -42,10 +46,14 @@ std::optional<std::string> value_key(const ObjectGraph &g, const Value &v) {
   case 2:
   case 3:
   case 5:
+  case 14:
+  case 15:
+  case 16:
     put(v.integer);
     break;
   case 4:
   case 9:
+    put(v.string == none);
     key.append(resolve_string(g, v.string));
     break;
   case 8:

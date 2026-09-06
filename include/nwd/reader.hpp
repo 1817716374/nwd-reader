@@ -46,6 +46,10 @@ struct Value {
   Reference reference;
   int64_t integer = 0;
   std::array<double, 3> number{};
+  // Tags14/16 retain unsigned integer bits without increasing Value's size.
+  uint64_t unsigned_integer() const noexcept {
+    return static_cast<uint64_t>(integer);
+  }
 };
 struct Property {
   Id name = none;
@@ -1135,6 +1139,45 @@ struct PropertyReference {
   Reference attribute; // source Model.graphs attribute object
   Id property = none;  // Object.properties; none denotes the category itself
 };
+// Borrowed source context. graphs is needed only for name-valued references.
+struct SearchValueView {
+  const Value &value;
+  const ObjectGraph &strings;
+  std::span<const ObjectGraph> graphs{};
+};
+struct SearchTextOptions {
+  bool ignore_case = false, ignore_accents = false, ignore_widths = false;
+};
+struct SearchValueOptions {
+  SearchTextOptions text;
+  // Explicit policy: older search uses exact numeric order; newer applications
+  // may use unit-dependent tolerances. A callback takes precedence over exact.
+  bool exact_numeric_order = false;
+  std::function<std::optional<int>(SearchValueView, SearchValueView)>
+      compare_numeric;
+  // Supply the application's complete text normalization when flags are used.
+  // Width normalization uses full-width wildcard characters U+FF0A/U+FF1F.
+  std::function<std::optional<std::u16string>(std::u16string_view,
+                                              const SearchTextOptions &)>
+      transform;
+  uint64_t max_text_units = 1ull << 20;
+  uint64_t max_match_steps = 100000000;
+};
+enum class SearchValueStatus {
+  match,
+  no_match,
+  text_context_required,
+  unsupported_operation,
+  unsupported_value,
+  numeric_context_required
+};
+bool search_storage_type_equal(const Value &, const Value &) noexcept;
+// Evaluates the value phase (operators5..15) for an existing property.
+// Category, property-name, negate, grouping and selection-scope logic are
+// separate.
+SearchValueStatus search_value_match(SearchOperator, SearchValueView candidate,
+                                     SearchValueView target,
+                                     const SearchValueOptions & = {});
 struct PropertyIndexOptions {
   bool include_internal = false;
   uint64_t max_entries = 20000000;

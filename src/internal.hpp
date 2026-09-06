@@ -127,7 +127,12 @@ Value read_data_value(Cursor &r, StringReader string_reader,
     v.string = string_reader();
     break;
   case 5:
-    v.integer = static_cast<int64_t>(r.u64());
+  case 15:
+  case 16:
+    v.integer = r.read<int64_t>();
+    break;
+  case 14:
+    v.integer = r.u32();
     break;
   case 8:
     v.reference = reference_reader();
