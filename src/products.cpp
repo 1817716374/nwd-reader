@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "blowfish.hpp"
 namespace nwd {
 namespace {
 using namespace detail;
@@ -547,7 +548,9 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
   }
 }
 bool supported(std::string_view kind) {
-  return kind == "LcTlAppearanceDefinitionsElement" ||
+  return kind == "LcOpNwdStats" || kind == "LcOpGuidStore" ||
+         kind == "LcOpGridElement" || kind == "LcOdpDBDatabaseLinksElement" ||
+         kind == "LcTlAppearanceDefinitionsElement" ||
          kind == "LcTlTaskTypeDefinitionsElement" ||
          kind == "LcTlDefaultStatusElement" ||
          kind == "LcTlSimulateDurationElement" ||
@@ -696,6 +699,90 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
         if (version >= 85)
           t.states.push_back(state());
       }
+    }
+  } else if (kind == "LcOdpDBDatabaseLinksElement") {
+    auto &v = b.value.emplace<DatabaseLinks>();
+    ObjectReader objects(r.data, v.objects, version, options);
+    for (auto n = count(r, options.max_objects); n; --n) {
+      auto &link = v.links.emplace_back();
+      link.name = objects.object(r);
+      require(link.name == none || v.objects.objects.at(link.name).type == 52,
+              "database link name is not a name object");
+      link.tagged_sql = r.string();
+      auto size = r.u32();
+      auto bytes = r.raw(size);
+      link.encoded_connection.assign(bytes.begin(), bytes.end());
+      link.hold_open = boolean(r);
+      link.active = boolean(r);
+      for (auto c = count(r, options.max_objects); c; --c) {
+        auto &f = link.fields.emplace_back();
+        f.field = r.string();
+        f.display = r.string();
+      }
+    }
+    // Preserve every record before attempting configuration decoding.
+    for (auto &link : v.links)
+      link.tagged_connection =
+          decode_database_connection(link.encoded_connection);
+  } else if (kind == "LcOpNwdStats") {
+    b.value.emplace<SceneStatistics>().text = r.string();
+  } else if (kind == "LcOpGuidStore") {
+    auto &v = b.value.emplace<GuidStore>();
+    v.present = boolean(r);
+    if (v.present) {
+      auto n = count(r, options.max_objects);
+      // GUIDs have a fixed 16-byte layout with no inter-entry padding.
+      // Validate before allocating and copy the complete array once.
+      require(n <= (r.data.size() - r.pos) / 16, "truncated GUID store");
+      auto bytes = r.raw(size_t(n) * 16);
+      v.guids.resize(n);
+      if (n)
+        std::memcpy(v.guids.data(), bytes.data(), bytes.size());
+    }
+  } else if (kind == "LcOpGridElement") {
+    auto &v = b.value.emplace<Grids>();
+    uint64_t remaining = options.max_objects;
+    auto grid_count = [&] {
+      auto n = count(r, remaining);
+      remaining -= n;
+      return n;
+    };
+    for (auto n = grid_count(); n; --n) {
+      auto &s = v.systems.emplace_back();
+      s.label = r.string();
+      for (auto &x : s.frame)
+        x = r.read<double>();
+      for (auto c = grid_count(); c; --c) {
+        auto &l = s.lines.emplace_back();
+        l.label = r.string();
+        for (auto &x : l.parameters)
+          x = r.read<double>();
+        for (auto &x : l.flags)
+          x = r.byte();
+        for (auto k = grid_count(); k; --k) {
+          auto &segment = l.segments.emplace_back();
+          segment.type = r.u32();
+          if (segment.type != 5 && segment.type != 2)
+            throw Unsupported("grid segment type " +
+                              std::to_string(segment.type));
+          for (unsigned i = 0; i < (segment.type == 5 ? 2u : 3u); ++i) {
+            auto &point = segment.points.emplace_back();
+            for (auto &x : point)
+              x = r.read<double>();
+          }
+        }
+      }
+      for (auto c = grid_count(); c; --c) {
+        auto &level = s.levels.emplace_back();
+        level.label = r.string();
+        level.elevation = r.read<double>();
+      }
+      if (version >= 401)
+        s.locked_level = r.read<int32_t>();
+    }
+    if (version >= 401) {
+      v.active_system = r.read<int32_t>();
+      v.render_mode = r.read<int32_t>();
     }
   } else if (kind == "LcTlGUISettingsElement") {
     auto &v = b.value.emplace<TimeLinerGui>();

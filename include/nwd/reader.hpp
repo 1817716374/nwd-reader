@@ -561,11 +561,62 @@ struct LegacyTimeLinerDefinitions {
   std::optional<LegacyTimeLinerState> default_status;
 };
 enum class ProductStatus { not_handled, decoded, partial, failed };
+struct DatabaseFieldMapping {
+  std::string field, display;
+};
+struct DatabaseLink {
+  Id name = none; // DatabaseLinks.objects, type 52 name object
+  std::string tagged_sql;
+  std::vector<uint8_t>
+      encoded_connection; // exact saved bytes, retained on failure
+  std::optional<std::string> tagged_connection; // UTF-8; no macro expansion
+  bool hold_open = false, active = false;
+  std::vector<DatabaseFieldMapping> fields;
+};
+struct DatabaseLinks {
+  std::vector<DatabaseLink> links;
+  ObjectGraph objects; // shared name identities across the complete block
+};
+struct GuidStore {
+  bool present = false;
+  // Serialized order is significant; duplicates are retained.
+  std::vector<std::array<uint8_t, 16>> guids;
+};
+struct GridSegment {
+  uint32_t type = 0; // 5: straight line; 2: circular arc
+  // Line: start/end. Arc: center/start/end, in the system's 2D frame.
+  std::vector<std::array<double, 2>> points;
+};
+struct GridLine {
+  std::string label;
+  std::array<double, 2> parameters{}; // serialized line extent parameters
+  std::array<uint8_t, 2> flags{};
+  std::vector<GridSegment> segments;
+};
+struct GridLevel {
+  std::string label;
+  double elevation = 0;
+};
+struct GridSystem {
+  std::string label;
+  std::array<double, 12> frame{}; // four source 3-vectors; no normalization
+  std::vector<GridLine> lines;
+  std::vector<GridLevel> levels;
+  std::optional<int32_t> locked_level;
+};
+struct Grids {
+  std::vector<GridSystem> systems;
+  std::optional<int32_t> active_system, render_mode;
+};
+struct SceneStatistics {
+  std::string text; // saved statistics report, with original line breaks
+};
 using ProductValue =
     std::variant<std::monostate, CurrentView, Background, Headlight, Culling,
                  NavigationSpeed, CommentIds, SavedItems, TimeLinerGui,
                  TimeLinerClock, TimeLinerSimulation,
-                 LegacyTimeLinerDefinitions>;
+                 LegacyTimeLinerDefinitions, DatabaseLinks, GuidStore, Grids,
+                 SceneStatistics>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;

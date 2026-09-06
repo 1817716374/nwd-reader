@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nwd_reader VERSION 0.10.0 LANGUAGES C CXX)
+project(nwd_reader VERSION 0.11.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 find_package(Threads REQUIRED)
@@ -10,7 +10,7 @@ set(SKIP_INSTALL_ALL ON) # zlib is installed through the nwd export below.
 add_subdirectory(third_party/zlib-1.3.1 EXCLUDE_FROM_ALL)
 set_target_properties(zlibstatic PROPERTIES EXPORT_NAME zlib
   INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1>;$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/third_party/zlib-1.3.1>;$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-add_library(nwd_reader STATIC src/container.cpp src/geometry.cpp src/attributes.cpp src/scene.cpp src/metadata.cpp src/viewpoints.cpp src/access.cpp src/nwf.cpp src/project.cpp src/assets.cpp src/schema.cpp src/products.cpp)
+add_library(nwd_reader STATIC src/container.cpp src/geometry.cpp src/attributes.cpp src/scene.cpp src/metadata.cpp src/viewpoints.cpp src/access.cpp src/nwf.cpp src/project.cpp src/assets.cpp src/schema.cpp src/products.cpp src/blowfish.cpp)
 add_library(nwd::reader ALIAS nwd_reader)
 set_target_properties(nwd_reader PROPERTIES EXPORT_NAME reader)
 target_compile_features(nwd_reader PUBLIC cxx_std_20)
@@ -27,6 +27,7 @@ install(TARGETS nwd_reader zlibstatic EXPORT nwdTargets ARCHIVE DESTINATION ${CM
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES third_party/zlib-1.3.1/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses RENAME zlib.txt)
 install(FILES third_party/json-LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses)
+install(FILES third_party/blowfish-LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses)
 install(EXPORT nwdTargets NAMESPACE nwd:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nwd)
 configure_package_config_file(cmake/nwdConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/nwdConfig.cmake INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nwd)
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/nwdConfigVersion.cmake VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)

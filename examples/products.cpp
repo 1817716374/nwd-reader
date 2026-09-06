@@ -27,6 +27,25 @@ static int run(const std::filesystem::path &path) {
                     block.status == nwd::ProductStatus::failed;
       if (!block.diagnostic.empty())
         std::cerr << block.diagnostic << '\n';
+      if (const auto *database =
+              std::get_if<nwd::DatabaseLinks>(&block.value)) {
+        std::cout << "  database links=" << database->links.size() << '\n';
+        for (const auto &link : database->links)
+          std::cout << "    name object=" << link.name
+                    << " fields=" << link.fields.size()
+                    << " connection decoded="
+                    << link.tagged_connection.has_value() << '\n';
+      }
+      if (const auto *grids = std::get_if<nwd::Grids>(&block.value))
+        for (const auto &system : grids->systems)
+          std::cout << "  grid=" << system.label
+                    << " lines=" << system.lines.size()
+                    << " levels=" << system.levels.size() << '\n';
+      if (const auto *store = std::get_if<nwd::GuidStore>(&block.value))
+        std::cout << "  GUID store present=" << store->present
+                  << " entries=" << store->guids.size() << '\n';
+      if (const auto *stats = std::get_if<nwd::SceneStatistics>(&block.value))
+        std::cout << "  statistics text bytes=" << stats->text.size() << '\n';
       if (const auto *definitions =
               std::get_if<nwd::LegacyTimeLinerDefinitions>(&block.value)) {
         std::cout << "  legacy appearances=" << definitions->appearances.size()
