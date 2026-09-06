@@ -266,6 +266,67 @@ void read_partition(Model &, std::span<const uint8_t>, uint32_t,
 void read_metadata(Model &, std::span<const uint8_t>,
                    const std::vector<Chunk> &, uint32_t, const Options &,
                    std::vector<bool> &);
+// Visit stored path identities without flattening or copying source records.
+// Return false for a malformed public record or a rejected identity.
+template <class F> bool saved_path_links(const SavedItems &saved, F accept) {
+  auto links = [&](std::span<const uint32_t> ids) {
+    return std::all_of(ids.begin(), ids.end(), accept);
+  };
+  for (const auto &item : saved.items) {
+    if (item.selection && !links(item.selection->path_links))
+      return false;
+    if (auto test = std::get_if<ClashTest>(&item.clash))
+      for (const auto &selection : test->selections)
+        if (!links(selection.path_links))
+          return false;
+    if (auto result = std::get_if<ClashResult>(&item.clash)) {
+      if (!links(result->path_links) ||
+          (result->fallback_path_links && !links(*result->fallback_path_links)))
+        return false;
+    }
+    if (auto task = std::get_if<TimeLinerTask>(&item.timeliner)) {
+      if ((task->implicit_selection &&
+           !links(task->implicit_selection->path_links)) ||
+          (task->find_selection && !links(task->find_selection->path_links)))
+        return false;
+    }
+  }
+  for (const auto &o : saved.objects.objects) {
+    if (o.type != 89)
+      continue;
+    if (o.strings.empty())
+      return false;
+    if (o.strings[0] == none)
+      continue;
+    if (o.strings[0] >= saved.objects.strings.size())
+      return false;
+    const auto &name = saved.objects.strings[o.strings[0]];
+    if (name == "LcOpShadOverridesElement") {
+      if (o.integers.size() % 2)
+        return false;
+      for (size_t i = 1; i < o.integers.size(); i += 2)
+        if (!accept(o.integers[i]))
+          return false;
+    } else if (name == "LcOpShadFragMaterialElement") {
+      if (o.integers.empty())
+        return false;
+      size_t at = 1;
+      for (uint32_t group = 0; group < o.integers[0]; ++group) {
+        if (at == o.integers.size())
+          return false;
+        auto n = o.integers[at++];
+        if (n > o.integers.size() - at ||
+            !links(std::span(o.integers).subspan(at, n)))
+          return false;
+        at += n;
+      }
+      if (at != o.integers.size())
+        return false;
+    } else
+      return false;
+  }
+  return true;
+}
 inline double elapsed(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double, std::milli>(
              std::chrono::steady_clock::now() - start)

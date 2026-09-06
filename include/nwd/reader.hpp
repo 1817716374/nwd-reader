@@ -312,8 +312,8 @@ struct SearchCondition {
 struct SavedSelection {
   uint32_t kind =
       0; // implicit-selection mode; unused for plain find-selection records
-  // Stream path-link identities, not ObjectGraph IDs or NWF path-map IDs.
-  // Binding to an owning partition/path map is a separate operation.
+  // Stream path identities, not ObjectGraph IDs. Use the owning SavedItems
+  // model only after its explicit partition associations are verified.
   std::vector<uint32_t> path_links;
   std::vector<std::pair<std::string, std::string>> item_paths;
   uint32_t item_path_mode = 0;
@@ -541,6 +541,10 @@ struct SavedItems {
   uint32_t root_count = 0;
   std::vector<SavedItem> items; // preorder; parent is an index in this vector
   ObjectGraph objects; // shared name/variant objects across the entire block
+  // Applies only to serialized PathLink fields, including element records.
+  // Named locators, searches, GUIDs and item-path strings are not evaluated.
+  Id model = none;
+  bool associations_verified = false, implicit_node_map = false;
 };
 struct TimeLinerGui {
   std::optional<int32_t> module_version;

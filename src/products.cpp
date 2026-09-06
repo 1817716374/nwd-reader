@@ -1111,12 +1111,24 @@ void detail::bind_product_paths(ProductBlock &block, std::string_view chunk,
         if constexpr (std::is_same_v<T, PresenterData> ||
                       std::is_same_v<T, TextureSpaceOverrides> ||
                       std::is_same_v<T, NodeOverrides> ||
-                      std::is_same_v<T, HyperlinkOverrides>) {
+                      std::is_same_v<T, HyperlinkOverrides> ||
+                      std::is_same_v<T, SavedItems>) {
+          v.model = none;
+          v.associations_verified = false;
+          if constexpr (std::is_same_v<T, SavedItems>) {
+            bool have_paths = false;
+            auto valid = saved_path_links(v, [&](Id id) {
+              have_paths |= id != none;
+              return true;
+            });
+            // File/sheet metadata and other path-free collections do not
+            // require a scene model; their non-path identities remain raw.
+            if (valid && !have_paths)
+              return;
+          }
           auto split = chunk.rfind('\\');
           auto source =
               split == chunk.npos ? std::string_view{} : chunk.substr(0, split);
-          v.model = none;
-          v.associations_verified = false;
           for (size_t i = 0; i < models.size(); ++i) {
             if (models[i].name != source)
               continue;
@@ -1139,7 +1151,9 @@ void detail::bind_product_paths(ProductBlock &block, std::string_view chunk,
                                           valid_id(entry.paths.front());
                                  });
             };
-            if constexpr (std::is_same_v<T, PresenterData>)
+            if constexpr (std::is_same_v<T, SavedItems>)
+              v.associations_verified = saved_path_links(v, valid_id);
+            else if constexpr (std::is_same_v<T, PresenterData>)
               v.associations_verified = valid_selectors(v.material_bindings) &&
                                         valid_selectors(v.texture_bindings);
             else if constexpr (std::is_same_v<T, TextureSpaceOverrides>)
@@ -1224,6 +1238,8 @@ ProductData Document::read_products() const {
             return chunk.name.ends_with("LcOpNwfSceneSet");
           });
       decode(b, r, kind, version(), out.schemas, options(), implicit_node_map);
+      if (auto *saved = std::get_if<SavedItems>(&b.value))
+        saved->implicit_node_map = implicit_node_map;
       r.exact();
       b.status = ProductStatus::decoded;
       if (auto *v = std::get_if<CurrentView>(&b.value))
