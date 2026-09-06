@@ -236,7 +236,8 @@ struct Model {
   std::vector<Material> materials;
   std::vector<Asset> assets;
   std::vector<Appearance> appearances;
-  std::vector<Instance> instances;
+  std::vector<Instance>
+      instances; // serialized fragment slots; repeated slots retained
   std::vector<ObjectGraph>
       graphs; // 0 partition, 1 hierarchy, 2+ property pages
   std::vector<Path> paths;
@@ -455,7 +456,32 @@ struct ClashResultGroup {
 };
 using ClashValue =
     std::variant<std::monostate, ClashTest, ClashResult, ClashResultGroup>;
+struct SavedSheetInfo {
+  std::string sheet_id;
+  uint32_t sheet_type = 0;
+  std::vector<Id> property_categories; // SavedItems.objects
+  std::optional<std::string> initial_file, initial_sheet;
+  std::optional<std::string> legacy_file_and_sheet;
+  std::optional<std::string> initial_sheet_display_name;
+  std::optional<std::array<uint8_t, 16>> source_guid;
+};
+struct SavedFileInfo {
+  std::string default_sheet_id;
+  std::vector<Id> property_categories; // SavedItems.objects
+  std::optional<std::array<uint8_t, 16>> source_guid, file_version_guid;
+  std::vector<Id>
+      default_sheet_matches; // SavedItems.items; preserves ambiguity
+};
+struct SavedLight {
+  Id object =
+      none; // SavedItems.objects, type 27; asset reference in that object
+  std::array<double, 3> position{}, target{};
+};
 struct SavedItem {
+  Id material_asset = none; // type 80; SavedItems.objects, type 185
+  std::optional<SavedSheetInfo> sheet_info;
+  std::optional<SavedFileInfo> file_info;
+  std::optional<SavedLight> light;
   uint32_t type = 0;
   Id parent = none;
   uint64_t offset = 0, end_offset = 0; // decoded chunk offsets
@@ -560,6 +586,35 @@ struct LegacyTimeLinerDefinitions {
   std::vector<LegacyTimeLinerTaskType> task_types;
   std::optional<LegacyTimeLinerState> default_status;
 };
+enum class TextureMapping : uint32_t {
+  box,
+  plane,
+  cylinder,
+  sphere,
+  explicit_uv
+};
+struct TextureSpace {
+  TextureMapping mapping = TextureMapping::explicit_uv;
+  bool parameters_present = false; // before version 428 only mapping is stored
+  // Serialized vectors: two common vectors, then two type-specific vectors
+  // for box, plane and cylinder. Their semantic axes are not normalized.
+  std::vector<std::array<double, 3>> vectors;
+  std::array<double, 4> rotation{}; // source XYZW quaternion
+  bool cylinder_flag = false;
+  double cylinder_cap_threshold = 0;
+  std::vector<uint32_t> directions; // box: 6 pairs; cylinder: 4 enums
+};
+struct NwfTextureSpace {
+  bool node_scope =
+      false; // shared node identity, otherwise exact path identity
+  std::vector<Id>
+      paths; // NWF selectors; legacy node lookup may contain candidates
+  TextureSpace value;
+};
+struct TextureSpaceOverrides {
+  bool implicit_node_map = false;
+  std::vector<NwfTextureSpace> records;
+};
 enum class ProductStatus { not_handled, decoded, partial, failed };
 struct DatabaseFieldMapping {
   std::string field, display;
@@ -611,12 +666,114 @@ struct Grids {
 struct SceneStatistics {
   std::string text; // saved statistics report, with original line breaks
 };
-using ProductValue =
-    std::variant<std::monostate, CurrentView, Background, Headlight, Culling,
-                 NavigationSpeed, CommentIds, SavedItems, TimeLinerGui,
-                 TimeLinerClock, TimeLinerSimulation,
-                 LegacyTimeLinerDefinitions, DatabaseLinks, GuidStore, Grids,
-                 SceneStatistics>;
+struct SceneProperties {
+  std::string saved_filename;
+  std::optional<std::array<uint8_t, 16>> guid;
+  uint64_t legacy_value = 0; // retained field; native reader discards it
+};
+struct GeometryCompression {
+  uint32_t flags = 0;
+  uint8_t normal_precision = 0, color_precision = 0,
+          texture_coordinate_precision = 0;
+  float coordinate_precision = 0;
+};
+struct FileSerial {
+  std::string value;
+};
+struct ToolState {
+  uint32_t saved_tool = 0, effective_tool = 0;
+  std::optional<std::string> plugin_name; // tool 700 from version 408
+};
+struct GraphicsSystemState {
+  uint32_t saved_value = 0; // native reader consumes but ignores this value
+};
+struct ExternalReferenceTable {
+  std::string json, saved_filename;
+  std::vector<std::pair<std::string, std::string>> path_remaps;
+};
+using DatabaseCell = std::variant<std::monostate, int64_t, double, std::string,
+                                  std::vector<uint8_t>>;
+struct DatabaseForeignKey {
+  int64_t id = 0, sequence = 0;
+  std::string table, from, on_update, on_delete, match;
+  std::optional<std::string> to; // null means the referenced primary key
+};
+struct DatabaseTable {
+  std::string name;
+  std::vector<std::string> columns;
+  std::vector<std::vector<DatabaseCell>> rows;
+  std::vector<DatabaseForeignKey> foreign_keys;
+};
+struct DatabaseSchemaEntry {
+  std::string type, name, table;
+  std::optional<std::string> sql; // null for automatic indexes
+  int64_t root_page = 0;
+};
+struct FileDatabase {
+  std::string prefix, suffix;
+  uint32_t page_size = 0, page_count = 0, user_version = 0;
+  std::vector<DatabaseSchemaEntry> schema;
+  std::vector<DatabaseTable> tables;
+};
+struct Hyperlink {
+  std::string url, label;
+  Id category = none; // HyperlinkOverrides.objects, type 52
+  std::vector<std::array<double, 3>> positions;
+};
+struct HyperlinkOverride {
+  uint32_t path_link = none;
+  std::vector<Hyperlink> links;
+};
+struct HyperlinkOverrides {
+  std::vector<HyperlinkOverride> paths;
+  ObjectGraph objects;
+};
+struct NodeOverride {
+  uint32_t path_link = none, flags = 0;
+};
+struct NodeOverrides {
+  std::vector<NodeOverride> paths;
+};
+struct CacheMetadata {
+  int32_t version = 0;
+  uint32_t flags = 0;
+  std::string source_filename, source_sheet;
+  int64_t source_timestamp = 0;
+  uint64_t source_size = 0;
+  std::vector<CachePlugin> plugins;
+  std::vector<CachedReference> references;
+  std::vector<CacheOption> options;
+  bool saved_state = false;
+  ObjectGraph objects;
+};
+struct SpatialNode {
+  uint32_t type = 0; // 0 null, 1 shape, 2 static leaf, 3 static group, 4 single
+                     // leaf, 5 dynamic group
+  Id parent = none, first_child = none, next_sibling = none;
+  Id fragment = none; // source fragment slot for type 1/4
+};
+struct SpatialHierarchy {
+  std::vector<SpatialNode>
+      nodes;       // preorder, compact adjacency; no geometry copies
+  Id model = none; // owning Scene.models index, filled by read_scene()
+  bool associations_verified = false;
+};
+struct PublishInformation {
+  Id name = none, class_name = none; // objects below
+  uint32_t attribute_flags = 0, flags = 0;
+  std::string title, subject, author, publisher, copyright, published_for,
+      comments, keywords;
+  int64_t published = 0, expires = 0;
+  ObjectGraph objects;
+};
+using ProductValue = std::variant<
+    std::monostate, CurrentView, Background, Headlight, Culling,
+    NavigationSpeed, CommentIds, SavedItems, TimeLinerGui, TimeLinerClock,
+    TimeLinerSimulation, LegacyTimeLinerDefinitions, DatabaseLinks, GuidStore,
+    Grids, SceneStatistics, SceneProperties, ToolState, GraphicsSystemState,
+    ExternalReferenceTable, FileDatabase, HyperlinkOverrides,
+    GeometryCompression, FileSerial, NodeOverrides, PublishInformation,
+    CacheMetadata, TextureSpaceOverrides, SpatialHierarchy>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;
@@ -673,31 +830,6 @@ struct NwfTransformOverride {
   // overrides.
   std::vector<double> values;
 };
-enum class TextureMapping : uint32_t {
-  box,
-  plane,
-  cylinder,
-  sphere,
-  explicit_uv
-};
-struct TextureSpace {
-  TextureMapping mapping = TextureMapping::explicit_uv;
-  bool parameters_present = false; // before version 428 only mapping is stored
-  // Serialized vectors: two common vectors, then two type-specific vectors
-  // for box, plane and cylinder. Their semantic axes are not normalized.
-  std::vector<std::array<double, 3>> vectors;
-  std::array<double, 4> rotation{}; // source XYZW quaternion
-  bool cylinder_flag = false;
-  double cylinder_cap_threshold = 0;
-  std::vector<uint32_t> directions; // box: 6 pairs; cylinder: 4 enums
-};
-struct NwfTextureSpace {
-  bool node_scope =
-      false; // shared node identity, otherwise exact path identity
-  std::vector<Id>
-      paths; // NWF selectors; legacy node lookup may contain candidates
-  TextureSpace value;
-};
 struct NwfData {
   std::vector<bool> parsed_chunks; // Document directory coverage; standalone
                                    // decoders leave empty
@@ -725,6 +857,7 @@ void decode_nwf_texture_spaces(NwfData &, std::span<const uint8_t>,
 class Document {
   struct Impl;
   std::shared_ptr<Impl> impl_;
+  std::vector<uint8_t> read_product_payload(size_t index) const;
 
 public:
   explicit Document(const std::filesystem::path &path, Options options = {});

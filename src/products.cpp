@@ -452,6 +452,44 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
         s.properties.push_back(read_schema_instance(r, schemas));
     uint32_t children = 0;
     switch (s.type) {
+    case 80:
+      s.material_asset = objects.object(r);
+      require(s.material_asset == none ||
+                  out.objects.objects.at(s.material_asset).type == 185,
+              "saved material asset type");
+      break;
+    case 70:
+      s.file_info.emplace();
+      children = count(r, options.max_objects);
+      break;
+    case 71: {
+      auto &v = s.sheet_info.emplace();
+      v.sheet_id = r.string();
+      v.sheet_type = r.u32();
+      for (auto n = count(r, options.max_objects); n; --n)
+        v.property_categories.push_back(objects.object(r));
+      if (version >= 431) {
+        v.initial_file = r.string();
+        v.initial_sheet = r.string();
+      } else if (version >= 222)
+        v.legacy_file_and_sheet = r.string();
+      if (version >= 251)
+        v.initial_sheet_display_name = r.string();
+      if (version >= 246)
+        guid(r, v.source_guid.emplace());
+      break;
+    }
+    case 83: {
+      auto &v = s.light.emplace();
+      v.object = objects.object(r);
+      require(v.object == none || out.objects.objects.at(v.object).type == 27,
+              "saved light reference type");
+      for (auto &x : v.position)
+        x = r.read<double>();
+      for (auto &x : v.target)
+        x = r.read<double>();
+      break;
+    }
     case 0:
       s.view = read_current_view(r, version);
       // The lists have no per-item length. Stop at an unsupported list body;
@@ -529,6 +567,24 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
             depth + 1);
     // Recursing can reallocate out.items. Reacquire the parent by index.
     auto type = out.items[id].type;
+    if (type == 70) {
+      auto &v = *out.items[id].file_info;
+      v.default_sheet_id = r.string();
+      for (auto n = count(r, options.max_objects); n; --n)
+        v.property_categories.push_back(objects.object(r));
+      if (version >= 306) {
+        guid(r, v.source_guid.emplace());
+        guid(r, v.file_version_guid.emplace());
+      }
+      for (Id j = id + 1; j < out.items.size(); ++j) {
+        const auto &sheet = out.items[j];
+        require(sheet.parent != id || sheet.sheet_info.has_value(),
+                "file info contains non-sheet child");
+        if (sheet.parent == id && sheet.sheet_info &&
+            sheet.sheet_info->sheet_id == v.default_sheet_id)
+          v.default_sheet_matches.push_back(j);
+      }
+    }
     if (type >= 32 && type <= 38 && type != 34) {
       out.items[id].animation_flags = r.u32();
       if (type == 32) {
@@ -548,7 +604,18 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
   }
 }
 bool supported(std::string_view kind) {
-  return kind == "LcOpNwdStats" || kind == "LcOpGuidStore" ||
+  return kind == "LcOpNwdSpatialHierarchy" ||
+         kind == "LcOpTextureSpaceElement" || kind == "LcOpDBCache" ||
+         kind == "LcOpNwdPublish" || kind == "LcOpShadOverridesElement" ||
+         kind == "LcOpNwdSerial" || kind == "LcOpNwdGeometryCompress" ||
+         kind == "LcReMaterialElement" ||
+         kind == "LcOpHyperlinksOverrideElement" ||
+         kind == "LcOpFileDatabaseElement" ||
+         kind == "LcOpFileDatabaseElementNWD" ||
+         kind == "LcOpOdyScenePropsChunk" || kind == "LcOpOdyFileInfoChunk" ||
+         kind == "LcOpToolElement" || kind == "LcOpGraphicsSystemElement" ||
+         kind == "LcOpLightsElement" || kind == "LcOpXRefTable" ||
+         kind == "LcOpNwdStats" || kind == "LcOpGuidStore" ||
          kind == "LcOpGridElement" || kind == "LcOdpDBDatabaseLinksElement" ||
          kind == "LcTlAppearanceDefinitionsElement" ||
          kind == "LcTlTaskTypeDefinitionsElement" ||
@@ -568,7 +635,8 @@ bool supported(std::string_view kind) {
          kind == "LcOpZoneElement";
 }
 void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
-            std::span<const SchemaDefinition> schemas, const Options &options) {
+            std::span<const SchemaDefinition> schemas, const Options &options,
+            bool implicit_node_map) {
   if (version < 82)
     throw Unsupported("product version below 82");
   if (kind == "LcOpClashElement" &&
@@ -588,8 +656,162 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     legacy_clash_items(r, v, none, v.root_count, version, objects, options);
     return;
   }
-  if (kind == "LcOpCurrentViewElement" || kind == "LcOpHomeViewElement" ||
-      kind == "LcOpPlanViewElement" || kind == "LcOpSectionViewElement") {
+  if (kind == "LcOpNwdSpatialHierarchy") {
+    auto &v = b.value.emplace<SpatialHierarchy>();
+    struct Frame {
+      Id parent;
+      uint32_t remaining;
+      Id last_child;
+    };
+    std::vector<Frame> stack{{none, 1, none}};
+    v.nodes.reserve(static_cast<size_t>(
+        std::min<uint64_t>(options.max_objects, r.data.size() / 8 + 1)));
+    while (!stack.empty()) {
+      auto &f = stack.back();
+      if (!f.remaining) {
+        stack.pop_back();
+        continue;
+      }
+      require(stack.size() < 128 && v.nodes.size() < options.max_objects &&
+                  v.nodes.size() < none,
+              "spatial tree depth/node limit");
+      Id id = static_cast<Id>(v.nodes.size());
+      auto &n = v.nodes.emplace_back();
+      n.parent = f.parent;
+      if (f.last_child != none)
+        v.nodes[f.last_child].next_sibling = id;
+      else if (f.parent != none)
+        v.nodes[f.parent].first_child = id;
+      f.last_child = id;
+      --f.remaining;
+      n.type = r.u32();
+      if (n.type == 1 || n.type == 4)
+        n.fragment = r.u32();
+      else if (n.type == 2 || n.type == 3 || n.type == 5) {
+        auto children = count(r, options.max_objects);
+        require(n.type != 5 || children <= 7,
+                "dynamic spatial group child limit");
+        if (children)
+          stack.push_back({id, children, none});
+      } else if (n.type != 0)
+        throw Unsupported("spatial node type " + std::to_string(n.type));
+    }
+  } else if (kind == "LcOpTextureSpaceElement") {
+    auto &v = b.value.emplace<TextureSpaceOverrides>();
+    v.implicit_node_map = implicit_node_map;
+    read_texture_spaces(r, v.records, version, implicit_node_map, options);
+  } else if (kind == "LcOpDBCache") {
+    auto &v = b.value.emplace<CacheMetadata>();
+    v.version = r.read<int32_t>();
+    if (v.version != 7)
+      throw Unsupported("cache metadata module version");
+    v.flags = r.u32();
+    v.source_filename = r.string();
+    v.source_sheet = r.string();
+    v.source_timestamp = r.read<int64_t>();
+    v.source_size = r.u64();
+    ObjectReader objects(r.data, v.objects, version, options);
+    uint64_t budget = std::min<uint64_t>(1000000, options.max_objects);
+    read_cache_data(r, v.plugins, v.references, v.options, objects, options,
+                    budget);
+    v.saved_state = boolean(r);
+  } else if (kind == "LcOpNwdPublish") {
+    auto &v = b.value.emplace<PublishInformation>();
+    ObjectReader objects(r.data, v.objects, version, options);
+    v.name = objects.string(r);
+    v.class_name = objects.object(r);
+    v.attribute_flags = r.u32();
+    if (v.attribute_flags & 0x10000)
+      throw Unsupported("publish attribute auxiliary properties");
+    v.flags = r.u32();
+    v.title = r.string();
+    v.subject = r.string();
+    v.author = r.string();
+    v.publisher = r.string();
+    v.published = r.read<int64_t>();
+    v.expires = r.read<int64_t>();
+    v.copyright = r.string();
+    v.published_for = r.string();
+    v.comments = r.string();
+    v.keywords = r.string();
+  } else if (kind == "LcOpShadOverridesElement") {
+    auto &v = b.value.emplace<NodeOverrides>();
+    if (version >= 437) {
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto &entry = v.paths.emplace_back();
+        entry.path_link = r.u32();
+        entry.flags = r.byte();
+        entry.flags |= uint32_t(r.byte()) << 8;
+      }
+      if (count(r, options.max_objects))
+        throw Unsupported(
+            "node override node dictionary needs source path-map context");
+    } else {
+      for (;;) {
+        auto flags = r.u32();
+        if (!flags)
+          break;
+        require(v.paths.size() < options.max_objects,
+                "node override resource limit");
+        v.paths.push_back({r.u32(), flags});
+      }
+    }
+  } else if (kind == "LcOpNwdSerial") {
+    b.value.emplace<FileSerial>().value = r.string();
+  } else if (kind == "LcOpNwdGeometryCompress") {
+    auto &v = b.value.emplace<GeometryCompression>();
+    v.flags = r.u32();
+    v.normal_precision = r.byte();
+    v.color_precision = r.byte();
+    v.texture_coordinate_precision = r.byte();
+    v.coordinate_precision = r.read<float>();
+  } else if (kind == "LcOpFileDatabaseElement" ||
+             kind == "LcOpFileDatabaseElementNWD") {
+    read_file_database(b.value.emplace<FileDatabase>(), r,
+                       kind == "LcOpFileDatabaseElement", options);
+  } else if (kind == "LcOpHyperlinksOverrideElement") {
+    auto &v = b.value.emplace<HyperlinkOverrides>();
+    ObjectReader objects(r.data, v.objects, version, options);
+    for (auto n = count(r, options.max_objects); n; --n) {
+      auto &entry = v.paths.emplace_back();
+      entry.path_link = r.u32();
+      for (auto k = count(r, options.max_objects); k; --k) {
+        auto &link = entry.links.emplace_back();
+        link.url = r.string();
+        link.label = r.string();
+        link.category = objects.object(r);
+        require(link.category == none ||
+                    v.objects.objects.at(link.category).type == 52,
+                "hyperlink category type");
+        for (auto p = count(r, options.max_objects); p; --p) {
+          auto &xyz = link.positions.emplace_back();
+          for (auto &x : xyz)
+            x = r.read<double>();
+        }
+      }
+    }
+    if (count(r, options.max_objects))
+      throw Unsupported(
+          "hyperlink node dictionary needs its source path-map context");
+  } else if (kind == "LcOpOdyScenePropsChunk") {
+    auto &v = b.value.emplace<SceneProperties>();
+    v.saved_filename = r.string();
+    if (version >= 402)
+      guid(r, v.guid.emplace());
+    v.legacy_value = r.u64();
+  } else if (kind == "LcOpToolElement") {
+    auto &v = b.value.emplace<ToolState>();
+    v.saved_tool = r.u32();
+    v.effective_tool = version < 119 && !v.saved_tool ? none : v.saved_tool;
+    if (version >= 408 && v.saved_tool == 700)
+      v.plugin_name = r.string();
+  } else if (kind == "LcOpGraphicsSystemElement") {
+    b.value.emplace<GraphicsSystemState>().saved_value = r.u32();
+  } else if (kind == "LcOpXRefTable") {
+    b.value = read_xref_table(r, options);
+  } else if (kind == "LcOpCurrentViewElement" ||
+             kind == "LcOpHomeViewElement" || kind == "LcOpPlanViewElement" ||
+             kind == "LcOpSectionViewElement") {
     b.value = read_current_view(r, version);
   } else if (kind == "LcOpBackgroundElement") {
     auto &v = b.value.emplace<Background>();
@@ -828,12 +1050,15 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
       v.second_counter = r.u64();
   } else {
     auto &v = b.value.emplace<SavedItems>();
-    v.root_count = kind == "LcOpCurrentAnimationElement"
-                       ? 1
-                       : count(r, options.max_objects);
+    v.root_count =
+        kind == "LcOpCurrentAnimationElement" || kind == "LcOpOdyFileInfoChunk"
+            ? 1
+            : count(r, options.max_objects);
     ObjectReader objects(r.data, v.objects, version, options);
     items(r, v, none, v.root_count, version, schemas, options, objects, 0, 0,
-          kind == "LcOpCurrentAnimationElement" ? 1 : none);
+          kind == "LcOpCurrentAnimationElement" ? 1
+          : kind == "LcOpOdyFileInfoChunk"      ? 70
+                                                : none);
     if (kind == "LcOpClashElement") {
       for (auto n = count(r, options.max_objects); n; --n) {
         auto name = r.string();
@@ -883,13 +1108,18 @@ ProductData Document::read_products() const {
     auto &b = out.blocks[i];
     if (!supported(kind))
       return;
-    if (c.flags > 1 || c.prefix_bytes || c.index_bytes) {
+    const bool fixed_cipher =
+        c.flags == 3 &&
+        (kind == "LcOpNwdSerial" || kind == "LcOpNwdGeometryCompress");
+    if ((c.flags > 1 && !fixed_cipher) ||
+        ((c.prefix_bytes || c.index_bytes) &&
+         kind != "LcOpFileDatabaseElementNWD")) {
       b.diagnostic = "unsupported product chunk envelope";
       return;
     }
     std::vector<uint8_t> bytes;
     try {
-      bytes = read_chunk(i);
+      bytes = read_product_payload(i);
     } catch (const Error &e) {
       b.status = ProductStatus::failed;
       b.diagnostic = e.what();
@@ -898,7 +1128,11 @@ ProductData Document::read_products() const {
     b.decoded_bytes = bytes.size();
     detail::Cursor r(bytes, c.name);
     try {
-      decode(b, r, kind, version(), out.schemas, options());
+      const bool implicit_node_map =
+          std::any_of(chunks().begin(), chunks().end(), [](const Chunk &chunk) {
+            return chunk.name.ends_with("LcOpNwfSceneSet");
+          });
+      decode(b, r, kind, version(), out.schemas, options(), implicit_node_map);
       r.exact();
       b.status = ProductStatus::decoded;
       if (auto *v = std::get_if<CurrentView>(&b.value))

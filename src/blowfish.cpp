@@ -1,7 +1,49 @@
 #include "internal.hpp"
 #include "blowfish.hpp"
 #include "blowfish_constants.hpp"
+#include <zlib.h>
 namespace nwd::detail {
+std::vector<uint8_t> decode_chunk_cipher(std::span<const uint8_t> bytes,
+                                         uint64_t limit) {
+  static constexpr uint8_t key[] = {
+      0x20, 0xd9, 0xaf, 0xe0, 0x80, 0xf1, 0x17, 0x52, 0xde, 0x9d, 0xd9,
+      0x12, 0x43, 0xde, 0x1a, 0x98, 0x58, 0x1e, 0x2d, 0xb0, 0x4d, 0x78,
+      0x2f, 0xe4, 0x69, 0x21, 0x8e, 0x52, 0xd7, 0x05, 0x1f, 0x07};
+  static const Blowfish cipher(key);
+  require(!bytes.empty() && bytes.size() % 8 == 0,
+          "chunk cipher block alignment");
+  Bytes out;
+  size_t pos = 0;
+  auto pair = [&]() {
+    require(bytes.size() - pos >= 8, "truncated cipher block");
+    uint32_t a, b;
+    std::memcpy(&a, bytes.data() + pos, 4);
+    std::memcpy(&b, bytes.data() + pos + 4, 4);
+    pos += 8;
+    cipher.decrypt(a, b);
+    return std::pair{a, b};
+  };
+  while (pos < bytes.size()) {
+    auto [length, checksum] = pair();
+    require(length > 0 && length <= INT32_MAX && length <= limit - out.size(),
+            "chunk cipher segment length/resource limit");
+    uint64_t padded = (uint64_t(length) + 7) & ~uint64_t(7);
+    require(padded <= bytes.size() - pos, "truncated cipher segment");
+    size_t begin = out.size();
+    out.resize(begin + length);
+    for (uint64_t j = 0; j < padded; j += 8) {
+      auto [a, b] = pair();
+      uint8_t decoded[8];
+      std::memcpy(decoded, &a, 4);
+      std::memcpy(decoded + 4, &b, 4);
+      std::memcpy(out.data() + begin + j, decoded,
+                  std::min<uint64_t>(8, length - j));
+    }
+    require(adler32(1, out.data() + begin, length) == checksum,
+            "chunk cipher segment checksum");
+  }
+  return out;
+}
 uint32_t Blowfish::f(uint32_t x) const {
   return ((s_[0][x >> 24] + s_[1][(x >> 16) & 255]) ^ s_[2][(x >> 8) & 255]) +
          s_[3][x & 255];

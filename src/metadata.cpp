@@ -654,6 +654,29 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
           .properties(counts[i]);
     });
   }
+  if (counts.empty()) {
+    const auto name =
+        (model.name.empty() ? "" : model.name + "\\") + "LcOaPartitionProps";
+    for (size_t i = 0; i < chunks.size(); ++i) {
+      const auto &c = chunks[i];
+      if (c.name != name)
+        continue;
+      require(c.flags == 1 && c.prefix_bytes == 4 && c.index_bytes &&
+                  c.prefix_bytes + c.index_bytes == c.size,
+              "empty property page envelope");
+      Cursor prefix(file.subspan(c.offset, c.prefix_bytes));
+      require(prefix.u32() == 0, "empty property page prefix");
+      auto index =
+          inflate_one(file.subspan(c.offset + c.prefix_bytes, c.index_bytes),
+                      options.max_decoded_chunk);
+      require(index.consumed == c.index_bytes, "empty property index extent");
+      Cursor r(index.bytes);
+      require(r.u32() == 0,
+              "unexpected property pages without hierarchy references");
+      r.exact();
+      parsed[i] = true;
+    }
+  }
   auto &graph = model.graphs[1];
   size_t page = 2, slot = 0;
   std::vector<Id> order(graph.objects.size());

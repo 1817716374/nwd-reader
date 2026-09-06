@@ -3,7 +3,10 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 namespace nwd::detail {
+std::vector<uint8_t> decode_chunk_cipher(std::span<const uint8_t>,
+                                         uint64_t limit);
 // Internal format decoder; not a general-purpose encryption API.
 class Blowfish {
   std::array<uint32_t, 18> p_;

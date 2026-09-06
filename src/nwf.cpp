@@ -2,6 +2,26 @@
 #include "json.hpp"
 namespace nwd {
 using namespace detail;
+ExternalReferenceTable detail::read_xref_table(Cursor &r,
+                                               const Options &options) {
+  ExternalReferenceTable out;
+  out.json = r.string();
+  try {
+    auto j = nlohmann::json::parse(out.json);
+    require(j.at("Type") == "XRefTable" && j.at("Version") == 1,
+            "unsupported XRef table version");
+    out.saved_filename = j.value("SavedFilename", std::string{});
+    const auto &table = j.at("Table");
+    require(table.is_array() && table.size() <= options.max_objects,
+            "XRef table array/resource limit");
+    for (const auto &x : table)
+      out.path_remaps.emplace_back(x.at("OriginalPath").get<std::string>(),
+                                   x.at("RemappedPath").get<std::string>());
+  } catch (const nlohmann::json::exception &e) {
+    throw Error(std::string("invalid XRef table: ") + e.what());
+  }
+  return out;
+}
 static std::array<uint8_t, 16> guid(Cursor &r) {
   r.align(4);
   std::array<uint8_t, 16> a;
@@ -12,12 +32,11 @@ static std::array<uint8_t, 16> guid(Cursor &r) {
 static std::array<double, 3> vector3(Cursor &r) {
   return {r.f64(), r.f64(), r.f64()};
 }
-void detail::read_source_references(Cursor &r,
-                                    std::vector<NwfReference> &references,
-                                    ObjectReader &object_reader,
-                                    uint32_t version, const Options &options) {
-  require(version >= 92 && version <= 450,
-          "source-reference version not yet validated");
+void detail::read_cache_data(Cursor &r, std::vector<CachePlugin> &cache_plugins,
+                             std::vector<CachedReference> &cached_files,
+                             std::vector<CacheOption> &cache_options,
+                             ObjectReader &object_reader,
+                             const Options &options, uint64_t &budget) {
   auto bytes = r.data;
   auto count = [&]() {
     auto n = r.u32();
@@ -30,7 +49,6 @@ void detail::read_source_references(Cursor &r,
         r, [&] { return object_reader.string(r); },
         [&] { return Reference{0, object_reader.object(r)}; });
   };
-  size_t budget = std::min<uint64_t>(1000000, options.max_objects);
   std::function<void(CacheOption &, unsigned)> option_set =
       [&](CacheOption &set, unsigned depth) {
         require(depth < 128, "cache option nesting limit");
@@ -61,6 +79,43 @@ void detail::read_source_references(Cursor &r,
       option_set(p.options, 0);
     return p;
   };
+  cache_plugins.push_back(plugin());
+  for (auto c = count(); c; --c)
+    cache_plugins.push_back(plugin());
+  for (auto c = count(); c; --c) {
+    CachedReference f;
+    f.name = r.string();
+    r.align(4);
+    uint32_t len;
+    require(r.pos + 4 <= bytes.size(), "truncated NWF cache path");
+    std::memcpy(&len, bytes.data() + r.pos, 4);
+    f.path = r.string();
+    if (len != UINT32_MAX) {
+      f.timestamp = r.u64();
+      f.size = r.u64();
+    }
+    cached_files.push_back(std::move(f));
+  }
+  for (auto c = count(); c; --c) {
+    CacheOption o;
+    o.name = r.string();
+    o.value = data_value();
+    cache_options.push_back(std::move(o));
+  }
+}
+void detail::read_source_references(Cursor &r,
+                                    std::vector<NwfReference> &references,
+                                    ObjectReader &object_reader,
+                                    uint32_t version, const Options &options) {
+  require(version >= 92 && version <= 450,
+          "source-reference version not yet validated");
+  auto count = [&]() {
+    auto n = r.u32();
+    require(n <= std::min<uint64_t>(1000000, options.max_objects),
+            "NWF count limit");
+    return n;
+  };
+  uint64_t budget = std::min<uint64_t>(1000000, options.max_objects);
   auto n = count();
   references.reserve(n);
   for (uint32_t i = 0; i < n; ++i) {
@@ -86,29 +141,8 @@ void detail::read_source_references(Cursor &r,
     x.front = vector3(r);
     x.extra_enum = r.u32();
     x.extra = r.string();
-    x.cache_plugins.push_back(plugin());
-    for (auto c = count(); c; --c)
-      x.cache_plugins.push_back(plugin());
-    for (auto c = count(); c; --c) {
-      CachedReference f;
-      f.name = r.string();
-      r.align(4);
-      uint32_t len;
-      require(r.pos + 4 <= bytes.size(), "truncated NWF cache path");
-      std::memcpy(&len, bytes.data() + r.pos, 4);
-      f.path = r.string();
-      if (len != UINT32_MAX) {
-        f.timestamp = r.u64();
-        f.size = r.u64();
-      }
-      x.cached_files.push_back(std::move(f));
-    }
-    for (auto c = count(); c; --c) {
-      CacheOption o;
-      o.name = r.string();
-      o.value = data_value();
-      x.cache_options.push_back(std::move(o));
-    }
+    read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
+                    object_reader, options, budget);
     if (version >= 109)
       x.north = vector3(r);
     if (version >= 246)
@@ -213,11 +247,11 @@ void decode_nwf_transforms(NwfData &out, std::span<const uint8_t> bytes) {
   r.exact();
   out.transform_overrides = std::move(records);
 }
-void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
-                               uint32_t version) {
-  Cursor r(bytes, "NWF texture spaces");
-  std::vector<NwfTextureSpace> records;
-  size_t budget = 1000000;
+void detail::read_texture_spaces(Cursor &r,
+                                 std::vector<NwfTextureSpace> &records,
+                                 uint32_t version, bool implicit_node_map,
+                                 const Options &options) {
+  uint64_t budget = std::min<uint64_t>(1000000, options.max_objects);
   auto count = [&]() {
     auto n = r.u32();
     require(n <= budget, "NWF texture space resource limit");
@@ -259,7 +293,7 @@ void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
       // NWF ReadContentsImplicit leaves the native map's explicit-mode flag
       // clear for all three map kinds. ReadNode therefore reads a sentinel-
       // terminated candidate list, even when the path map kind is 2.
-      if (scope) {
+      if (scope && implicit_node_map) {
         for (;;) {
           auto id = r.u32();
           if (id == none)
@@ -274,6 +308,12 @@ void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
       records.push_back(std::move(t));
     }
   }
+}
+void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
+                               uint32_t version) {
+  Cursor r(bytes, "NWF texture spaces");
+  std::vector<NwfTextureSpace> records;
+  read_texture_spaces(r, records, version, true, Options{});
   r.exact();
   out.texture_spaces = std::move(records);
 }
@@ -308,19 +348,11 @@ NwfData Document::read_nwf() const {
     } else if (name == "LcOpXRefTable") {
       auto b = read_chunk(i);
       Cursor r(b);
-      out.xref_json = r.string();
+      auto table = read_xref_table(r, options());
       r.exact();
-      try {
-        auto j = nlohmann::json::parse(out.xref_json);
-        require(j.at("Type") == "XRefTable" && j.at("Version") == 1,
-                "unsupported XRef table version");
-        out.saved_filename = j.value("SavedFilename", std::string{});
-        for (const auto &x : j.at("Table"))
-          out.path_remaps.emplace_back(x.at("OriginalPath").get<std::string>(),
-                                       x.at("RemappedPath").get<std::string>());
-      } catch (const nlohmann::json::exception &e) {
-        throw Error(std::string("invalid XRef table: ") + e.what());
-      }
+      out.xref_json = std::move(table.json);
+      out.saved_filename = std::move(table.saved_filename);
+      out.path_remaps = std::move(table.path_remaps);
     } else
       continue;
     out.parsed_chunks[i] = true;

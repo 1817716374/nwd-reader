@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "blowfish.hpp"
 #include <fstream>
 #include <string_view>
 #include <zlib.h>
@@ -264,6 +265,59 @@ std::vector<uint8_t> Document::read_chunk(size_t index) const {
     out.insert(out.end(), b.begin(), b.end());
   return out;
 }
+std::vector<uint8_t> Document::read_product_payload(size_t index) const {
+  using namespace detail;
+  const auto &c = chunks().at(index);
+  if (c.flags == 3 && (c.name.ends_with("LcOpNwdSerial") ||
+                       c.name.ends_with("LcOpNwdGeometryCompress"))) {
+    require(!c.prefix_bytes && !c.index_bytes, "cipher chunk envelope");
+    auto compressed = decode_chunk_cipher(impl_->file.subspan(c.offset, c.size),
+                                          options().max_decoded_chunk);
+    auto decoded = inflate_one(compressed, options().max_decoded_chunk);
+    require(decoded.consumed == compressed.size(), "cipher compressed extent");
+    return std::move(decoded.bytes);
+  }
+  if (!c.name.ends_with("LcOpFileDatabaseElementNWD"))
+    return read_chunk(index);
+  require(c.flags == 1 && c.prefix_bytes == 8 && c.index_bytes > 0,
+          "unsupported database page envelope");
+  Cursor prefix(impl_->file.subspan(c.offset, 8));
+  auto segment_size = prefix.u32(), size = prefix.u32();
+  require(segment_size > 0 && size > 0 && size <= options().max_decoded_chunk,
+          "database page sizes/resource limit");
+  auto idx = inflate_one(
+      impl_->file.subspan(c.offset + c.size - c.index_bytes, c.index_bytes),
+      options().max_decoded_chunk);
+  require(idx.consumed == c.index_bytes, "database index compressed extent");
+  Cursor r(idx.bytes);
+  auto n = r.u32();
+  require(n == (uint64_t(size) + segment_size - 1) / segment_size &&
+              n <= options().max_objects,
+          "database segment count");
+  std::vector<uint32_t> sizes;
+  std::vector<uint64_t> offsets{c.offset + c.prefix_bytes};
+  for (uint32_t j = 0; j < n; ++j) {
+    sizes.push_back(r.u32());
+    offsets.push_back(offsets.back() + sizes.back());
+    require(offsets.back() <= c.offset + c.size - c.index_bytes,
+            "database segment extent");
+  }
+  r.exact();
+  require(offsets.back() == c.offset + c.size - c.index_bytes,
+          "database indexed compressed lengths");
+  Bytes out(size);
+  parallel_for(n, options().threads, [&](size_t j) {
+    const auto expected =
+        std::min<uint64_t>(segment_size, size - j * uint64_t(segment_size));
+    auto block =
+        inflate_one(impl_->file.subspan(offsets[j], sizes[j]), expected);
+    require(block.consumed == sizes[j] && block.bytes.size() == expected,
+            "database decoded segment extent");
+    std::copy(block.bytes.begin(), block.bytes.end(),
+              out.begin() + j * uint64_t(segment_size));
+  });
+  return out;
+}
 Scene Document::read_scene() const {
   using namespace detail;
   auto start = std::chrono::steady_clock::now();
@@ -369,7 +423,32 @@ Scene Document::read_scene() const {
     out.timing.resources_ms = elapsed(phase);
   }
   if (impl_->options.products) {
-    out.products = std::make_shared<ProductData>(read_products());
+    auto products = std::make_shared<ProductData>(read_products());
+    for (size_t i = 0; i < products->blocks.size(); ++i) {
+      auto &b = products->blocks[i];
+      auto *tree = std::get_if<SpatialHierarchy>(&b.value);
+      if (!tree || b.status != ProductStatus::decoded)
+        continue;
+      for (size_t m = 0; m < out.models.size(); ++m) {
+        const auto &model = out.models[m];
+        const auto chunk_name = (model.name.empty() ? "" : model.name + "\\") +
+                                "LcOpNwdSpatialHierarchy";
+        if (out.chunks[i].name != chunk_name)
+          continue;
+        require(tree->model == none, "ambiguous spatial model namespace");
+        tree->model = static_cast<Id>(m);
+        tree->associations_verified = std::all_of(
+            tree->nodes.begin(), tree->nodes.end(), [&](const SpatialNode &n) {
+              return (n.type != 1 && n.type != 4) ||
+                     n.fragment < model.instances.size();
+            });
+      }
+      if (!tree->associations_verified) {
+        b.status = ProductStatus::partial;
+        b.diagnostic = "spatial fragment association missing/outside model";
+      }
+    }
+    out.products = std::move(products);
     for (size_t i = 0; i < out.chunks.size(); ++i)
       if (out.products->blocks[i].status == ProductStatus::decoded)
         out.parsed_chunks[i] = true;

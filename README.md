@@ -19,7 +19,10 @@
 - **碰撞**：读取测试、结果、结果组、规则、审批与模拟事件，以及验证选择中保存的路径编号。
 - **轴网**：读取系统坐标框架、轴线直线段和圆弧、楼层标高、活动系统与锁定层。
 - **数据库链接**：读取保存的 SQL、连接字符串、开关和字段映射，保留共享名称与原始编码字节。
-- **文档辅助数据**：读取 GUID 仓库和保存的场景统计报告。
+- **文件数据库**：在内存中读取 SQLite 表结构、行、列、原始单元格类型、外键和定义，不执行源视图或外部数据库查询。
+- **空间树**：读取原生空间层级及分片槽引用，保留父子结构并关联模型实例。
+- **灯光与文档信息**：读取现代灯光资产、位置/目标点、图纸目录、默认图纸、发布字段、缓存配置、超链接、序列号和几何压缩参数。
+- **文档辅助数据**：读取 GUID 仓库、统计报告、节点覆盖、工具与图形设置。
 - **读取状态**：保留块目录，区分已解析、部分解析、读取失败和尚未由产品模块处理的内容。
 - **并行读取**：支持几何记录、压缩块和属性页并行处理；线程数可配置。
 
@@ -108,7 +111,11 @@ cmake --build build-examples --config Release --parallel
 | `Document::read_nwf()` | 读取 NWF 引用、路径表和外观覆盖信息 |
 | `Document::read_products()` | 独立读取视点、选择集、动画、TimeLiner和显示配置，适用于NWD/NWC/NWF |
 | `ProductData` / `ProductBlock` | 块目录、共享schema定义、类型化数据、读取状态和未消费尾部 |
-| `SavedItems` / `SavedItem` | 保存项的层级、注释、GUID、视点、选择记录、关键帧和任务数据 |
+| `SavedItems` / `SavedItem` | 保存项层级、注释、GUID、视点、选择、关键帧、任务、图纸、现代灯光和材质资产 |
+| `FileDatabase` | SQLite 普通表、列、行、动态单元格类型、DDL 与外键 |
+| `SpatialHierarchy` | 紧凑空间树及源分片槽引用；`read_scene()` 可校验模型关联 |
+| `PublishInformation` / `CacheMetadata` | 发布属性与源文件缓存配置 |
+| `HyperlinkOverrides` / `NodeOverrides` | 保存的超链接、位置和路径覆盖记录 |
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
 | `Project.sources` / `Project.nodes` | 共享源文件与独立引用出现构成的文件树 |
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
@@ -187,13 +194,23 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `DatabaseLinks` 的名称索引属于自身的 `objects`，与 SQL、连接字符串和字段映射一起返回；`tagged_connection` 使用 UTF-8，保留宏表达式，不执行外部数据库查询。`Grids` 保留系统、轴线和楼层层级，段类型 `5` 是直线、`2` 是圆弧。`GuidStore` 保留源顺序和重复 GUID；`SceneStatistics.text` 保留统计报告原文。
 
+`SavedItem.sheet_info` 返回图纸ID、初始文件/图纸、属性类别和来源GUID；文件根的 `file_info.default_sheet_matches` 按原始图纸ID列出所有直接子项匹配，不擅自消除重复。`light` 的 `object` 与 `material_asset` 索引属于同一 `SavedItems.objects`，现代灯光另提供 `position` 和 `target`。
+
+`FileDatabase.tables` 保留数据库普通表的原始列与行；`DatabaseCell` 区分NULL、64位整数、浮点数、字符串和二进制字节。空BLOB与NULL、自动索引的NULL SQL与空字符串分别保留。`schema` 保留视图/索引/触发器定义，但读取器不会执行这些定义；应用表中BLOB内部格式和业务关联需另行解释。
+
+`SpatialHierarchy.nodes` 使用 `parent/first_child/next_sibling` 表达邻接关系。类型1/4的 `fragment` 是模型分片槽，只有 `associations_verified` 为true时才能结合 `model` 访问 `Scene.models[model].instances[fragment]`。通过 `Options.products = true` 调用 `read_scene()` 才会校验此关联；单独 `read_products()` 保留未绑定状态。实例仍引用共享几何。
+
+`HyperlinkOverrides`、`NodeOverrides` 保留源PathLink，尚未统一绑定到模型对象。`TextureSpaceOverrides` 复用NWF纹理空间记录，保留路径/节点范围及候选列表。`ExternalReferenceTable` 返回完整重映射表和原始JSON；联合引用加载仍使用 `load_project()`。
+
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
 
 NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`；内部版本不等同于软件发布年份。NWF 当前主要支持内部版本 `448` 的引用与完整材质覆盖。
 
 以下内容仍存在限制：
 
-- 尚未完整支持碰撞自定义字段/状态、动画脚本/事件/动作、灯光/Presenter、数据库缓存、文件数据库和原生空间索引等块。
+- 旧版 LightWorks Presenter/灯光归档、碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
+- 超链接/节点覆盖的非空节点字典、Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
+- 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
 - 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；`301–425` 的新增分支主要经过边界测试，缺少充分的真实文件验证，不能据此推断整文件兼容性。验证项为 `SavedItem.type == 58`，通过 `selection.path_links` 返回路径编号。
@@ -214,4 +231,4 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 ## 第三方组件
 
-使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产，使用 SQLite 在内存中读取嵌入数据库。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

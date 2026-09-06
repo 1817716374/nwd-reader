@@ -36,6 +36,24 @@ static int run(const std::filesystem::path &path) {
                     << " connection decoded="
                     << link.tagged_connection.has_value() << '\n';
       }
+      if (const auto *database = std::get_if<nwd::FileDatabase>(&block.value))
+        for (const auto &table : database->tables)
+          std::cout << "  table=" << table.name
+                    << " columns=" << table.columns.size()
+                    << " rows=" << table.rows.size()
+                    << " foreign keys=" << table.foreign_keys.size() << '\n';
+      if (const auto *spatial =
+              std::get_if<nwd::SpatialHierarchy>(&block.value))
+        std::cout << "  spatial nodes=" << spatial->nodes.size()
+                  << " associations verified=" << spatial->associations_verified
+                  << '\n';
+      if (const auto *publish =
+              std::get_if<nwd::PublishInformation>(&block.value))
+        std::cout << "  title=" << publish->title
+                  << " author=" << publish->author << '\n';
+      if (const auto *links =
+              std::get_if<nwd::HyperlinkOverrides>(&block.value))
+        std::cout << "  hyperlink paths=" << links->paths.size() << '\n';
       if (const auto *grids = std::get_if<nwd::Grids>(&block.value))
         for (const auto &system : grids->systems)
           std::cout << "  grid=" << system.label
@@ -65,6 +83,18 @@ static int run(const std::filesystem::path &path) {
             std::cout << "    distance=" << result->distance
                       << " path links=" << result->path_links[0] << ','
                       << result->path_links[1] << '\n';
+          if (item.sheet_info)
+            std::cout << "    sheet=" << item.sheet_info->sheet_id << '\n';
+          if (item.file_info)
+            std::cout << "    default sheet matches="
+                      << item.file_info->default_sheet_matches.size() << '\n';
+          if (item.light)
+            std::cout << "    light object=" << item.light->object
+                      << " position=" << item.light->position[0] << ','
+                      << item.light->position[1] << ','
+                      << item.light->position[2] << '\n';
+          if (item.material_asset != nwd::none)
+            std::cout << "    material asset=" << item.material_asset << '\n';
           if (item.keyframe)
             std::cout << "    time=" << item.keyframe->time << '\n';
           if (const auto *task =

@@ -224,6 +224,14 @@ void read_source_references(Cursor &, std::vector<NwfReference> &,
                             ObjectReader &, uint32_t version,
                             const Options &options = {});
 CurrentView read_current_view(Cursor &, uint32_t version);
+ExternalReferenceTable read_xref_table(Cursor &, const Options &);
+void read_texture_spaces(Cursor &, std::vector<NwfTextureSpace> &, uint32_t,
+                         bool implicit_node_map, const Options &);
+void read_cache_data(Cursor &, std::vector<CachePlugin> &,
+                     std::vector<CachedReference> &, std::vector<CacheOption> &,
+                     ObjectReader &, const Options &, uint64_t &budget);
+void read_file_database(FileDatabase &, Cursor &, bool wrapped,
+                        const Options &);
 CurrentView read_viewpoint(Cursor &, uint32_t version);
 Camera read_camera(Cursor &, uint32_t version);
 void read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
