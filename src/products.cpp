@@ -730,19 +730,15 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     v.name = objects.string(r);
     v.class_name = objects.object(r);
     v.attribute_flags = r.u32();
-    if (v.attribute_flags & 0x10000)
-      throw Unsupported("publish attribute auxiliary properties");
-    v.flags = r.u32();
-    v.title = r.string();
-    v.subject = r.string();
-    v.author = r.string();
-    v.publisher = r.string();
-    v.published = r.read<int64_t>();
-    v.expires = r.read<int64_t>();
-    v.copyright = r.string();
-    v.published_for = r.string();
-    v.comments = r.string();
-    v.keywords = r.string();
+    validate_publish_attribute_flags(v.attribute_flags, version);
+    std::array<std::string *, 8> strings{
+        &v.title,     &v.subject,       &v.author,   &v.publisher,
+        &v.copyright, &v.published_for, &v.comments, &v.keywords};
+    read_publish_body(
+        r, v.flags, [&](unsigned i) { *strings[i] = r.string(); },
+        [&](unsigned i, int64_t time) {
+          (i ? v.expires : v.published) = time;
+        });
   } else if (kind == "LcOpShadOverridesElement") {
     auto &v = b.value.emplace<NodeOverrides>();
     v.implicit_node_map = implicit_node_map;

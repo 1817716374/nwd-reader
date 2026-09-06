@@ -362,16 +362,17 @@ public:
       common(o);
       o.wide.push_back(r.u64());
       break;
-    case 92:
+    case 92: {
       common(o);
-      o.integers.push_back(r.u32());
-      for (unsigned j = 0; j < 4; ++j)
-        o.strings.push_back(str());
-      o.wide.push_back(r.u64());
-      o.wide.push_back(r.u64());
-      for (unsigned j = 0; j < 4; ++j)
-        o.strings.push_back(str());
+      validate_publish_attribute_flags(o.flags, version);
+      o.integers.push_back(0);
+      read_publish_body(
+          r, o.integers.back(), [&](unsigned) { o.strings.push_back(str()); },
+          [&](unsigned, int64_t time) {
+            o.wide.push_back(static_cast<uint64_t>(time));
+          });
       break;
+    }
     case 77:
     case 79: {
       common(o);

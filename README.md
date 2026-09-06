@@ -131,6 +131,8 @@ cmake --build build-examples --config Release --parallel
 | `NwfData.option_values` / `NwfReference.cache_plugins` | 缓存插件配置、嵌套选项及枚举对象 |
 | `Project.textures` | 获取纹理归属、路径、状态和共享原始字节 |
 
+`PublishInformation::has_option(PublishOption)` 可查询密码标志、打开时显示、到期日期标志、已重存、允许重存、密码提示时显示和嵌入数据库属性等保存配置。`flags` 保留原始位，`unknown_flags()` 返回尚未命名的位；`published` 和 `expires` 保留有符号时间值。密码标志不等于口令内容，此发布信息块不包含可返回的口令字段。
+
 ### 几何、属性与对象身份
 
 `ModelIndex::children(path)` 返回直接子节点，`instances(path)` 返回直接关联的实例；遍历整棵树时继续访问子节点。实例通过 ID 引用共享几何和外观，应保留这种关联以降低内存占用。
@@ -287,7 +289,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
 - LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持 encoding0 编码密钥、encoding1 密钥标识、任意起始页和非顺序页链。归档内不属于根页链的独立物理页、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、插件图像 codec 和复杂别名分支尚未完整覆盖。旧密钥与非顺序页链缺少充分的原生实样覆盖。
-- Publish附加属性、未知SQLite虚拟表等布局明确返回部分解析或错误；新增版本分支不代表所有导出器均已覆盖。
+- 未知SQLite虚拟表等布局明确返回部分解析或错误；发布对象上的非法属性存储标志返回错误。新增版本分支不代表所有导出器均已覆盖。
 - 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
 - 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。

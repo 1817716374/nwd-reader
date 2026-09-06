@@ -826,6 +826,15 @@ struct SpatialHierarchy {
   Id model = none; // owning Scene.models index, filled by read_scene()
   bool associations_verified = false;
 };
+enum class PublishOption : uint32_t {
+  has_password = 1,
+  display_on_open = 2,
+  has_expiry_date = 16,
+  has_been_resaved = 32,
+  allow_resave = 64,
+  display_at_password = 128,
+  embed_database_properties = 512
+};
 struct PublishInformation {
   Id name = none, class_name = none; // objects below
   uint32_t attribute_flags = 0, flags = 0;
@@ -833,6 +842,10 @@ struct PublishInformation {
       comments, keywords;
   int64_t published = 0, expires = 0;
   ObjectGraph objects;
+  bool has_option(PublishOption option) const {
+    return (flags & static_cast<uint32_t>(option)) != 0;
+  }
+  uint32_t unknown_flags() const { return flags & ~uint32_t{0x2f3}; }
 };
 // LightWorks values retain their wire type separately from the C++ storage.
 using LightWorksValue =

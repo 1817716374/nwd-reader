@@ -150,6 +150,26 @@ Value read_data_value(Cursor &r, StringReader string_reader,
   }
   return v;
 }
+// Publication contents have the same layout in graph objects and the standalone
+// product block. String readers retain each caller's arena/null representation.
+inline void validate_publish_attribute_flags(uint32_t flags, uint32_t version) {
+  // The native publish constructor does not enable property-vector storage.
+  // Since version41, wire bit16 on this object is a stream error, not a
+  // payload.
+  require(version < 41 || !(flags & 0x10000),
+          "invalid publish attribute property-vector flag");
+}
+template <class StringReader, class TimeWriter>
+void read_publish_body(Cursor &r, uint32_t &flags, StringReader string_reader,
+                       TimeWriter time_writer) {
+  flags = r.u32();
+  for (unsigned i = 0; i < 4; ++i)
+    string_reader(i);
+  for (unsigned i = 0; i < 2; ++i)
+    time_writer(i, r.read<int64_t>());
+  for (unsigned i = 4; i < 8; ++i)
+    string_reader(i);
+}
 template <class ReferenceReader>
 Appearance read_appearance(Cursor &r, ReferenceReader reference) {
   Appearance a;
