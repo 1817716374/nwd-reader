@@ -537,11 +537,35 @@ struct TimeLinerSimulation {
   std::vector<std::string> strings;
   std::optional<std::pair<std::string, std::string>> animation_path;
 };
+struct LegacyTimeLinerState {
+  bool flag = false;
+  // Serialized parameters, without applying native runtime conversion.
+  std::array<int32_t, 3> parameters{};
+};
+struct LegacyTimeLinerAppearance {
+  std::string name;
+  std::array<int32_t, 3> color{};
+  double opacity = 0;
+};
+struct LegacyTimeLinerTaskType {
+  std::string name, legacy_name;
+  // Source order; older versions omit the final states.
+  std::vector<LegacyTimeLinerState> states;
+  bool flag = false;
+};
+struct LegacyTimeLinerDefinitions {
+  std::optional<int32_t> module_version;
+  // The containing chunk identifies which definition collection is present.
+  std::vector<LegacyTimeLinerAppearance> appearances;
+  std::vector<LegacyTimeLinerTaskType> task_types;
+  std::optional<LegacyTimeLinerState> default_status;
+};
 enum class ProductStatus { not_handled, decoded, partial, failed };
 using ProductValue =
     std::variant<std::monostate, CurrentView, Background, Headlight, Culling,
                  NavigationSpeed, CommentIds, SavedItems, TimeLinerGui,
-                 TimeLinerClock, TimeLinerSimulation>;
+                 TimeLinerClock, TimeLinerSimulation,
+                 LegacyTimeLinerDefinitions>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;

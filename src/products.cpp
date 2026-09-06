@@ -480,6 +480,14 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
       if (count(r, options.max_objects))
         throw Unsupported("nonempty clash field/status root");
       break;
+    case 58: {
+      // Validation item: a concrete selection, without a kind discriminator.
+      auto &selection = s.selection.emplace();
+      selection.kind = 0;
+      for (auto n = count(r, options.max_objects); n; --n)
+        selection.path_links.push_back(r.u32());
+      break;
+    }
     case 32:
     case 33:
     case 35:
@@ -539,7 +547,10 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
   }
 }
 bool supported(std::string_view kind) {
-  return kind == "LcTlSimulateDurationElement" ||
+  return kind == "LcTlAppearanceDefinitionsElement" ||
+         kind == "LcTlTaskTypeDefinitionsElement" ||
+         kind == "LcTlDefaultStatusElement" ||
+         kind == "LcTlSimulateDurationElement" ||
          kind == "LcTlSimulateTimeElement" ||
          kind == "LcOpCurrentAnimationElement" || kind == "LcOpClashElement" ||
          kind == "LcOpCurrentViewElement" || kind == "LcOpHomeViewElement" ||
@@ -558,9 +569,9 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
   if (version < 82)
     throw Unsupported("product version below 82");
   if (kind == "LcOpClashElement" &&
-      ((version < 431 && version != 103 && version != 112) || version > 450))
+      ((version < 301 && version != 103 && version != 112) || version > 450))
     throw Unsupported("clash container version not yet validated");
-  if (kind == "LcOpClashElement" && version < 431) {
+  if (kind == "LcOpClashElement" && version < 301) {
     auto &v = b.value.emplace<SavedItems>();
     ObjectReader objects(r.data, v.objects, version, options);
     for (auto n = count(r, options.max_objects); n; --n) {
@@ -642,6 +653,48 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
           integer();
           v.animation_path = string_pair(r);
         }
+      }
+    }
+  } else if (kind == "LcTlAppearanceDefinitionsElement" ||
+             kind == "LcTlTaskTypeDefinitionsElement" ||
+             kind == "LcTlDefaultStatusElement") {
+    auto &v = b.value.emplace<LegacyTimeLinerDefinitions>();
+    if (version < 241) {
+      v.module_version = r.read<int32_t>();
+      if (*v.module_version > 8)
+        throw Unsupported("legacy TimeLiner definitions module version");
+    }
+    auto state = [&] {
+      LegacyTimeLinerState s;
+      s.flag = boolean(r);
+      for (auto &x : s.parameters)
+        x = r.read<int32_t>();
+      return s;
+    };
+    if (kind == "LcTlDefaultStatusElement")
+      v.default_status = state();
+    else if (kind == "LcTlAppearanceDefinitionsElement") {
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto &a = v.appearances.emplace_back();
+        a.name = r.string();
+        for (auto &x : a.color)
+          x = r.read<int32_t>();
+        a.opacity = r.read<double>();
+      }
+    } else {
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto &t = v.task_types.emplace_back();
+        t.name = r.string();
+        t.legacy_name = r.string();
+        t.states.push_back(state());
+        t.states.push_back(state());
+        t.flag = boolean(r);
+        if (version >= 56) {
+          t.states.push_back(state());
+          t.states.push_back(state());
+        }
+        if (version >= 85)
+          t.states.push_back(state());
       }
     }
   } else if (kind == "LcTlGUISettingsElement") {

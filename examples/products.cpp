@@ -27,6 +27,16 @@ static int run(const std::filesystem::path &path) {
                     block.status == nwd::ProductStatus::failed;
       if (!block.diagnostic.empty())
         std::cerr << block.diagnostic << '\n';
+      if (const auto *definitions =
+              std::get_if<nwd::LegacyTimeLinerDefinitions>(&block.value)) {
+        std::cout << "  legacy appearances=" << definitions->appearances.size()
+                  << " task types=" << definitions->task_types.size()
+                  << " default status="
+                  << definitions->default_status.has_value() << '\n';
+        for (const auto &task : definitions->task_types)
+          std::cout << "    task type=" << task.name
+                    << " states=" << task.states.size() << '\n';
+      }
       if (const auto *saved = std::get_if<nwd::SavedItems>(&block.value)) {
         for (const auto &item : saved->items) {
           std::cout << "  type=" << item.type << " parent=" << item.parent
