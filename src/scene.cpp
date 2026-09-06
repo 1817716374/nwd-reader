@@ -58,8 +58,23 @@ class Fragments {
       auto a = object();
       require(!a.type || a.type == 55, "shape appearance type");
       x.appearance = a.index;
-      require((x.flags & 0x20080) != 0x20080,
-              "unsupported auxiliary shape representation");
+      // The native reader translates serialized bit 29 to internal bit 17.
+      // Testing bit 17 in the on-disk flags misses the optional record.
+      if (version >= 243 && (x.flags & 0x20000080u) == 0x20000080u) {
+        AuxiliaryTransform saved;
+        saved.type = r.u32();
+        require(saved.type <= 2, "unknown auxiliary shape transform type");
+        const unsigned count = saved.type == 0 ? 12 : saved.type == 1 ? 3 : 7;
+        for (unsigned i = 0; i < count; ++i)
+          saved.values[i] = r.f64();
+        if (saved.type == 0) {
+          auto flag = r.u32();
+          require(flag <= 1, "invalid auxiliary transform orientation");
+          saved.orientation = flag != 0;
+        }
+        x.auxiliary_transform = static_cast<Id>(m.auxiliary_transforms.size());
+        m.auxiliary_transforms.push_back(saved);
+      }
       auto g = object();
       require(g.type == 93, "shape geometry reference type");
       x.geometry_reference = g.index;

@@ -197,6 +197,70 @@ void decode_nwf_transforms(NwfData &out, std::span<const uint8_t> bytes) {
   r.exact();
   out.transform_overrides = std::move(records);
 }
+void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
+                               uint32_t version) {
+  Cursor r(bytes, "NWF texture spaces");
+  std::vector<NwfTextureSpace> records;
+  size_t budget = 1000000;
+  auto count = [&]() {
+    auto n = r.u32();
+    require(n <= budget, "NWF texture space resource limit");
+    budget -= n;
+    return n;
+  };
+  auto space = [&]() {
+    TextureSpace s;
+    auto type = r.u32();
+    require(type <= 4, "unknown NWF texture mapping");
+    s.mapping = static_cast<TextureMapping>(type);
+    if (version < 428 || type == 4)
+      return s;
+    s.parameters_present = true;
+    s.vectors.push_back(vector3(r));
+    s.vectors.push_back(vector3(r));
+    for (auto &v : s.rotation)
+      v = r.f64();
+    if (type == 2) {
+      auto flag = r.u32();
+      require(flag <= 1, "invalid texture cylinder boolean");
+      s.cylinder_flag = flag != 0;
+      s.cylinder_cap_threshold = r.f64();
+    }
+    if (type <= 2) {
+      s.vectors.push_back(vector3(r));
+      s.vectors.push_back(vector3(r));
+    }
+    const unsigned enums = type == 0 ? 12 : type == 2 ? 4 : 0;
+    for (unsigned i = 0; i < enums; ++i)
+      s.directions.push_back(r.u32());
+    return s;
+  };
+  for (unsigned scope = 0; scope < 2; ++scope) {
+    auto n = count();
+    for (uint32_t i = 0; i < n; ++i) {
+      NwfTextureSpace t;
+      t.node_scope = scope != 0;
+      // NWF ReadContentsImplicit leaves the native map's explicit-mode flag
+      // clear for all three map kinds. ReadNode therefore reads a sentinel-
+      // terminated candidate list, even when the path map kind is 2.
+      if (scope) {
+        for (;;) {
+          auto id = r.u32();
+          if (id == none)
+            break;
+          require(budget > 0, "NWF texture node lookup resource limit");
+          --budget;
+          t.paths.push_back(id);
+        }
+      } else
+        t.paths.push_back(r.u32());
+      t.value = space();
+      records.push_back(std::move(t));
+    }
+  }
+  r.exact();
+  out.texture_spaces = std::move(records);
+}
 NwfData Document::read_nwf() const {
   NwfData out;
   bool found = false;
@@ -207,21 +271,18 @@ NwfData Document::read_nwf() const {
       found = true;
     }
   require(found, "not an NWF scene set");
+  // Resolve selectors independently of directory order.
+  for (size_t i = 0; i < chunks().size(); ++i)
+    if (chunks()[i].name.ends_with("LcOpNwfPathMap"))
+      decode_nwf_path_map(out, read_chunk(i));
   for (size_t i = 0; i < chunks().size(); ++i) {
     auto name = chunks()[i].name;
-    if (name.ends_with("LcOpNwfPathMap"))
-      decode_nwf_path_map(out, read_chunk(i));
-    else if (name.ends_with("LcOpShadFragMaterialElement"))
+    if (name.ends_with("LcOpShadFragMaterialElement"))
       read_nwf_appearances(out, read_chunk(i), version(), options());
     else if (name.ends_with("LcOpShadFragTransformElement2"))
       decode_nwf_transforms(out, read_chunk(i));
     else if (name.ends_with("LcOpTextureSpaceElement")) {
-      auto b = read_chunk(i);
-      Cursor r(b, "NWF transform overrides");
-      if (r.u32() != 0)
-        out.unparsed_core.push_back(name);
-      else
-        r.exact();
+      decode_nwf_texture_spaces(out, read_chunk(i), version());
     } else if (name == "LcOpXRefTable") {
       auto b = read_chunk(i);
       Cursor r(b);

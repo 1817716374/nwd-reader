@@ -12,7 +12,7 @@
 - **共享字段定义**：读取 common schema、分区引用及外部几何描述中的有类型字段、GUID和包围盒。
 - **材质**：读取环境色、漫反射、高光、自发光、光泽度和透明度，以及资产节点、参数和贴图连接。
 - **纹理**：保留内嵌文件的原始字节，支持外部纹理查找、路径重映射和可用状态查询。
-- **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点和材质覆盖。
+- **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点、材质覆盖、对象变换和纹理映射记录。
 - **并行读取**：支持几何记录、压缩块和属性页并行处理；线程数可配置。
 
 ## 构建
@@ -130,9 +130,15 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 同单位 NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放和剪切；源几何仍共享。`model_base_matrix()` 返回源基准矩阵，`reference_placement_matrix()` 返回引用所需的米制修正矩阵。方向提示的变化单独保存在节点的 `orientation_changed` 中。
 
+直接、同单位引用且源模型没有已保存的对象覆盖时，`project_world_matrix()` 还会应用 NWF 对象变换。`nwf_transform_matrix()` 提供原始载荷到列主序矩阵的转换，`Project.transform_overrides` 保留每个实例的米制覆盖矩阵。
+
+`Instance.auxiliary_transform` 引用 `Model.auxiliary_transforms` 中的辅助仿射、平移或平移＋旋转记录。这些数据保持源值，与当前实例矩阵分开返回。
+
 材质通过 `Material` 的 `ambient()`、`diffuse()`、`specular()`、`emissive()`、`shininess()` 和 `transparency()` 访问。资产图保留原始参数类型、连接和 URI，完整 JSON 仍在 `Asset.json` 中，便于调用方处理扩展字段。
 
 纹理保留编码后的原始字节，不做图片解码。通过 `TextureFile` 的源、模型、资产及别名关联材质；`active` 和 `thumbnail` 区分活动资产与缩略图。外部文件可使用 `ProjectOptions.search_paths` 查找，或通过 `remaps` 指定原路径到本机文件的映射。
+
+`NwfData.texture_spaces` 返回盒形、平面、圆柱、球形和显式 UV 映射。向量、旋转和方向枚举保持序列化顺序，`parameters_present` 指明文件是否保存了参数。`Project.texture_space_assignments` 将记录关联到模型路径；通过 `owner` 找到所属 NWF，再以 `record` 访问记录。`node_scope` 表示共享节点赋值，可用 `path_reference()` 获取 graph/object 身份。这是赋值记录接口，多层映射覆盖的最终优先级由调用方处理。
 
 ## 支持范围与错误处理
 
@@ -141,8 +147,9 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 以下内容仍存在限制：
 
 - 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
-- NWF 的混合单位变换、源单位重定义、多分区聚合放置、纹理空间覆盖和部分材质覆盖合成尚未完整支持。
-- 对象级变换覆盖通过 `NwfData.transform_overrides` 返回路径、标志和原始矩阵载荷；其坐标空间组合尚未应用，项目会报告不完整并拒绝提供对应世界矩阵。
+- NWF 的混合单位变换、源单位重定义、多分区聚合放置和部分材质覆盖合成尚未完整支持。
+- 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
+- 纹理映射向量和方向枚举尚未全部赋予通用语义；部分布局缺少非空原生样本验证。
 - 某些复杂联合树需要额外的 GUID 或校验值才能消歧；未知 schema、对象类型或资产变体可能无法解析。
 
 `Project.complete` 表示本次加载未检测到缺失或不支持项，不代表所有格式变体均受支持。调用方应同时检查 `warnings`、引用节点状态、`placement_supported` 和纹理状态。设置 `load_textures = false` 时，完整状态不包含纹理检查。

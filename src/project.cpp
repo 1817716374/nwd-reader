@@ -127,6 +127,7 @@ class Loader {
   std::map<std::string, Id> cache;
   std::set<std::string> active;
   std::map<std::pair<Id, Id>, ProjectAppearance> overrides;
+  std::map<std::tuple<Id, Id, Id>, Matrix> transform_overrides;
   std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>
       texture_cache;
   void missing(std::string s) {
@@ -247,15 +248,8 @@ class Loader {
     for (size_t i = owner + 1; i < end; ++i)
       if (out.nodes[i].model != none)
         leaves.push_back(static_cast<Id>(i));
-    if (std::any_of(data->transform_overrides.begin(),
-                    data->transform_overrides.end(),
-                    [](const auto &t) { return t.path != 0; })) {
-      missing("NWF object transform overrides decoded but coordinate-space "
-              "application unsupported");
-      for (Id leaf : leaves)
-        out.nodes[leaf].placement_supported = false;
-    }
-    if (data->appearance_overrides.empty())
+    if (data->appearance_overrides.empty() &&
+        data->transform_overrides.empty() && data->texture_spaces.empty())
       return;
     using Location = std::pair<Id, Id>;
     std::vector<std::vector<Location>> mapping(data->paths.size());
@@ -263,7 +257,10 @@ class Loader {
     for (auto node : leaves) {
       indices.emplace(node, ModelIndex(model(node)));
       if (mapping.size() < 2) {
-        missing("NWF material overrides lack path root");
+        missing("NWF overrides lack path root");
+        if (!data->transform_overrides.empty())
+          for (Id leaf : leaves)
+            out.nodes[leaf].placement_supported = false;
         return;
       }
       mapping[1].emplace_back(node, 0);
@@ -317,6 +314,88 @@ class Loader {
           }
         }
       }
+    for (Id record = 0; record < data->texture_spaces.size(); ++record) {
+      const auto &t = data->texture_spaces[record];
+      if (t.paths.empty() ||
+          (t.paths.size() == 1 && (t.paths[0] == none || t.paths[0] == 0)))
+        continue;
+      std::vector<std::pair<Location, size_t>> candidates;
+      std::map<std::tuple<Id, Id, Id>, size_t> candidate_indices;
+      bool unresolved = false;
+      for (auto id : t.paths) {
+        if (id == none || id == 0)
+          continue;
+        if (id >= mapping.size() || mapping[id].size() != 1) {
+          unresolved = true;
+          break;
+        }
+        auto location = mapping[id].front();
+        auto ref = path_reference(model(location.first), location.second);
+        auto [same, inserted] = candidate_indices.emplace(
+            std::tuple{location.first, ref.graph, ref.object},
+            candidates.size());
+        if (inserted)
+          candidates.push_back({location, 1});
+        else
+          ++candidates[same->second].second;
+      }
+      if (unresolved) {
+        missing("unresolved NWF texture space assignment " +
+                std::to_string(record));
+        continue;
+      }
+      if (candidates.empty())
+        continue;
+      // ReadNode chooses the most frequent shared node, retaining the first
+      // candidate on ties. Keep reference occurrences in separate namespaces.
+      auto best = std::max_element(
+          candidates.begin(), candidates.end(),
+          [](const auto &a, const auto &b) { return a.second < b.second; });
+      const auto [node, path] = best->first;
+      out.texture_space_assignments.push_back({owner, node, path, record});
+    }
+    if (!data->transform_overrides.empty()) {
+      for (Id leaf : leaves) {
+        const auto &m = model(leaf);
+        const auto ref = out.nodes[leaf].parent;
+        if (ref == none || out.nodes[ref].parent != owner ||
+            m.linear_units != static_cast<int>(data->linear_units) ||
+            std::any_of(
+                m.instances.begin(), m.instances.end(),
+                [](const auto &i) { return (i.flags & 0x20000000) != 0; })) {
+          missing("NWF object transforms require a direct same-unit source "
+                  "without baked overrides");
+          out.nodes[leaf].placement_supported = false;
+        }
+      }
+      for (const auto &t : data->transform_overrides) {
+        if (t.path == 0 || t.path == none)
+          continue;
+        require(t.path < mapping.size(), "transform path bounds");
+        if (mapping[t.path].size() != 1) {
+          missing("unresolved NWF object transform assignment " +
+                  std::to_string(t.path));
+          for (Id leaf : leaves)
+            out.nodes[leaf].placement_supported = false;
+          continue;
+        }
+        const auto [leaf, path] = mapping[t.path].front();
+        // Native snapshot records name geometry nodes, not group subtrees.
+        if (path_object(model(leaf), path).type != 22) {
+          missing("NWF transform assignment is not a geometry node");
+          out.nodes[leaf].placement_supported = false;
+          continue;
+        }
+        auto matrix = nwf_transform_matrix(t);
+        auto scale = unit(data->linear_units);
+        for (unsigned i = 0; i < 3; ++i) {
+          matrix[12 + i] *= scale;
+          matrix[i * 4 + 3] /= scale;
+        }
+        for (Id instance : indices.at(leaf).instances(path))
+          transform_overrides[{owner, leaf, instance}] = matrix;
+      }
+    }
   }
   void visit(const std::filesystem::path &file, Id node, unsigned depth,
              const std::string &partition = {}) {
@@ -604,6 +683,10 @@ public:
       textures();
     for (const auto &[key, value] : overrides)
       out.appearance_overrides.push_back({key.first, key.second, value});
+    for (const auto &[key, value] : transform_overrides) {
+      const auto [owner, node, instance] = key;
+      out.transform_overrides.push_back({owner, node, instance, value});
+    }
     return std::move(out);
   }
 };
@@ -611,6 +694,29 @@ public:
 Project load_project(const std::filesystem::path &path,
                      ProjectOptions options) {
   return Loader(std::move(options)).run(path);
+}
+Matrix nwf_transform_matrix(const NwfTransformOverride &t) {
+  const size_t count = !t.flags           ? 0
+                       : (t.flags & 32)   ? 16
+                       : !(t.flags & ~7u) ? 9
+                       : t.flags == 16    ? 3
+                                          : 12;
+  detail::require(t.values.size() == count, "NWF transform payload size");
+  for (double v : t.values)
+    detail::require(std::isfinite(v), "nonfinite NWF transform");
+  if (count == 12)
+    return affine(t.values);
+  auto matrix = identity();
+  if (count == 16)
+    std::copy(t.values.begin(), t.values.end(), matrix.begin());
+  else if (count == 9)
+    for (unsigned col = 0; col < 3; ++col)
+      for (unsigned row = 0; row < 3; ++row)
+        matrix[col * 4 + row] = t.values[col * 3 + row];
+  else if (count == 3)
+    for (unsigned i = 0; i < 3; ++i)
+      matrix[12 + i] = t.values[i];
+  return matrix;
 }
 Matrix model_base_matrix(const Model &m) {
   auto o = base_attribute(m);
@@ -690,6 +796,15 @@ Matrix project_world_matrix(const Project &p, Id node, Id instance) {
                     "project parent cycle");
     detail::require(p.nodes[id].placement_supported,
                     "unvalidated NWF placement; inspect raw NwfReference");
+    const auto key = std::tuple{id, node, instance};
+    auto it = std::lower_bound(
+        p.transform_overrides.begin(), p.transform_overrides.end(), key,
+        [](const AppliedTransform &a, const auto &key) {
+          return std::tuple{a.owner, a.node, a.instance} < key;
+        });
+    if (it != p.transform_overrides.end() &&
+        std::tuple{it->owner, it->node, it->instance} == key)
+      mat = multiply(it->matrix, mat);
     mat = multiply(p.nodes[id].to_parent, mat);
   }
   return mat;

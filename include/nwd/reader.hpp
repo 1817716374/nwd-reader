@@ -211,9 +211,15 @@ struct Appearance {
 };
 struct Instance {
   Id path = none, geometry_reference = none, transform = none,
-     appearance = none;
+     appearance = none, auxiliary_transform = none;
   uint32_t flags = 0, primitive_count = 0, bits = 0;
   double precision = 0;
+};
+struct AuxiliaryTransform {
+  uint32_t type =
+      0; // 0 affine + orientation, 1 translation, 2 translation + XYZW
+  std::array<double, 12> values{}; // native order, unused entries zero
+  bool orientation = false;        // serialized only for type 0
 };
 struct Model {
   std::string name;
@@ -221,6 +227,7 @@ struct Model {
   std::vector<Geometry> geometries;
   std::vector<GeometryReference> geometry_references;
   std::vector<Transform> transforms;
+  std::vector<AuxiliaryTransform> auxiliary_transforms;
   std::vector<Material> materials;
   std::vector<Asset> assets;
   std::vector<Appearance> appearances;
@@ -323,9 +330,34 @@ struct NwfTransformOverride {
   Id path = none; // NWF path-map ID
   uint32_t flags = 0;
   // Native row-vector order: identity=0 values, linear=9, translation=3,
-  // affine=12, projective=16. Coordinate-space application is not yet
-  // supported.
+  // affine=12, projective=16. Project applies validated direct-source
+  // overrides.
   std::vector<double> values;
+};
+enum class TextureMapping : uint32_t {
+  box,
+  plane,
+  cylinder,
+  sphere,
+  explicit_uv
+};
+struct TextureSpace {
+  TextureMapping mapping = TextureMapping::explicit_uv;
+  bool parameters_present = false; // before version 428 only mapping is stored
+  // Serialized vectors: two common vectors, then two type-specific vectors
+  // for box, plane and cylinder. Their semantic axes are not normalized.
+  std::vector<std::array<double, 3>> vectors;
+  std::array<double, 4> rotation{}; // source XYZW quaternion
+  bool cylinder_flag = false;
+  double cylinder_cap_threshold = 0;
+  std::vector<uint32_t> directions; // box: 6 pairs; cylinder: 4 enums
+};
+struct NwfTextureSpace {
+  bool node_scope =
+      false; // shared node identity, otherwise exact path identity
+  std::vector<Id>
+      paths; // NWF selectors; legacy node lookup may contain candidates
+  TextureSpace value;
 };
 struct NwfData {
   ObjectGraph option_values;
@@ -338,6 +370,7 @@ struct NwfData {
   Model appearance_values; // shared appearances/materials/assets only
   std::vector<AppearanceSelection> appearance_overrides;
   std::vector<NwfTransformOverride> transform_overrides;
+  std::vector<NwfTextureSpace> texture_spaces;
   Id global_asset = none;
   std::string saved_filename, xref_json;
   std::vector<std::pair<std::string, std::string>> path_remaps;
@@ -346,6 +379,8 @@ struct NwfData {
 NwfData decode_nwf_scene_set(std::span<const uint8_t>, uint32_t version);
 void decode_nwf_path_map(NwfData &, std::span<const uint8_t>);
 void decode_nwf_transforms(NwfData &, std::span<const uint8_t>);
+void decode_nwf_texture_spaces(NwfData &, std::span<const uint8_t>,
+                               uint32_t version);
 class Document {
   struct Impl;
   std::shared_ptr<Impl> impl_;
@@ -390,6 +425,15 @@ struct AppliedAppearance {
   Id node = none, instance = none;
   ProjectAppearance appearance;
 };
+struct AppliedTransform {
+  Id owner = none, node = none, instance = none;
+  std::array<double, 16> matrix{}; // meters; applied in the owner NWF frame
+};
+struct TextureSpaceAssignment {
+  Id owner = none, node = none, path = none, record = none;
+  // record indexes the owning NWF's texture_spaces. A node-scope record also
+  // addresses other occurrences of the same source graph/object identity.
+};
 struct TextureFile {
   Id source = none, model = none, asset = none;
   std::string alias, requested_path, status;
@@ -402,12 +446,16 @@ struct Project {
   std::vector<ProjectSource> sources; // each canonical file parsed once
   std::vector<ProjectNode> nodes; // each reference occurrence stays distinct
   std::vector<AppliedAppearance> appearance_overrides; // sorted (node,instance)
+  std::vector<AppliedTransform>
+      transform_overrides; // sorted (owner,node,instance)
+  std::vector<TextureSpaceAssignment> texture_space_assignments;
   std::vector<TextureFile> textures;
   std::vector<std::string> warnings;
   bool complete = true;
 };
 Project load_project(const std::filesystem::path &, ProjectOptions = {});
 std::array<double, 16> model_base_matrix(const Model &);
+std::array<double, 16> nwf_transform_matrix(const NwfTransformOverride &);
 // Replaces the stored base transform. Throws for unvalidated unit overrides.
 std::array<double, 16> reference_placement_matrix(const Model &,
                                                   const NwfReference &,
