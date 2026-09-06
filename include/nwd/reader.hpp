@@ -304,10 +304,48 @@ struct SchemaInstance {
   Id schema = none;
   SchemaValue value;
 };
+enum class SearchOperator : uint32_t {
+  never = 0,
+  has_category = 1,
+  no_category = 2,
+  has_property = 3,
+  no_property = 4,
+  same_type = 5,
+  equals = 6,
+  not_equals = 7,
+  less_than = 8,
+  less_equal = 9,
+  greater_equal = 10,
+  greater_than = 11,
+  contains = 12,
+  wildcard = 13,
+  within_day = 14,
+  within_week = 15
+};
+enum class SearchOption : uint32_t {
+  category_internal_name = 1,
+  category_display_name = 2,
+  property_internal_name = 4,
+  property_display_name = 8,
+  ignore_value_case = 16,
+  negate = 32,
+  start_group = 64,
+  ignore_value_accents = 128,
+  ignore_value_character_widths = 256
+};
 struct SearchCondition {
   Id category = none, property = none; // SavedItems.objects name objects
-  uint32_t condition = 0, options = 0;
+  uint32_t condition = 0, options = 0; // stream order: options, condition
   Value value; // strings and graph=0 objects belong to SavedItems.objects
+  std::optional<SearchOperator> operation() const {
+    if (condition <= static_cast<uint32_t>(SearchOperator::within_week))
+      return static_cast<SearchOperator>(condition);
+    return {};
+  }
+  bool has_option(SearchOption option) const {
+    return (options & static_cast<uint32_t>(option)) != 0;
+  }
+  uint32_t unknown_options() const { return options & ~uint32_t{0x1ff}; }
 };
 struct SavedSelection {
   uint32_t kind =

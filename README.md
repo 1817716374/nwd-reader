@@ -209,6 +209,8 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `SavedItems.model` 和 `SavedItems.associations_verified` 为保存项中的显式 PathLink 提供分区上下文。通过 `read_scene()` 并开启 `Options.products` 后，仅当标志为 true 时，才能将选择集、动画选择轨道、TimeLiner 选择数组、碰撞测试/结果主路径及备用路径、视点节点/材质覆盖中的非空路径编号用于 `Scene.models[model].paths`。零是有效根，`nwd::none` 是空引用，重复路径保留。用 `path_reference()` 再取得共享对象身份。此标志不表示名称 locator、搜索条件、GUID 或 item-path 字符串已经求值；直接 `read_products()` 保持未绑定。
 
+`SavedSelection.conditions` 保留搜索条件的类别/属性名称对象、比较操作、选项和带类型的值。`SearchCondition.condition` 是比较操作，`options` 是标志；磁盘中的顺序为先选项、后操作。`operation()` 返回已识别的 `SearchOperator`（存在、等值、次序、包含、通配符、日期范围等），未知编号返回空值；`has_option(SearchOption::...)` 检查名称模式、字符串处理、取反与分组标志，`unknown_options()` 返回尚未解释的位。原始编号和源值始终保留。这些接口描述保存的条件，不执行动态搜索。
+
 NWF 中的保存项路径通过 `Project.saved_path_bindings` 关联到引用出现位置。开启 `ProjectOptions.reader.products` 后，用 `saved_path_binding(project, owner, block, source_path_id)` 查询：`resolved` 返回目标 `node/path`；`project_root=true` 表示整个 NWF 出现的子树；`empty` 是空引用，`unresolved` 表示无法唯一匹配。这里的源 0 和 `none` 都为空，源 1 是项目根，不能按 NWD/NWC 的零起始模型路径解释。重复源 ID 共享绑定记录，原字段顺序和模型几何仍保留。缺失引用或歧义会使 `Project.complete=false`。
 
 `parse_selection_locator(selection.locator)` 读取名称路径及转义，`SelectionSetIndex(products)` 建立可复用的选择集索引。调用 `index.resolve(owner_chunk_name, locator)`，每个目标返回原 `ProductData.blocks` / `SavedItems.items` 身份或明确的缺失、歧义、不可用、未支持根状态。精确 `/` 返回 `select_all` 标志。索引按源块前缀区分选择树，支持 `lcop_selection_set_tree`；它定位保存项，不执行该项的动态搜索或把组展开为几何。

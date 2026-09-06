@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nwd_reader VERSION 0.17.0 LANGUAGES C CXX)
+project(nwd_reader VERSION 0.18.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 find_package(Threads REQUIRED)

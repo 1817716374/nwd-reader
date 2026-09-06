@@ -54,8 +54,8 @@ void implicit_selection(Cursor &r, SavedSelection &v, ObjectReader &objects,
       SearchCondition c;
       c.category = objects.object(r);
       c.property = objects.object(r);
-      c.condition = r.u32();
       c.options = r.u32();
+      c.condition = r.u32();
       c.value = read_data_value(
           r, [&] { return objects.string(r); },
           [&] { return Reference{0, objects.object(r)}; });
