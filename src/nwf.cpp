@@ -271,10 +271,16 @@ NwfData Document::read_nwf() const {
       found = true;
     }
   require(found, "not an NWF scene set");
+  out.parsed_chunks.resize(chunks().size());
+  for (size_t i = 0; i < chunks().size(); ++i)
+    if (chunks()[i].name.ends_with("LcOpNwfSceneSet"))
+      out.parsed_chunks[i] = true;
   // Resolve selectors independently of directory order.
   for (size_t i = 0; i < chunks().size(); ++i)
-    if (chunks()[i].name.ends_with("LcOpNwfPathMap"))
+    if (chunks()[i].name.ends_with("LcOpNwfPathMap")) {
       decode_nwf_path_map(out, read_chunk(i));
+      out.parsed_chunks[i] = true;
+    }
   for (size_t i = 0; i < chunks().size(); ++i) {
     auto name = chunks()[i].name;
     if (name.ends_with("LcOpShadFragMaterialElement"))
@@ -299,7 +305,9 @@ NwfData Document::read_nwf() const {
       } catch (const nlohmann::json::exception &e) {
         throw Error(std::string("invalid XRef table: ") + e.what());
       }
-    }
+    } else
+      continue;
+    out.parsed_chunks[i] = true;
   }
   for (const auto &a : out.appearance_overrides)
     for (auto p : a.paths)

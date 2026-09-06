@@ -8,6 +8,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
+#include <optional>
 namespace nwd {
 using Id = uint32_t;
 inline constexpr Id none = UINT32_MAX;
@@ -22,6 +24,8 @@ struct Options {
   bool viewpoints =
       false; // optional product data must not block core model processing
   bool resources = false; // load embedded image/LWI bytes only on request
+  bool products =
+      false; // read additional document records with per-block status
   bool intern_transforms = true; // exact representation comparison, never
                                  // approximate spatial merging.
   uint64_t max_decoded_chunk = 2ull << 30;
@@ -255,7 +259,7 @@ struct Camera {
   // Aspect, height/angle, near, far, then version >=425 lens fields.
   std::array<double, 6> parameters{};
 };
-// Secondary fields retain their source serialization order.
+// Secondary fields retain their serialization order; see docs/FORMAT.md.
 struct ViewFields {
   std::vector<uint32_t> integers;
   std::vector<double> numbers;
@@ -267,6 +271,187 @@ struct CurrentView {
   Camera camera;
   ViewFields viewer, state, clip_set;
   std::vector<ViewFields> clip_planes;
+};
+struct Background {
+  int32_t mode = 0;
+  std::vector<std::array<double, 3>> colors; // serialized palette order
+  ObjectGraph objects;
+  Id paper_style = none, asset = none; // identities in objects
+};
+struct Headlight {
+  double ambient = 0, secondary_value = 0;
+};
+struct Culling {
+  double area_cull_threshold = 0, near_distance = 0, far_distance = 0;
+  // Modes are absent in versions before 105; do not invent stored values.
+  std::optional<uint32_t> near_mode, far_mode, backface_mode;
+};
+struct NavigationSpeed {
+  double value = 0;
+};
+struct CommentIds {
+  uint64_t next = 0;
+  std::optional<uint64_t> second_counter;
+};
+struct SavedComment {
+  std::string author, text;
+  int64_t timestamp = 0; // source stream time, without timezone conversion
+  uint64_t id = 0;
+  int32_t status = 0;
+};
+struct SchemaInstance {
+  Id schema = none;
+  SchemaValue value;
+};
+struct SearchCondition {
+  Id category = none, property = none; // SavedItems.objects name objects
+  uint32_t condition = 0, options = 0;
+  Value value; // strings and graph=0 objects belong to SavedItems.objects
+};
+struct SavedSelection {
+  uint32_t kind =
+      0; // implicit-selection mode; unused for plain find-selection records
+  // Stream path-link identities, not ObjectGraph IDs or NWF path-map IDs.
+  // Binding to an owning partition/path map is a separate operation.
+  std::vector<uint32_t> path_links;
+  std::vector<std::pair<std::string, std::string>> item_paths;
+  uint32_t item_path_mode = 0;
+  std::vector<SearchCondition> conditions;
+  std::string locator; // original find-selection expression
+  uint32_t search_mode = 0;
+  bool prune_below_match = false;
+  std::string source;
+  int64_t timestamp = 0;
+};
+enum class RedlineType : uint32_t { line, ellipse, cloud, tag, text, arrow };
+struct Redline {
+  RedlineType type = RedlineType::line;
+  std::vector<std::array<double, 2>> points;
+  std::string text;
+  int32_t width = 0;
+  std::array<double, 3> color{};
+  std::optional<uint16_t> style; // source pattern, version >=409
+  std::array<uint64_t, 2> tag_ids{};
+  uint32_t tag_extra = 0;
+  bool tag_position_flag = false, tag_bounds_flag = false;
+  std::array<double, 3> tag_position{};
+  std::array<double, 6> tag_bounds{};
+};
+struct AnimationKeyFrame {
+  double time = 0;
+  bool interpolate = false;
+  uint32_t flags = 0;
+  std::optional<std::array<double, 3>> translation, center, color, scale_size;
+  // Native rotation component order is retained without normalization.
+  std::optional<std::array<double, 4>> rotation, tool_orientation,
+      scale_orientation;
+  std::optional<double> opacity, focal_distance;
+  std::optional<Camera> camera;
+  std::vector<ViewFields> clip_planes;
+  ViewFields clip_set;
+};
+struct TimeLinerStatus {
+  uint32_t mode = 0;
+  std::string appearance;
+};
+struct TimeLinerTaskType {
+  std::array<TimeLinerStatus, 5> states;
+}; // start,end,underrun,overrun,simulation-start
+struct TimeLinerAppearance {
+  std::array<double, 3> color{};
+  double opacity = 0;
+};
+struct TimeLinerTask {
+  bool enabled = false;
+  std::string synchronization_id, display_id, task_type, data_source;
+  std::array<int64_t, 2> actual_dates{},
+      planned_dates{}; // start,end; original stream time
+  // enabled, start-date flag, end-date flag
+  std::array<bool, 3> actual_flags{}, planned_flags{};
+  std::optional<SavedSelection> implicit_selection, find_selection;
+  std::vector<SavedComment> task_comments; // separate serialized list
+  std::vector<std::string> user_data;
+  uint32_t animation_behavior = 0;
+  std::pair<std::string, std::string> animation_path, script_path;
+  bool progress_flag = false;
+  double progress_percent = 0;
+  // material, labor, equipment, subcontractor
+  std::array<double, 4> costs{};
+  std::array<bool, 4> cost_flags{};
+  std::optional<std::pair<std::string, double>> legacy_cost;
+};
+struct TimeLinerCsv {
+  std::array<std::string, 4> fields; // source strings in serialized order
+  bool first_row_header = false, custom_date_format = false;
+  std::string date_format;
+  std::optional<int32_t> row_count;
+};
+struct TimeLinerDataSource {
+  std::string provider_id, provider_name, project;
+  double provider_version = 0;
+  int64_t sync_time = 0;
+  std::vector<std::pair<std::string, std::string>> available_fields,
+      user_fields;
+  // type,synchronization-ID,planned-start,planned-end,actual-start,actual-end,
+  // material-cost,labor-cost,equipment-cost,subcontractor-cost
+  std::vector<std::pair<std::string, std::string>> field_mappings;
+  std::optional<TimeLinerCsv> csv;
+};
+using TimeLinerValue =
+    std::variant<std::monostate, TimeLinerTask, TimeLinerTaskType,
+                 TimeLinerAppearance, TimeLinerStatus, TimeLinerDataSource>;
+struct SavedItem {
+  uint32_t type = 0;
+  Id parent = none;
+  uint64_t offset = 0, end_offset = 0; // decoded chunk offsets
+  bool complete = false;
+  std::string name;
+  std::vector<SavedComment> comments;
+  std::array<uint8_t, 16> guid{};
+  std::vector<SchemaInstance> properties;
+  std::optional<CurrentView> view;
+  std::optional<double> cut_duration;
+  uint32_t animation_flags = 0, animation_mode = 0;
+  std::optional<double> end_time;
+  bool infinite = false;
+  std::optional<AnimationKeyFrame> keyframe;
+  TimeLinerValue timeliner;
+  uint32_t child_list =
+      0; // distinguishes the two serialized lists in animation folders
+  std::optional<SavedSelection> selection;
+  uint32_t redline_count = 0, element_record_count = 0;
+  std::vector<Id> element_records; // SavedItems.objects, type 89
+  std::vector<Redline> redlines;
+};
+struct SavedItems {
+  uint32_t root_count = 0;
+  std::vector<SavedItem> items; // preorder; parent is an index in this vector
+  ObjectGraph objects; // shared name/variant objects across the entire block
+};
+struct TimeLinerGui {
+  std::optional<int32_t> module_version;
+  std::vector<std::pair<std::string, int32_t>> columns;
+  std::optional<int32_t> legacy_value;
+  std::vector<std::array<int32_t, 2>> legacy_pairs;
+};
+enum class ProductStatus { not_handled, decoded, partial, failed };
+using ProductValue =
+    std::variant<std::monostate, CurrentView, Background, Headlight, Culling,
+                 NavigationSpeed, CommentIds, SavedItems, TimeLinerGui>;
+struct ProductBlock {
+  ProductStatus status = ProductStatus::not_handled;
+  uint64_t decoded_bytes = 0, consumed_bytes = 0;
+  ProductValue value;
+  std::string diagnostic;
+  // Only attempted incomplete blocks retain their tail. Opaque directory
+  // entries can be retrieved explicitly with Document::read_chunk().
+  std::vector<uint8_t> unparsed_tail;
+};
+struct ProductData {
+  uint32_t version = 0;
+  std::vector<Chunk> chunks;
+  std::vector<SchemaDefinition> schemas;
+  std::vector<ProductBlock> blocks; // one per Document::chunks() entry
 };
 struct EmbeddedResource {
   std::string name;
@@ -283,6 +468,7 @@ struct Scene {
   std::vector<SchemaDefinition> schemas;
   std::vector<CurrentView> current_views;
   std::vector<EmbeddedResource> resources;
+  std::shared_ptr<const ProductData> products;
   Timing timing;
   std::vector<std::string> warnings;
 };
@@ -361,6 +547,8 @@ struct NwfTextureSpace {
   TextureSpace value;
 };
 struct NwfData {
+  std::vector<bool> parsed_chunks; // Document directory coverage; standalone
+                                   // decoders leave empty
   ObjectGraph option_values;
   std::vector<NwfReference> references;
   uint32_t linear_units = 0, angular_units = 0, path_map_kind = 0,
@@ -395,6 +583,8 @@ public:
   EmbeddedResource read_resource(size_t index) const;
   Scene read_scene() const;
   NwfData read_nwf() const;
+  ProductData
+  read_products() const; // also works for NWF without embedded geometry
   const Options &options() const;
 };
 struct ProjectOptions {
@@ -409,6 +599,7 @@ struct ProjectSource {
   uint32_t version = 0;
   std::shared_ptr<const Scene> scene;
   std::shared_ptr<const NwfData> nwf;
+  std::shared_ptr<const ProductData> products;
 };
 struct ProjectNode {
   Id parent = none, source = none, model = none, reference = none;

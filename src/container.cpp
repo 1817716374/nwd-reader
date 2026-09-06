@@ -368,6 +368,12 @@ Scene Document::read_scene() const {
       }
     out.timing.resources_ms = elapsed(phase);
   }
+  if (impl_->options.products) {
+    out.products = std::make_shared<ProductData>(read_products());
+    for (size_t i = 0; i < out.chunks.size(); ++i)
+      if (out.products->blocks[i].status == ProductStatus::decoded)
+        out.parsed_chunks[i] = true;
+  }
   out.timing.total_ms = elapsed(start) + out.timing.container_ms;
   return out;
 }

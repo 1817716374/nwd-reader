@@ -1,6 +1,6 @@
 # nwd-reader
 
-独立的 C++20 Navisworks 文件解析库，面向模型导入、格式转换和工程数据处理，提供**几何、属性、材质、纹理和结构树**的读取接口。
+独立的 C++20 Navisworks 文件解析库，面向模型导入、格式转换和工程数据处理，提供**几何、属性、材质、纹理、结构树、保存视点、选择集、动画和施工任务**的读取接口。
 
 支持读取 NWD、NWC 中的嵌入模型，以及 NWF 引用的模型文件。无需安装 Navisworks，不依赖 Autodesk SDK 或运行时。
 
@@ -13,6 +13,10 @@
 - **材质**：读取环境色、漫反射、高光、自发光、光泽度和透明度，以及资产节点、参数和贴图连接。
 - **纹理**：保留内嵌文件的原始字节，支持外部纹理查找、路径重映射和可用状态查询。
 - **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点、材质覆盖、对象变换和纹理映射记录。
+- **视点与选择集**：读取视点目录、相机与裁剪设置、批注、外观覆盖、静态选择和有类型的搜索条件。
+- **动画**：读取场景、轨道、关键帧、时间和插值开关，以及平移、旋转、缩放、颜色、不透明度和相机参数。
+- **TimeLiner**：读取任务层级、计划与实际日期、进度、费用、数据源字段映射、仿真外观和列设置。
+- **读取状态**：保留块目录，区分已解析、部分解析、读取失败和尚未由产品模块处理的内容。
 - **并行读取**：支持几何记录、压缩块和属性页并行处理；线程数可配置。
 
 ## 构建
@@ -98,6 +102,9 @@ cmake --build build-examples --config Release --parallel
 |---|---|
 | `Document::read_scene()` | 读取单个 NWD/NWC 的嵌入模型 |
 | `Document::read_nwf()` | 读取 NWF 引用、路径表和外观覆盖信息 |
+| `Document::read_products()` | 独立读取视点、选择集、动画、TimeLiner和显示配置，适用于NWD/NWC/NWF |
+| `ProductData` / `ProductBlock` | 块目录、共享schema定义、类型化数据、读取状态和未消费尾部 |
+| `SavedItems` / `SavedItem` | 保存项的层级、注释、GUID、视点、选择记录、关键帧和任务数据 |
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
 | `Project.sources` / `Project.nodes` | 共享源文件与独立引用出现构成的文件树 |
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
@@ -144,17 +151,47 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 ## 支持范围与错误处理
 
+产品数据通过 `Document::read_products()` 单独读取，也可设置 `Options.products = true`，从 `Scene.products` 或 `ProjectSource.products` 获取。它默认关闭，便于只读取模型数据的调用方控制耗时与内存。
+
+```cpp
+nwd::Document file("model.nwd");
+auto data = file.read_products();
+for (std::size_t i = 0; i < data.blocks.size(); ++i) {
+    const auto& block = data.blocks[i];
+    if (const auto* saved = std::get_if<nwd::SavedItems>(&block.value)) {
+        for (const auto& item : saved->items) {
+            // parent 是 saved->items 内的索引；nwd::none 表示根项。
+            if (item.keyframe)
+                std::cout << item.name << ": " << item.keyframe->time << '\n';
+            if (const auto* task = std::get_if<nwd::TimeLinerTask>(&item.timeliner))
+                std::cout << task->display_id << ": " << task->progress_percent << '\n';
+        }
+    }
+    if (block.status == nwd::ProductStatus::partial ||
+        block.status == nwd::ProductStatus::failed)
+        std::cerr << data.chunks[i].name << ": " << block.diagnostic << '\n';
+}
+```
+
+`ProductStatus::decoded` 表示受支持的块布局已读取并通过结尾检查，不保证所有源枚举含义和对象关联都已解释。`not_handled` 表示产品模块未处理该块，其中也包括由核心读取器负责的几何、属性等块。`Scene.parsed_chunks` 合并本次核心与产品读取结果；NWF 使用 `NwfData.parsed_chunks` 与产品状态共同检查。设置 `ProjectOptions.reader.products = true` 后，未处理或失败的块会使 `Project.complete` 为false。
+
+`SavedItems.objects` 保留共享名称和视点覆盖对象；选择记录的 `path_links` 是源PathLink标识，尚未绑定到模型节点，不能当成ObjectGraph或NWF路径索引。`SavedItem.complete` 表示该保存项布局及子项已读完，部分块中仍可能有成功读取的前序项。旋转、时间、枚举和未命名字段保留文件值，不自动执行搜索、动画或施工仿真。
+
+使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
+
 NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`；内部版本不等同于软件发布年份。NWF 当前主要支持内部版本 `448` 的引用与完整材质覆盖。
 
 以下内容仍存在限制：
 
+- 尚未完整支持碰撞、动画脚本/事件/动作、当前动画状态、TimeLiner旧式分散配置与模拟时钟、灯光/Presenter、网格、数据库和原生空间索引等块。
+- 动画和选择集中的PathLink与模型对象绑定尚未完成；部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
 - 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置和部分材质覆盖合成尚未完整支持。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
 - 纹理映射向量和方向枚举尚未全部赋予通用语义；部分布局缺少非空原生样本验证。
 - 某些复杂联合树需要额外的 GUID 或校验值才能消歧；未知 schema、对象类型或资产变体可能无法解析。
 
-`Project.complete` 表示本次加载未检测到缺失或不支持项，不代表所有格式变体均受支持。调用方应同时检查 `warnings`、引用节点状态、`placement_supported` 和纹理状态。设置 `load_textures = false` 时，完整状态不包含纹理检查。
+`Project.complete` 表示本次加载范围内未检测到缺失或不支持项，不代表所有格式变体均受支持，也不代表整个文件已经完全解析。调用方应同时检查 `warnings`、引用节点状态、`placement_supported`、纹理和产品块状态。设置 `load_textures = false` 时，完整状态不包含纹理检查；关闭 `reader.products` 时，不检查尚未读取的产品块。
 
 缺失或歧义引用会保留诊断，不随意选择同名文件；未知布局和越界数据会报错。部分解码接口可能抛出 `nwd::Error`，文件及索引访问也可能产生标准 C++ 异常，调用方应设置异常边界。
 

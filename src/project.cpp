@@ -202,6 +202,23 @@ class Loader {
       s.nwf = std::make_shared<NwfData>(d.read_nwf());
     else
       s.scene = std::make_shared<Scene>(d.read_scene());
+    if (options.reader.products)
+      s.products = s.scene ? s.scene->products
+                           : std::make_shared<ProductData>(d.read_products());
+    if (s.products) {
+      size_t remaining = 0;
+      const auto &parsed =
+          s.scene ? s.scene->parsed_chunks : s.nwf->parsed_chunks;
+      for (size_t i = 0; i < d.chunks().size(); ++i)
+        if (s.products->blocks[i].status == ProductStatus::failed ||
+            s.products->blocks[i].status == ProductStatus::partial ||
+            (!parsed[i] &&
+             s.products->blocks[i].status != ProductStatus::decoded))
+          ++remaining;
+      if (remaining)
+        missing(utf8(file) + ": " + std::to_string(remaining) +
+                " document blocks remain unparsed; inspect products.blocks");
+    }
     auto id = static_cast<Id>(out.sources.size());
     out.sources.push_back(std::move(s));
     cache.emplace(k, id);

@@ -16,6 +16,9 @@ namespace nwd::detail {
 static_assert(std::endian::native == std::endian::little && sizeof(size_t) >= 8,
               "nwd_reader requires a 64-bit little-endian target");
 using Bytes = std::vector<uint8_t>;
+struct UnsupportedLayout : Error {
+  using Error::Error;
+};
 inline void require(bool condition, std::string_view why) {
   if (!condition)
     throw Error(std::string(why));
@@ -124,6 +127,20 @@ Value read_data_value(Cursor &r, StringReader string_reader,
   }
   return v;
 }
+template <class ReferenceReader>
+Appearance read_appearance(Cursor &r, ReferenceReader reference) {
+  Appearance a;
+  a.flags = r.u32();
+  if (a.flags & 1)
+    a.material = reference(54);
+  if (a.flags & 32)
+    a.asset = reference(185);
+  constexpr std::array<uint32_t, 4> bits{64, 2, 4, 8};
+  for (unsigned i = 0; i < bits.size(); ++i)
+    if (a.flags & bits[i])
+      a.overrides[i] = r.u32();
+  return a;
+}
 inline EmbeddedAssetFile read_embedded_asset(Cursor &r, std::string name,
                                              Id owner, uint32_t ordinal) {
   EmbeddedAssetFile file;
@@ -198,11 +215,17 @@ class ObjectReader {
   std::unique_ptr<Impl> impl;
 
 public:
-  ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t);
+  ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t, Options = {});
   ~ObjectReader();
   Id object(Cursor &);
   Id string(Cursor &);
 };
+CurrentView read_current_view(Cursor &, uint32_t version);
+Camera read_camera(Cursor &, uint32_t version);
+void read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
+                      uint32_t version);
+SchemaInstance read_schema_instance(Cursor &,
+                                    std::span<const SchemaDefinition>);
 void read_partition(Model &, std::span<const uint8_t>, uint32_t,
                     const Options &);
 void read_metadata(Model &, std::span<const uint8_t>,

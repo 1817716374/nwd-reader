@@ -122,22 +122,11 @@ class Fragments {
       ref.index = static_cast<Id>(m.materials.size());
       m.materials.push_back(material);
     } else if (type == 55) {
-      Appearance a;
-      a.flags = r.u32();
-      if (a.flags & 1) {
+      auto a = read_appearance(r, [&](uint32_t type) {
         auto child = object();
-        require(child.type == 54, "appearance material type");
-        a.material = child.index;
-      }
-      if (a.flags & 32) {
-        auto child = object();
-        require(child.type == 185, "appearance asset type");
-        a.asset = child.index;
-      }
-      std::array<uint32_t, 4> bits{64, 2, 4, 8};
-      for (unsigned i = 0; i < 4; ++i)
-        if (a.flags & bits[i])
-          a.overrides[i] = r.u32();
+        require(child.type == type, "appearance child type");
+        return child.index;
+      });
       ref.index = static_cast<Id>(m.appearances.size());
       m.appearances.push_back(a);
     } else if (type == 185) {

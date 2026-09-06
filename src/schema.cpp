@@ -127,6 +127,18 @@ std::vector<SchemaDefinition> decode_schemas(std::span<const uint8_t> b,
   return out;
 }
 namespace detail {
+SchemaInstance read_schema_instance(Cursor &r,
+                                    std::span<const SchemaDefinition> schemas) {
+  SchemaInstance instance;
+  auto id = r.u32();
+  require(id <= schemas.size(), "schema instance reference outside table");
+  if (id) {
+    instance.schema = id - 1;
+    size_t budget = 1000000;
+    instance.value = value(r, schemas[instance.schema].root, 0, budget);
+  }
+  return instance;
+}
 void decode_external_payload(ExternalGeometry &e,
                              std::span<const SchemaDefinition> schemas,
                              uint32_t version) {

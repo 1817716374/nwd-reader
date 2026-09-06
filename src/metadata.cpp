@@ -202,6 +202,61 @@ public:
     o.type = r.u32();
     o.stream_offset = start;
     switch (o.type) {
+    case 89: {
+      // LcOpElementRecord shares the stream object arena with name objects.
+      // The node override copy is a zero-terminated (flags, path-link) list.
+      require(version >= 82, "legacy element record layout");
+      auto name = str();
+      o.strings.push_back(name);
+      if (name == none)
+        break;
+      const auto element = graph.strings[name];
+      if (element == "LcOpShadOverridesElement") {
+        for (;;) {
+          auto flags = r.u32();
+          if (!flags)
+            break;
+          require(o.integers.size() / 2 < options.max_objects,
+                  "node override count limit");
+          o.integers.push_back(flags);
+          o.integers.push_back(r.u32());
+        }
+      } else if (element == "LcOpShadFragMaterialElement") {
+        auto n = count();
+        o.integers.push_back(n);
+        for (uint32_t j = 0; j < n; ++j) {
+          auto appearance = ref();
+          require(appearance.object != none &&
+                      graph.objects[appearance.object].type == 55,
+                  "saved material override appearance type");
+          o.references.push_back(appearance);
+          auto paths = count();
+          o.integers.push_back(paths);
+          for (uint32_t k = 0; k < paths; ++k)
+            o.integers.push_back(r.u32());
+        }
+        if (version >= 438)
+          o.references.push_back(ref());
+      } else
+        throw UnsupportedLayout("element record copy " + element);
+      break;
+    }
+    case 54:
+      for (unsigned i = 0; i < 14; ++i)
+        o.numbers.push_back(r.f32());
+      break;
+    case 55: {
+      auto a = read_appearance(r, [&](uint32_t type) {
+        Id child = object();
+        require(child != none && graph.objects[child].type == type,
+                "appearance child type");
+        return child;
+      });
+      o.flags = a.flags;
+      o.references = {{graph_id, a.material}, {graph_id, a.asset}};
+      o.integers.assign(a.overrides.begin(), a.overrides.end());
+      break;
+    }
     case 52:
     case 82:
       o.strings.push_back(str());
@@ -468,12 +523,12 @@ public:
 struct ObjectReader::Impl {
   Options options;
   GraphReader reader;
-  Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v)
-      : reader(b, g, 0, v, options) {}
+  Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v, Options o)
+      : options(std::move(o)), reader(b, g, 0, v, options) {}
 };
 ObjectReader::ObjectReader(std::span<const uint8_t> b, ObjectGraph &g,
-                           uint32_t v)
-    : impl(std::make_unique<Impl>(b, g, v)) {}
+                           uint32_t v, Options options)
+    : impl(std::make_unique<Impl>(b, g, v, std::move(options))) {}
 ObjectReader::~ObjectReader() = default;
 Id ObjectReader::object(Cursor &r) { return impl->reader.external(r, false); }
 Id ObjectReader::string(Cursor &r) { return impl->reader.external(r, true); }
