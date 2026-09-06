@@ -38,10 +38,7 @@ void comments(Cursor &r, std::vector<SavedComment> &out,
   }
 }
 void find_selection(Cursor &r, SavedSelection &v, const Options &options) {
-  v.locator = r.string();
-  if (v.locator.empty())
-    for (auto n = count(r, options.max_objects); n; --n)
-      v.path_links.push_back(r.u32());
+  read_find_selection(r, v, options.max_objects);
 }
 void implicit_selection(Cursor &r, SavedSelection &v, ObjectReader &objects,
                         const Options &options) {
@@ -452,6 +449,33 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
         s.properties.push_back(read_schema_instance(r, schemas));
     uint32_t children = 0;
     switch (s.type) {
+    case 48: {
+      auto &script = s.script.emplace();
+      script.enabled = boolean(r);
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto &condition = script.conditions.emplace_back();
+        condition.negated = boolean(r);
+        condition.open_bracket = boolean(r);
+        condition.close_bracket = boolean(r);
+        condition.has_operator = boolean(r);
+        condition.operator_code = r.byte();
+        condition.event = objects.object(r);
+        if (condition.event != none) {
+          auto type = out.objects.objects.at(condition.event).type;
+          require(type == 158 || (type >= 161 && type <= 167),
+                  "script condition is not an event");
+        }
+      }
+      for (auto n = count(r, options.max_objects); n; --n) {
+        auto action = objects.object(r);
+        if (action != none) {
+          auto type = out.objects.objects.at(action).type;
+          require(type >= 150 && type <= 157, "script action reference type");
+        }
+        script.actions.push_back(action);
+      }
+      break;
+    }
     case 80:
       s.material_asset = objects.object(r);
       require(s.material_asset == none ||
@@ -631,7 +655,7 @@ bool supported(std::string_view kind) {
          kind == "LcOpNextCommentIdElement" ||
          kind == "LcOpSavedViewsElement" ||
          kind == "LcOpSelectionSetsElement" ||
-         kind == "LcAnSavedAnimationsElement" ||
+         kind == "LcAnSavedAnimationsElement" || kind == "LcAnScriptElement" ||
          kind == "LcTlTimelinerElement" || kind == "LcTlGUISettingsElement" ||
          kind == "LcOpZoneElement";
 }

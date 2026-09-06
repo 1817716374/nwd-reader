@@ -167,6 +167,124 @@ class GraphReader {
   Value value() {
     return read_data_value(r, [&] { return str(); }, [&] { return ref(); });
   }
+  void animation(uint32_t type, Id owner) {
+    const auto slot = graph.animation_objects.size();
+    graph.animation_objects.emplace_back();
+    graph.animation_objects[slot].owner = owner;
+    graph.animation_objects[slot].kind = static_cast<AnimationObjectKind>(type);
+    AnimationObject out;
+    out.owner = owner;
+    out.kind = static_cast<AnimationObjectKind>(type);
+    auto path = [&] {
+      auto first = r.string();
+      auto second = r.string();
+      return std::pair(std::move(first), std::move(second));
+    };
+    auto boolean = [&] {
+      auto raw = r.u32();
+      require(raw <= 1, "animation object boolean");
+      return raw != 0;
+    };
+    auto selection = [&](SavedSelection &v) {
+      read_find_selection(r, v, options.max_objects);
+    };
+    switch (type) {
+    case 150:
+    case 154:
+    case 163:
+    case 165: {
+      auto &v = out.value.emplace<AnimationPathRecord>();
+      v.item_path = path();
+      if (type != 150)
+        v.mode = r.read<int32_t>();
+      break;
+    }
+    case 151:
+    case 162: {
+      auto &v = out.value.emplace<AnimationVariableRecord>();
+      v.name = r.string();
+      if (type == 162)
+        v.operation = r.read<int32_t>();
+      v.value = value();
+      if (type == 151)
+        v.operation = r.read<int32_t>();
+      break;
+    }
+    case 152:
+    case 164: {
+      auto &v = out.value.emplace<AnimationTimeRecord>();
+      v.delay = r.f64();
+      if (type == 164)
+        v.mode = r.read<int32_t>();
+      break;
+    }
+    case 153: {
+      auto &v = out.value.emplace<AnimationPlayRecord>();
+      v.animation_path = path();
+      v.finish = boolean();
+      v.start_type = r.read<int32_t>();
+      v.end_type = r.read<int32_t>();
+      v.start_time = r.f64();
+      v.end_time = r.f64();
+      break;
+    }
+    case 155:
+    case 156:
+      out.value.emplace<AnimationTextRecord>().text = r.string();
+      break;
+    case 157: {
+      auto &v = out.value.emplace<AnimationPropertyRecord>();
+      selection(v.selection);
+      v.variable = r.string();
+      v.category = r.string();
+      v.property = r.string();
+      break;
+    }
+    case 158: {
+      auto &v = out.value.emplace<AnimationKeyRecord>();
+      v.key = r.read<uint16_t>();
+      v.mode = r.read<int32_t>();
+      break;
+    }
+    case 159: {
+      auto &v = out.value.emplace<AnimationSphereRecord>();
+      for (auto &x : v.center)
+        x = r.f64();
+      v.radius = r.f64();
+      break;
+    }
+    case 160: {
+      auto &v = out.value.emplace<AnimationSelectionSphereRecord>();
+      selection(v.selection);
+      v.radius = r.f64();
+      break;
+    }
+    case 161: {
+      auto &v = out.value.emplace<AnimationHotspotRecord>();
+      v.hotspot = ref();
+      if (v.hotspot.object != none) {
+        auto target = graph.objects.at(v.hotspot.object).type;
+        require(target == 159 || target == 160,
+                "animation hotspot reference type");
+      }
+      v.mode = r.read<int32_t>();
+      break;
+    }
+    case 166: {
+      auto &v = out.value.emplace<AnimationCollisionRecord>();
+      selection(v.selection);
+      v.gravity = boolean();
+      break;
+    }
+    case 167:
+      break;
+    default:
+      r.fail("unsupported animation object type");
+    }
+    // Reserving the slot before following references keeps owners sorted even
+    // when an event contains another animation object (its hotspot).
+    graph.animation_objects[slot] = std::move(out);
+  }
 
 public:
   GraphReader(std::span<const uint8_t> b, ObjectGraph &g, Id gid, uint32_t ver,
@@ -202,6 +320,26 @@ public:
     o.type = r.u32();
     o.stream_offset = start;
     switch (o.type) {
+    case 150:
+    case 151:
+    case 152:
+    case 153:
+    case 154:
+    case 155:
+    case 156:
+    case 157:
+    case 158:
+    case 159:
+    case 160:
+    case 161:
+    case 162:
+    case 163:
+    case 164:
+    case 165:
+    case 166:
+    case 167:
+      animation(o.type, index);
+      break;
     case 89: {
       // LcOpElementRecord shares the stream object arena with name objects.
       // The node override copy is a zero-terminated (flags, path-link) list.

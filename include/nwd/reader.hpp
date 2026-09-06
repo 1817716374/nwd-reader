@@ -97,12 +97,14 @@ struct EmbeddedAssetFile {
   std::string name, prefix, suffix;
   std::vector<uint8_t> bytes;
 };
+struct AnimationObject;
 struct ObjectGraph {
   std::vector<std::string> strings;
   std::vector<Object> objects;
   std::vector<Id> roots;
   std::vector<EmbeddedAssetFile>
       embedded_files; // sparse arena, no per-object overhead
+  std::vector<AnimationObject> animation_objects; // sparse, ordered by owner ID
 };
 struct Path {
   Id parent = none, object = none;
@@ -367,6 +369,97 @@ struct SavedSelection {
   std::string source;
   int64_t timestamp = 0;
 };
+enum class AnimationObjectKind : uint32_t {
+  show_viewpoint = 150,
+  set_variable = 151,
+  pause = 152,
+  play_animation = 153,
+  stop_animation = 154,
+  message = 155,
+  load_model = 156,
+  store_property = 157,
+  on_key_press = 158,
+  sphere = 159,
+  selection_sphere = 160,
+  on_hotspot = 161,
+  on_variable = 162,
+  on_script = 163,
+  on_timer = 164,
+  on_animation = 165,
+  on_collision = 166,
+  on_start = 167
+};
+struct AnimationPathRecord {
+  std::pair<std::string, std::string> item_path;
+  std::optional<int32_t> mode; // absent for show_viewpoint
+};
+struct AnimationVariableRecord {
+  std::string name;
+  Value value;           // owning ObjectGraph's strings and references
+  int32_t operation = 0; // source assignment/comparison enumeration
+};
+struct AnimationTimeRecord {
+  double delay = 0;
+  std::optional<int32_t> mode; // absent for pause
+};
+struct AnimationPlayRecord {
+  std::pair<std::string, std::string> animation_path;
+  bool finish = false;
+  int32_t start_type = 0, end_type = 0;
+  double start_time = 0, end_time = 0;
+};
+struct AnimationTextRecord {
+  std::string text;
+};
+struct AnimationPropertyRecord {
+  SavedSelection selection;
+  std::string variable, category, property;
+};
+struct AnimationKeyRecord {
+  uint16_t key = 0;
+  int32_t mode = 0;
+};
+struct AnimationSphereRecord {
+  std::array<double, 3> center{};
+  double radius = 0;
+};
+struct AnimationSelectionSphereRecord {
+  SavedSelection selection;
+  double radius = 0;
+};
+struct AnimationHotspotRecord {
+  Reference hotspot;
+  int32_t mode = 0;
+};
+struct AnimationCollisionRecord {
+  SavedSelection selection;
+  bool gravity = false;
+};
+using AnimationObjectValue =
+    std::variant<std::monostate, AnimationPathRecord, AnimationVariableRecord,
+                 AnimationTimeRecord, AnimationPlayRecord, AnimationTextRecord,
+                 AnimationPropertyRecord, AnimationKeyRecord,
+                 AnimationSphereRecord, AnimationSelectionSphereRecord,
+                 AnimationHotspotRecord, AnimationCollisionRecord>;
+struct AnimationObject {
+  Id owner = none; // ObjectGraph.objects ID; repeated references stay shared
+  AnimationObjectKind kind = AnimationObjectKind::on_start;
+  AnimationObjectValue value;
+};
+// Borrows the typed record. Non-animation objects return nullptr; an ID outside
+// the graph (including none) throws Error. The graph must remain unchanged.
+const AnimationObject *animation_object(const ObjectGraph &, Id);
+struct ScriptCondition {
+  bool negated = false, open_bracket = false, close_bracket = false;
+  bool has_operator = false;
+  uint8_t operator_code = 0; // 0=AND, 1=OR; other codes retained unchanged
+  Id event = none;           // SavedItems.objects ID
+};
+struct SavedScript {
+  bool enabled = false;
+  std::vector<ScriptCondition> conditions;
+  std::vector<Id> actions; // SavedItems.objects IDs, including null/repetition
+};
 enum class RedlineType : uint32_t { line, ellipse, cloud, tag, text, arrow };
 struct Redline {
   RedlineType type = RedlineType::line;
@@ -539,6 +632,7 @@ struct SavedItem {
   std::optional<double> end_time;
   bool infinite = false;
   std::optional<AnimationKeyFrame> keyframe;
+  std::optional<SavedScript> script;
   TimeLinerValue timeliner;
   ClashValue clash;
   uint32_t child_list =

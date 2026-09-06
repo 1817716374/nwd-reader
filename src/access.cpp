@@ -1,5 +1,15 @@
 #include "internal.hpp"
 namespace nwd {
+const AnimationObject *animation_object(const ObjectGraph &graph, Id id) {
+  detail::require(id < graph.objects.size(), "animation object outside graph");
+  if (graph.objects[id].type < 150 || graph.objects[id].type > 167)
+    return nullptr;
+  const auto &records = graph.animation_objects;
+  auto it = std::lower_bound(
+      records.begin(), records.end(), id,
+      [](const AnimationObject &v, Id owner) { return v.owner < owner; });
+  return it != records.end() && it->owner == id ? &*it : nullptr;
+}
 ModelIndex::ModelIndex(const Model &m) {
   using detail::require;
   require(!m.paths.empty(), "path index requires loaded hierarchy");

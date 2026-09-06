@@ -159,6 +159,17 @@ inline void validate_publish_attribute_flags(uint32_t flags, uint32_t version) {
   require(version < 41 || !(flags & 0x10000),
           "invalid publish attribute property-vector flag");
 }
+inline void read_find_selection(Cursor &r, SavedSelection &out,
+                                uint64_t limit) {
+  out.locator = r.string();
+  if (out.locator.empty()) {
+    auto n = r.u32();
+    require(n <= limit && n <= (r.data.size() - r.pos) / 4,
+            "find selection path count outside stream/resource limit");
+    for (uint32_t i = 0; i < n; ++i)
+      out.path_links.push_back(r.u32());
+  }
+}
 template <class StringReader, class TimeWriter>
 void read_publish_body(Cursor &r, uint32_t &flags, StringReader string_reader,
                        TimeWriter time_writer) {
@@ -315,6 +326,19 @@ template <class F> bool saved_path_links(const SavedItems &saved, F accept) {
           (task->find_selection && !links(task->find_selection->path_links)))
         return false;
     }
+  }
+  for (const auto &object : saved.objects.animation_objects) {
+    const SavedSelection *selection = nullptr;
+    if (const auto *v = std::get_if<AnimationPropertyRecord>(&object.value))
+      selection = &v->selection;
+    else if (const auto *v =
+                 std::get_if<AnimationSelectionSphereRecord>(&object.value))
+      selection = &v->selection;
+    else if (const auto *v =
+                 std::get_if<AnimationCollisionRecord>(&object.value))
+      selection = &v->selection;
+    if (selection && !links(selection->path_links))
+      return false;
   }
   for (const auto &o : saved.objects.objects) {
     if (o.type != 89)

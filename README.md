@@ -15,6 +15,7 @@
 - **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点、材质覆盖、对象变换和纹理映射记录。
 - **视点与选择集**：读取视点目录、相机与裁剪设置、批注、外观覆盖、静态选择和有类型的搜索条件。
 - **动画**：读取场景、轨道、关键帧、时间和插值开关，以及平移、旋转、缩放、颜色、不透明度和相机参数。
+- **脚本**：读取脚本启用状态、条件的取反/括号/AND/OR、动作顺序，以及键盘、定时器、变量、碰撞、动画、脚本和热点事件；保留消息、模型加载、变量设置、属性提取、视点和动画动作的数据与共享引用。
 - **TimeLiner**：读取任务层级、计划与实际日期、进度、费用、数据源字段映射、仿真外观和列设置，以及旧式任务类型、外观和默认状态定义。
 - **碰撞**：读取测试、结果、结果组、规则、审批与模拟事件，以及验证选择中保存的路径编号。
 - **轴网**：读取系统坐标框架、轴线直线段和圆弧、楼层标高、活动系统与锁定层。
@@ -132,6 +133,27 @@ cmake --build build-examples --config Release --parallel
 | `Project.textures` | 获取纹理归属、路径、状态和共享原始字节 |
 
 `PublishInformation::has_option(PublishOption)` 可查询密码标志、打开时显示、到期日期标志、已重存、允许重存、密码提示时显示和嵌入数据库属性等保存配置。`flags` 保留原始位，`unknown_flags()` 返回尚未命名的位；`published` 和 `expires` 保留有符号时间值。密码标志不等于口令内容，此发布信息块不包含可返回的口令字段。
+
+### 脚本与事件对象
+
+脚本位于 `SavedItems.items[i].script`。每个条件的 `event` 和动作列表 `actions` 引用该块的 `SavedItems.objects`，同一个对象的多次引用保持相同 ID。`ObjectGraph.animation_objects` 按 `owner` 保存有类型的事件、动作和热点记录；可用 `animation_object(graph, id)` 查询，借用期间保持图不变。调用前检查 `id != nwd::none`；越界 ID 抛出 `nwd::Error`，普通对象返回空指针。
+
+```cpp
+for (const auto& item : saved.items) { // saved 是 nwd::SavedItems
+    if (!item.script) continue;
+    for (auto id : item.script->actions) {
+        if (id == nwd::none) continue;
+        const auto* action = nwd::animation_object(saved.objects, id);
+        if (!action) continue;
+        if (const auto* play = std::get_if<nwd::AnimationPlayRecord>(&action->value))
+            std::cout << play->animation_path.second << " " << play->start_time << '\n';
+    }
+}
+```
+
+条件保存 `negated`、`open_bracket`、`close_bracket`、`has_operator` 和 `operator_code`（0=AND、1=OR）。未知模式/操作代码保持原值；有类型的 `Value` 中字符串和对象引用继续使用所属图的编号。`AnimationPlayRecord` 返回播放完成开关、起止模式和起止时间；`AnimationCollisionRecord.gravity` 返回保存的重力选项。解析器返回保存记录，调用方决定如何使用或执行。
+
+脚本、视点和动画名称路径以及命名选择仍需调用方处理未解析的关联。脚本对象的模式枚举尚未全部命名，尚缺含非空脚本的原生文件验证；应检查每块状态，不据此认定全格式解析完成。
 
 ### 几何、属性与对象身份
 
