@@ -283,6 +283,15 @@ struct Camera {
                                   : std::nullopt;
   }
 };
+// Returns a transformed copy using a caller-supplied column-major affine matrix
+// in the camera's coordinate units. The stored XYZW components are used as-is;
+// the composed pose is decomposed into a proper rotation. Orthographic height,
+// near and far distances use the mean absolute principal scale; perspective
+// parameters, aspect and offset-factor presence/values are retained. Throws
+// Error for nonfinite matrix/pose components, non-affine matrices, singular or
+// numerically unreliable poses, or nonfinite transformed distances. Does not
+// infer NWF/world placement.
+Camera transformed_camera(const Camera &, const std::array<double, 16> &);
 // Secondary fields retain their serialization order; see docs/FORMAT.md.
 struct ViewFields {
   std::vector<uint32_t> integers;

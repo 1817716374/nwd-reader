@@ -59,6 +59,18 @@
 
 `clip_declared_plane_count` 保存原始计数；旧格式的 0 仍伴随一个独立保存的首平面，实际记录数以 `clip_planes.size()` 为准。动画裁剪关键帧复用相同数组与计数接口，可用 `clip_plane_fields(record, version)`、`clip_settings_fields(settings, version)` 按文档版本取得具名数据。
 
+## 相机坐标变换
+
+`transformed_camera(camera, matrix)` 接收列主序的 4×4 仿射矩阵，返回相机副本。矩阵应使用相机所在坐标系的单位；调用方负责确定项目放置和单位换算。
+
+函数将输入矩阵作用于相机位置和姿态，并分解组合姿态，支持旋转、非均匀缩放、剪切和镜像。原始 XYZW 四元数参与矩阵构造，不先归一化；返回的四元数表示分解后的正旋转，其符号不固定为 W 非负。正交相机的高度、近距离和远距离乘以组合姿态的三个主尺度绝对值的平均数；透视参数保持原值。宽高比、偏移系数及偏移字段存在性均保留。
+
+```cpp
+auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
+```
+
+非仿射、非有限位姿、奇异或数值不可靠的分解，以及非有限的变换后距离会抛出 `nwd::Error`。函数无共享可变状态，可由调用方并行处理独立相机；它不自动加载 NWF 放置上下文或变换裁剪集合。完整例子见 [examples/camera.cpp](examples/camera.cpp)。
+
 ## 构建
 
 需要 CMake 3.20 及以上、支持 C++20 的编译器和 64 位小端平台。依赖源码已随库提供，构建过程无需联网。
