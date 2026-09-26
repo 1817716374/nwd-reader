@@ -80,6 +80,23 @@ if (auto clip = view.loaded_clipping(nwd::ClipLoadProfile::reader_2026)) {
 
 加载和查询成功路径无堆分配，也没有共享可变状态，可由调用方并行处理独立集合。结构不一致、无效读取配置及实际计算所需的非有限/溢出/坍缩几何抛出 `nwd::Error`。输出采用来源坐标系；NWF 最终放置、完整原生变换标志及更早线流仍有限制，不能据此视为所有版本的完整运行时复现。完整用法见 [examples/clipping.cpp](examples/clipping.cpp)：`nwd_clipping_example model.nwd 2026`。
 
+## 分区中保存的方向
+
+`partition_orientation_fields(object, wire_version)` 从已经解码的分区对象返回原始 `up`、`north` 和可选 `front`。根分区可通过 `path_object(model, 0)` 获取；内联分区使用所属对象图中的 type32 对象。版本取自所属 `Scene::version` 或 `Document::version()`，不是产品年份。
+
+```cpp
+const auto& partition = nwd::path_object(scene.models.at(0), 0);
+const auto directions = nwd::partition_orientation_fields(partition, scene.version);
+// directions.up / directions.north: std::array<double, 3>
+if (directions.front) {
+    // 文件中存在 front；零向量也保留为存在。
+}
+```
+
+字段访问支持内部线流版本 53 起的已解码布局，109 前 `front` 为空。这个字段范围不扩展整文件读取的兼容范围。返回值保留零向量、非单位向量和非有限值，不进行方向修补、单位换算或 NWF 放置；它表示分区保存的方向，不能直接当作最终项目方向。错误对象类型、版本或数字字段数量抛出 `nwd::Error`，没有序列化内容的合成层级根也会被拒绝。成功路径只复制固定数量的数字，不分配堆内存；独立对象可由调用方并行查询。
+
+示例 [examples/partition_orientation.cpp](examples/partition_orientation.cpp) 读取 NWD/NWC 各模型的根分区：`nwd_partition_orientation_example model.nwd`。
+
 ## 相机坐标变换
 
 `transformed_camera(camera, matrix)` 接收列主序的 4×4 仿射矩阵，返回相机副本。矩阵应使用相机所在坐标系的单位；调用方负责确定项目放置和单位换算。

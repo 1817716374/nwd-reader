@@ -90,6 +90,20 @@ struct Object {
   std::vector<Shader> shaders;
   std::vector<uint8_t> bytes;
 };
+struct PartitionOrientation {
+  std::array<double, 3> up{}, north{};
+  // Not serialized before wire version109. A present zero vector is retained.
+  std::optional<std::array<double, 3>> front;
+};
+// Interpret a decoded type32 partition (including an inline partition).
+// Numeric layout from version53 onward; whole-file compatibility is separate.
+// Use the containing Scene/Document version, not the product's marketing year.
+// No normalization, generated defaults or reference/SceneSet overrides. Values
+// including nonfinite numbers are preserved. The hierarchy's synthetic root
+// has no partition payload and is rejected, as are inconsistent field arrays.
+// Fixed-size result, no allocation; use path_object(model,0) for the file root.
+PartitionOrientation partition_orientation_fields(const Object &,
+                                                  uint32_t wire_version);
 struct EmbeddedAssetFile {
   Id owner = none; // graph-local object ID; none for Asset::embedded_files
   uint32_t ordinal =
