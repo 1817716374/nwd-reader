@@ -1,5 +1,68 @@
 #include "internal.hpp"
 namespace nwd {
+namespace {
+uint32_t viewpoint_tool(uint32_t raw, uint32_t version) {
+  detail::require(raw <= (version < 120 ? 12u : 699u), "viewpoint tool enum");
+  return version < 120 ? (raw == 6 ? 0 : raw + 600) : raw;
+}
+} // namespace
+ViewpointState CurrentView::named_state() const {
+  using detail::require;
+  require(wire_version >= 46, "unsupported legacy viewpoint version");
+  require((parts & ~0xfffu) == 0, "unknown viewpoint parts");
+  ViewpointState result;
+  size_t ni = 0, ii = 0;
+  auto number = [&] {
+    require(ni < state.numbers.size(), "incomplete viewpoint numbers");
+    return state.numbers[ni++];
+  };
+  auto integer = [&] {
+    require(ii < state.integers.size(), "incomplete viewpoint integers");
+    return state.integers[ii++];
+  };
+  if (parts & 4)
+    result.world_up = std::array<double, 3>{number(), number(), number()};
+  if (parts & 8)
+    result.focal_distance = number();
+  if (parts & 16)
+    result.linear_speed = number();
+  if (parts & 32)
+    result.angular_speed = number();
+  if (parts & 64) {
+    result.serialized_tool = integer();
+    result.tool = viewpoint_tool(*result.serialized_tool, wire_version);
+  }
+  if (parts & 128)
+    result.tilt_limits = std::array<double, 2>{number(), number()};
+  if (parts & 256) {
+    result.lighting = integer();
+    require(*result.lighting <= 3, "viewpoint lighting enum");
+  }
+  if (parts & 512) {
+    result.render_style = integer();
+    require(*result.render_style <= 4, "viewpoint render style enum");
+  }
+  if (parts & 1024)
+    result.preferred_fov = number();
+  if (parts & 2048)
+    result.primitives = integer();
+  if (wire_version >= 425) {
+    ViewpointRenderSettings settings;
+    settings.near_distance = number();
+    settings.near_distance_type = integer();
+    settings.far_distance = number();
+    settings.far_distance_type = integer();
+    settings.image_fit = integer();
+    settings.horizontal_scale = number();
+    settings.aperture_diameter = number();
+    settings.shutter_speed = number();
+    result.render_settings = settings;
+  }
+  require(ni == state.numbers.size() && ii == state.integers.size() &&
+              state.strings.empty(),
+          "inconsistent viewpoint state arrays");
+  return result;
+}
 Camera detail::read_camera(Cursor &r, uint32_t version) {
   Camera c;
   c.projection = r.u32();
@@ -17,6 +80,7 @@ CurrentView detail::read_viewpoint(Cursor &r, uint32_t version) {
   using namespace detail;
   require(version >= 46, "unsupported legacy viewpoint version");
   CurrentView v;
+  v.wire_version = version;
   auto doubles = [&](ViewFields &f, unsigned count) {
     for (unsigned i = 0; i < count; ++i)
       f.numbers.push_back(r.read<double>());
@@ -54,13 +118,13 @@ CurrentView detail::read_viewpoint(Cursor &r, uint32_t version) {
   if (v.parts & 32)
     doubles(f, 1);
   if (v.parts & 64)
-    integer(f);
+    viewpoint_tool(integer(f), version);
   if (v.parts & 128)
     doubles(f, 2);
   if (v.parts & 256)
-    integer(f);
+    require(integer(f) <= 3, "viewpoint lighting enum");
   if (v.parts & 512)
-    integer(f);
+    require(integer(f) <= 4, "viewpoint render style enum");
   if (v.parts & 1024)
     doubles(f, 1);
   if (v.parts & 2048)

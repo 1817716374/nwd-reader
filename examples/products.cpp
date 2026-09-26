@@ -29,6 +29,17 @@ static int run(const std::filesystem::path &path) {
       if (!block.diagnostic.empty())
         std::cerr << block.diagnostic << '\n';
       if (const auto *view = std::get_if<nwd::CurrentView>(&block.value)) {
+        const auto state = view->named_state();
+        if (state.focal_distance)
+          std::cout << "  focal distance=" << *state.focal_distance << '\n';
+        if (state.tool)
+          std::cout << "  navigation tool=" << *state.tool
+                    << " serialized=" << *state.serialized_tool << '\n';
+        if (state.render_settings)
+          std::cout << "  viewpoint near=" << state.render_settings->near_distance
+                    << " far=" << state.render_settings->far_distance
+                    << " shutter seconds=" << state.render_settings->shutter_speed
+                    << '\n';
         if (view->parts & 1) {
           const auto &camera = view->camera;
           std::cout << "  camera projection=" << camera.projection

@@ -289,12 +289,39 @@ struct ViewFields {
   std::vector<double> numbers;
   std::vector<std::string> strings;
 };
+struct ViewpointRenderSettings {
+  // Saved viewpoint settings, separate from the Camera near/far parameters.
+  double near_distance = 0, far_distance = 0;
+  // Distance types: 0=fixed, 1=constrained, 2=automatic.
+  uint32_t near_distance_type = 0, far_distance_type = 0;
+  // 0=mask, 1=fill, 2=preserve vertical, 3=preserve horizontal, 4=overscan.
+  uint32_t image_fit = 0;
+  double horizontal_scale = 0, aperture_diameter = 0, shutter_speed = 0;
+};
+struct ViewpointState {
+  std::optional<std::array<double, 3>> world_up;
+  std::optional<double> focal_distance, linear_speed, angular_speed;
+  // tool preserves modern identifiers and converts pre-120 identifiers.
+  std::optional<uint32_t> serialized_tool, tool;
+  std::optional<std::array<double, 2>> tilt_limits;
+  std::optional<uint32_t> lighting;
+  // 0=full, 1=preview, 2=shaded, 3=wireframe, 4=hidden line.
+  std::optional<uint32_t> render_style;
+  std::optional<uint32_t> primitives;
+  std::optional<double> preferred_fov;
+  // Always serialized from version425, independently of the parts mask.
+  std::optional<ViewpointRenderSettings> render_settings;
+};
 struct CurrentView {
   std::string chunk_name;
   uint32_t parts = 0;
   Camera camera;
   ViewFields viewer, state, clip_set;
   std::vector<ViewFields> clip_planes;
+  uint32_t wire_version = 0;
+  // Interprets the current raw arrays without allocation or cached copies.
+  // Absent fields remain absent. Invalid or inconsistent arrays throw Error.
+  ViewpointState named_state() const;
 };
 struct Background {
   int32_t mode = 0;
