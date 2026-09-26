@@ -58,6 +58,87 @@ static std::vector<uint32_t> unsigned_indices(Cursor &r, uint32_t n,
   }
   return out;
 }
+CoordinatePayload read_coordinate_payload(Cursor &r, bool raw,
+                                          uint64_t max_entries) {
+  const int64_t stored_count = r.read<int32_t>();
+  require(!raw || stored_count >= 0, "negative raw coordinate count");
+  const uint64_t count = stored_count < 0 ? -stored_count : stored_count;
+  require(count <= max_entries && count <= 100000000, "coordinate count limit");
+  CoordinatePayload out;
+  uint32_t palette_count;
+  if (stored_count < 0) {
+    auto q = std::make_shared<CoordinateQuantization>();
+    q->saved_precision = r.read<float>();
+    q->finite = std::isfinite(q->saved_precision);
+    for (auto &value : q->bounds) {
+      value = r.read<float>();
+      q->finite = q->finite && std::isfinite(value);
+    }
+    for (auto &bits : q->component_bits)
+      bits = r.byte();
+    unsigned stride = 0;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+      require(q->component_bits[axis] <= 32, "coordinate component bit width");
+      stride += q->component_bits[axis];
+    }
+    palette_count = q->palette_count = r.u32();
+    require(palette_count <= max_entries && palette_count <= 100000000,
+            "coordinate palette resource limit");
+    const uint64_t words = (uint64_t(palette_count) * stride + 31) / 32;
+    auto packed = r.raw(words * 4);
+    q->packed_palette.assign(packed.begin(), packed.end());
+    std::array<float, 3> step{};
+    for (unsigned axis = 0; axis < 3; ++axis) {
+      const float extent = q->bounds[axis + 3] - q->bounds[axis];
+      const unsigned width = q->component_bits[axis];
+      if (width == 1) {
+        step[axis] = extent;
+      } else if (width > 1) {
+        const float ratio = std::fabs(extent) / q->saved_precision;
+        // CVTTSS2SI to int64 followed by retaining the low uint32. Invalid
+        // conversion produces INT64_MIN, whose low word is zero. Avoid C++ UB.
+        uint32_t intervals = 0;
+        if (std::isfinite(ratio) && double(ratio) >= -0x1p63 &&
+            double(ratio) < 0x1p63)
+          intervals = static_cast<uint32_t>(static_cast<int64_t>(ratio));
+        step[axis] = extent / static_cast<float>(intervals);
+      }
+    }
+    out.values.resize(uint64_t(palette_count) * 3);
+    uint64_t bit = 0;
+    for (uint32_t entry = 0; entry < palette_count; ++entry)
+      for (unsigned axis = 0; axis < 3; ++axis) {
+        const unsigned width = q->component_bits[axis];
+        const uint32_t value = packed_bits(packed, bit, width);
+        bit += width;
+        // Native decoding performs separate binary32 multiply and addition.
+        // Retain this rounding even in consumer builds which enable FMA.
+        volatile float product = static_cast<float>(value) * step[axis];
+        const float decoded = product + q->bounds[axis];
+        out.values[uint64_t(entry) * 3 + axis] = decoded;
+        q->finite = q->finite && std::isfinite(decoded);
+      }
+    out.quantization = std::move(q);
+  } else {
+    const uint64_t floats = raw ? count * 3 : r.u32();
+    require(floats % 3 == 0 && floats <= (r.data.size() - r.pos) / 4,
+            "invalid coordinate palette");
+    palette_count = static_cast<uint32_t>(floats / 3);
+    require(palette_count <= max_entries, "coordinate palette resource limit");
+    out.values.resize(floats);
+    for (auto &value : out.values)
+      value = r.f32();
+  }
+  if (palette_count >= count) {
+    out.indices.resize(count);
+    for (uint32_t i = 0; i < count; ++i)
+      out.indices[i] = i;
+  } else {
+    out.indices =
+        unsigned_indices(r, static_cast<uint32_t>(count), palette_count);
+  }
+  return out;
+}
 static std::vector<uint32_t> packed(Cursor &r, uint64_t limit) {
   uint32_t bits = r.byte(), count = r.u32();
   require(bits <= 32, "invalid packed bit width");
@@ -289,7 +370,8 @@ namespace nwd {
 static Geometry geometry_record(std::span<const uint8_t> data,
                                 unsigned normal_bits, bool raw_coordinates,
                                 bool raw_strips,
-                                const detail::GeometryStreamContext *context) {
+                                const detail::GeometryStreamContext *context,
+                                uint64_t max_entries = 100000000) {
   using namespace detail;
   require(context || normal_bits == 8 || normal_bits == 16,
           "unsupported normal precision");
@@ -328,23 +410,11 @@ static Geometry geometry_record(std::span<const uint8_t> data,
   require(g.type == 94 || g.type == 95 || g.type == 96,
           "unsupported geometry type " + std::to_string(g.type));
   require(r.u32() == 101 && r.u32() == 60, "unsupported coordinate object");
-  uint32_t n = r.u32();
-  if (context && !raw_coordinates && (n & 0x80000000u))
-    throw UnsupportedLayout(
-        "quantized coordinate payload in explicit stream context");
-  require(n <= 100000000, "coordinate count limit");
-  uint32_t nf = raw_coordinates ? n * 3 : r.u32();
-  require(nf % 3 == 0 && nf <= (data.size() - r.pos) / 4,
-          "invalid coordinate palette");
-  g.coordinates.resize(nf);
-  for (auto &x : g.coordinates)
-    x = r.f32();
-  if (nf == uint64_t(n) * 3) {
-    g.coordinate_indices.resize(n);
-    for (uint32_t i = 0; i < n; ++i)
-      g.coordinate_indices[i] = i;
-  } else
-    g.coordinate_indices = unsigned_indices(r, n, nf / 3);
+  auto coordinates = read_coordinate_payload(r, raw_coordinates, max_entries);
+  const uint32_t n = static_cast<uint32_t>(coordinates.indices.size());
+  g.coordinates = std::move(coordinates.values);
+  g.coordinate_indices = std::move(coordinates.indices);
+  g.coordinate_quantization = std::move(coordinates.quantization);
   for (unsigned slot = 0; slot < 3; ++slot) {
     uint32_t oid = r.u32();
     if (!oid)
@@ -363,7 +433,7 @@ static Geometry geometry_record(std::span<const uint8_t> data,
   standalone.version = 75; // standalone API retains its modern array framing
   standalone.compression.flags = raw_strips ? 0 : 0x30;
   auto strips = read_geometry_strips(r, g.type, context ? *context : standalone,
-                                     n, 100000000);
+                                     n, max_entries);
   g.strip_lengths = std::move(strips.lengths);
   g.strip_indices = std::move(strips.indices);
   if (strips.implicit_indices) {
@@ -381,7 +451,8 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
 }
 Geometry detail::decode_geometry_record(std::span<const uint8_t> data,
                                         const GeometryStreamContext &context,
-                                        unsigned normal_override) {
+                                        unsigned normal_override,
+                                        uint64_t max_entries) {
   auto selected = context;
   if (normal_override) {
     require(normal_override <= 23,
@@ -389,7 +460,8 @@ Geometry detail::decode_geometry_record(std::span<const uint8_t> data,
     selected.compression.normal_precision = uint8_t(normal_override);
   }
   return geometry_record(data, selected.compression.normal_precision,
-                         !(selected.compression.flags & 1), false, &selected);
+                         !(selected.compression.flags & 1), false, &selected,
+                         max_entries);
 }
 std::vector<uint32_t> triangle_indices(const Geometry &g) {
   std::vector<uint32_t> out;
@@ -480,9 +552,12 @@ void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
       try {
         auto data =
             std::span(bytes).subspan(record_offsets[i], record_sizes[i]);
+        const auto limit = std::min<uint64_t>(
+            o.max_objects, o.max_decoded_chunk / (3 * sizeof(float)));
         model.geometries[i] =
-            context ? decode_geometry_record(data, *context, o.normal_bits)
-                    : decode_geometry(data, bits, raw, raw);
+            context
+                ? decode_geometry_record(data, *context, o.normal_bits, limit)
+                : geometry_record(data, bits, raw, raw, nullptr, limit);
       } catch (const Error &e) {
         throw Error("record " + std::to_string(i + 1) + ": " + e.what());
       }

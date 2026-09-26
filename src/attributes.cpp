@@ -1,29 +1,5 @@
-#include "internal.hpp"
+#include "geometry_stream.hpp"
 namespace nwd {
-namespace {
-uint32_t bits_at(const std::vector<uint8_t> &bytes, uint64_t bit,
-                 unsigned width) {
-  detail::require(width <= 32, "attribute bit width");
-  if (!width)
-    return 0;
-  uint64_t w = bit / 32;
-  unsigned shift = bit % 32;
-  size_t need = shift + width > 32 ? 8 : 4;
-  detail::require(w * 4 <= bytes.size() && need <= bytes.size() - w * 4,
-                  "truncated attribute palette");
-  uint32_t first;
-  std::memcpy(&first, bytes.data() + w * 4, 4);
-  uint64_t value = first;
-  if (need == 8) {
-    uint32_t second;
-    std::memcpy(&second, bytes.data() + w * 4 + 4, 4);
-    value = ((value << 32) | second) >> (64 - shift - width);
-  } else
-    value >>= 32 - shift - width;
-  return static_cast<uint32_t>(
-      value & (width == 32 ? UINT32_MAX : (1ull << width) - 1));
-}
-} // namespace
 std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
   using detail::require;
   require(slot < a.indices.size(), "attribute slot outside array");
@@ -63,7 +39,7 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
     uint64_t bit = uint64_t(index) * stride;
     for (unsigned j = 0; j < 2; ++j) {
       unsigned width = a.component_bits[j];
-      uint32_t value = bits_at(a.packed_palette, bit, width);
+      uint32_t value = detail::packed_bits(a.packed_palette, bit, width);
       float extent = a.quantization_bounds[j + 2] - a.quantization_bounds[j];
       float step =
           width ? extent / static_cast<float>((1ull << width) - 1) : 0.f;
@@ -76,9 +52,9 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
                            : a.bits >= 1 && a.bits <= 8,
             "unsupported attribute precision");
     for (unsigned j = 0; j < components; ++j) {
-      uint32_t value =
-          bits_at(a.packed_palette, (uint64_t(index) * components + j) * a.bits,
-                  a.bits);
+      uint32_t value = detail::packed_bits(
+          a.packed_palette, (uint64_t(index) * components + j) * a.bits,
+          a.bits);
       if (normal) {
         int32_t signed_value = static_cast<int32_t>(value);
         if (value & (1u << (a.bits - 1)))

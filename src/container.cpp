@@ -394,6 +394,15 @@ Scene Document::read_scene() const {
         out.warnings.push_back(m.name + ": " + std::to_string(invalid_uv) +
                                " source UV arrays contain non-finite ranges; "
                                "values retained and flagged");
+      size_t invalid_quantized_coordinates = 0;
+      for (const auto &g : m.geometries)
+        if (g.coordinate_quantization && !g.coordinate_quantization->finite)
+          ++invalid_quantized_coordinates;
+      if (invalid_quantized_coordinates)
+        out.warnings.push_back(
+            m.name + ": " + std::to_string(invalid_quantized_coordinates) +
+            " quantized coordinate arrays contain non-finite fields or "
+            "results; values retained and flagged");
       out.timing.geometry_ms += elapsed(phase);
       std::string prefix = m.name.empty() ? "" : m.name + "\\";
       auto find = [&](std::string_view suffix) -> size_t {

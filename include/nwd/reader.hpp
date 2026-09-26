@@ -166,6 +166,14 @@ struct ExternalGeometry {
   uint32_t flags = 0, flags2 = 0, geometry_kind = 0;
   std::array<float, 6> bounds{};
 };
+struct CoordinateQuantization {
+  float saved_precision = 0;
+  std::array<float, 6> bounds{}; // lower XYZ, upper XYZ, without repair
+  std::array<uint8_t, 4> component_bits{}; // fourth byte retained, unused in XYZ
+  uint32_t palette_count = 0;
+  std::vector<uint8_t> packed_palette; // little-endian words, MSB-first fields
+  bool finite = true; // saved floats and decoded coordinates are all finite
+};
 struct Geometry {
   uint32_t type = 0, flags = 0;
   std::string text;
@@ -176,6 +184,7 @@ struct Geometry {
   std::vector<AttributeArray> attributes;
   std::shared_ptr<const ExternalGeometry>
       external; // descriptor, not an embedded mesh
+  std::shared_ptr<const CoordinateQuantization> coordinate_quantization;
 };
 struct Transform {
   uint32_t type = 0;
