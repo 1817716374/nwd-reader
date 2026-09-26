@@ -264,11 +264,13 @@ struct Camera {
   uint32_t projection = 0; // 0=perspective, 1=orthographic
   std::array<double, 3> position{};
   std::array<double, 4> orientation{}; // XYZW
-  // Aspect, height/angle, near, far, then version >=425 up/right offset factors.
+  // Aspect, height/angle, near, far, then version >=425 up/right offset
+  // factors.
   std::array<double, 6> parameters{};
   bool offset_factors_present = false;
   double aspect_ratio() const noexcept { return parameters[0]; }
-  // Full vertical angle in radians for perspective; full height for orthographic.
+  // Full vertical angle in radians for perspective; full height for
+  // orthographic.
   double height_field() const noexcept { return parameters[1]; }
   double near_distance() const noexcept { return parameters[2]; }
   double far_distance() const noexcept { return parameters[3]; }
@@ -326,7 +328,8 @@ struct ViewerState {
   // Borrowed from CurrentView::viewer; invalidated by mutation/destruction.
   // nullopt is a stored NULL; an empty string_view is a stored empty string.
   std::optional<std::string_view> avatar;
-  uint32_t camera_mode = 0; // 0=first person, 1=third person; retains unknown codes
+  uint32_t camera_mode =
+      0; // 0=first person, 1=third person; retains unknown codes
   double first_to_third_angle = 0, first_to_third_distance = 0;
   double first_to_third_param = 0; // multiplier of first_to_third_distance
   bool first_to_third_correction = false, collision_detection = false,
@@ -336,7 +339,8 @@ struct ViewerState {
   std::optional<bool> auto_crouch;
   // Applies an explicit signed scale to dimensions, third-person distance,
   // gravity value and terminal velocity. Angles and the multiplier stay intact.
-  // Preserves missing fields; does not infer a project transform or run physics.
+  // Preserves missing fields; does not infer a project transform or run
+  // physics.
   ViewerState scaled(double factor) const noexcept;
 };
 struct LegacyClipPlane {
@@ -346,13 +350,15 @@ struct LegacyClipPlane {
   double legacy_value = 0; // retained field discarded by investigated loaders
 };
 struct ClipPlaneFrame {
-  uint32_t state = 0; // 0=default, 1=enabled, 2=disabled; preserves unknown codes
+  uint32_t state =
+      0; // 0=default, 1=enabled, 2=disabled; preserves unknown codes
   std::array<double, 3> location{}, direction{}, x_direction{};
 };
 struct ClipPlane {
   uint32_t alignment = 0; // raw alignment identifier
   // Version116 replaces the legacy plane equation with a surface frame.
-  // Vectors are saved values, without loader normalization or orthogonalization.
+  // Vectors are saved values, without loader normalization or
+  // orthogonalization.
   std::variant<LegacyClipPlane, ClipPlaneFrame> value;
 };
 struct ClipBounds {
@@ -373,6 +379,64 @@ struct ClipSettings {
 // No allocation or normalization; inconsistent arrays throw Error.
 ClipPlane clip_plane_fields(const ViewFields &, uint32_t wire_version);
 ClipSettings clip_settings_fields(const ViewFields &, uint32_t wire_version);
+// Loaded geometry, separate from the serialized ClipPlaneFrame and optional
+// ClipSettings. All axes are retained, including degenerate/left-handed frames.
+struct SurfaceFrame {
+  std::array<double, 3> location{}, x{}, y{}, z{};
+};
+struct ClipBoxState {
+  ClipBounds box, range;
+  std::array<double, 4> orientation{0, 0, 0, 1};
+};
+// Explicit implementation generation, not inferred from the saved wire version.
+enum class ClipLoadProfile { reader_2017, reader_2026 };
+struct LoadedClipPlane {
+  uint32_t state = 0, alignment = 0;
+  SurfaceFrame frame;
+};
+struct LoadedClipSet {
+  std::array<LoadedClipPlane, 6> planes;
+  bool linked = false, enabled = false;
+  int32_t current_plane = 0;
+  uint32_t mode = 0;
+  ClipBoxState bounds;
+  std::array<double, 16> box_transform{1, 0, 0, 0, 0, 1, 0, 0,
+                                       0, 0, 1, 0, 0, 0, 0, 1};
+  // Provenance of loading repairs/defaults, retained through transformations.
+  ClipLoadProfile profile = ClipLoadProfile::reader_2017;
+  uint32_t wire_version = 0;
+  bool box_reset = false, orientation_defaulted = false,
+       orientation_nan_reset = false;
+  bool box_defaulted = false;
+  uint32_t serialized_plane_count = 6;
+};
+struct ClipPlaneEquation {
+  std::array<double, 3> normal{};
+  double distance = 0; // dot(normal, position) = distance
+  uint32_t slot = 0; // source plane index or box-face index, never compacted ID
+};
+struct ActiveClipPlanes {
+  std::array<ClipPlaneEquation, 6> planes;
+  uint32_t count = 0;
+};
+// Fresh load with an explicit implementation profile (not a file-year guess).
+// Wire versions >=18; present records require their original declared count.
+// A completely absent set returns nullopt; inconsistent/unsupported fields,
+// unknown profiles and invalid numerical operations throw Error. The input is
+// unchanged, including nonfinite saved fields repaired by the selected profile.
+// Fixed-size result and scratch storage; no allocation on the successful path.
+std::optional<LoadedClipSet>
+loaded_clip_set(std::span<const ViewFields> planes, const ViewFields &settings,
+                std::optional<uint32_t> declared_count, uint32_t wire_version,
+                ClipLoadProfile profile);
+// Reads the loaded snapshot. Disabled/unknown-mode sets and empty boxes yield
+// count0. Plane mode includes exactly state1; its normals can be nonunit/zero.
+// Box faces use the cached column-major rotation-tagged box_transform. Preserve
+// it with the bounds/orientation; editing those fields does not refresh it.
+// Only entries [0,count) are valid; slot preserves the source index (0..5).
+// Equations are dot(normal,position)=distance, with the retained half-space >=.
+// Uses source coordinates, with no automatic NWF/world placement or rendering.
+ActiveClipPlanes active_clip_planes(const LoadedClipSet &);
 struct CurrentView {
   std::string chunk_name;
   uint32_t parts = 0;
@@ -391,6 +455,7 @@ struct CurrentView {
   ClipPlane named_clip_plane(size_t index) const;
   // nullopt for viewpoint-only records that do not store a clip set.
   std::optional<ClipSettings> named_clip_settings() const;
+  std::optional<LoadedClipSet> loaded_clipping(ClipLoadProfile) const;
 };
 struct Background {
   int32_t mode = 0;
@@ -615,6 +680,9 @@ struct AnimationKeyFrame {
   std::vector<ViewFields> clip_planes;
   ViewFields clip_set;
   std::optional<uint32_t> clip_declared_plane_count;
+  // Uses the containing document's wire version; absent clipping stays absent.
+  std::optional<LoadedClipSet> loaded_clipping(uint32_t wire_version,
+                                               ClipLoadProfile) const;
 };
 struct TimeLinerStatus {
   uint32_t mode = 0;
@@ -798,7 +866,8 @@ struct NwfReference {
   uint32_t flags = 0, load_flags = 7, linear_units = 0, angular_units = 0,
            orientation_flag = 0, extra_enum = 0;
   std::array<double, 12> affine{}; // native row-major 3x3, then translation
-  // Stored vectors, not the resolved loading orientation. Front is zero before109.
+  // Stored vectors, not the resolved loading orientation. Front is zero
+  // before109.
   std::array<double, 3> up{}, front{}, north{};
   std::vector<CachedReference> cached_files;
   std::vector<CachePlugin> cache_plugins; // primary plugin first

@@ -59,6 +59,27 @@
 
 `clip_declared_plane_count` 保存原始计数；旧格式的 0 仍伴随一个独立保存的首平面，实际记录数以 `clip_planes.size()` 为准。动画裁剪关键帧复用相同数组与计数接口，可用 `clip_plane_fields(record, version)`、`clip_settings_fields(settings, version)` 按文档版本取得具名数据。
 
+## 加载后的裁剪与有效平面
+
+`CurrentView::loaded_clipping(profile)` 返回独立的 `LoadedClipSet` 快照；保存视点复用同一接口。动画裁剪关键帧使用 `AnimationKeyFrame::loaded_clipping(wire_version, profile)`，版本来自所属 `Document::version()`。也可调用 `loaded_clip_set(planes, settings, declared_count, wire_version, profile)` 处理原始裁剪数组。裁剪记录完全缺失时返回空 `optional`；存在时必须提供原始计数，避免把旧格式的 0 猜成 1。
+
+`ClipLoadProfile::reader_2017` 和 `reader_2026` 显式选择两种加载规则，不根据文件年份自动选择。支持裁剪线流版本 18 起的字段：旧平面保留原法向长度并补齐未保存的默认槽；116 起的平面按保存方向构建三轴帧。107 前缺少盒，118 前缺少盒朝向。2026 规则还修复现代集合中非空但体积不正的盒及含 NaN 的盒四元数。`box_defaulted`、`orientation_defaulted`、`box_reset`、`orientation_nan_reset` 分别记录默认与修复；`profile`、`wire_version`、`serialized_plane_count` 保留加载来源。原始字段保持可用。
+
+```cpp
+if (auto clip = view.loaded_clipping(nwd::ClipLoadProfile::reader_2026)) {
+    auto active = nwd::active_clip_planes(*clip);
+    for (uint32_t i = 0; i < active.count; ++i) {
+        const auto& plane = active.planes[i];
+        // dot(plane.normal, position) = plane.distance
+        // plane.slot 是原始六平面槽号；保留侧为 >=。
+    }
+}
+```
+
+`active_clip_planes` 返回固定容量六个方程及有效数量。关闭集合、未知模式或空盒返回 0，原始未知模式仍保留在快照中。平面模式只选状态恰为 1 的槽；其法向可能非单位或退化。盒模式返回带朝向的六个面，顺序为 -Y、+Y、-Z、+Z、+X、-X。计算使用快照中的 `box_transform`；保存的非单位四元数沿用加载规则，不擅自归一化。修改快照中的盒或朝向不会自动更新缓存矩阵，建议从原始字段重新加载。
+
+加载和查询成功路径无堆分配，也没有共享可变状态，可由调用方并行处理独立集合。结构不一致、无效读取配置及实际计算所需的非有限/溢出/坍缩几何抛出 `nwd::Error`。输出采用来源坐标系；NWF 最终放置、完整原生变换标志及更早线流仍有限制，不能据此视为所有版本的完整运行时复现。完整用法见 [examples/clipping.cpp](examples/clipping.cpp)：`nwd_clipping_example model.nwd 2026`。
+
 ## 相机坐标变换
 
 `transformed_camera(camera, matrix)` 接收列主序的 4×4 仿射矩阵，返回相机副本。矩阵应使用相机所在坐标系的单位；调用方负责确定项目放置和单位换算。
