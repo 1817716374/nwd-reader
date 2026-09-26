@@ -389,6 +389,22 @@ enum class AnimationObjectKind : uint32_t {
   on_collision = 166,
   on_start = 167
 };
+enum class AnimationEnum : uint32_t {
+  play_start,
+  play_end,
+  stop_animation,
+  variable_modifier,
+  variable_comparison,
+  timer,
+  script_trigger,
+  animation_trigger,
+  key_trigger,
+  hotspot_trigger,
+  hotspot_type
+};
+// Stable, nonlocalized names; unknown domain/value returns an empty view.
+// Raw values remain in the records. Play start/end have different value maps.
+std::string_view animation_enum_name(AnimationEnum, int32_t) noexcept;
 struct AnimationPathRecord {
   std::pair<std::string, std::string> item_path;
   std::optional<int32_t> mode; // absent for show_viewpoint
@@ -399,14 +415,14 @@ struct AnimationVariableRecord {
   int32_t operation = 0; // source assignment/comparison enumeration
 };
 struct AnimationTimeRecord {
-  double delay = 0;
+  double delay = 0;            // seconds
   std::optional<int32_t> mode; // absent for pause
 };
 struct AnimationPlayRecord {
   std::pair<std::string, std::string> animation_path;
-  bool finish = false;
+  bool finish = false; // pause at end (native option name "finish")
   int32_t start_type = 0, end_type = 0;
-  double start_time = 0, end_time = 0;
+  double start_time = 0, end_time = 0; // seconds; interpreted by start/end type
 };
 struct AnimationTextRecord {
   std::string text;
@@ -622,6 +638,7 @@ struct SavedItem {
   Id parent = none;
   uint64_t offset = 0, end_offset = 0; // decoded chunk offsets
   bool complete = false;
+  bool name_is_null = false; // retains the stream's null-string marker
   std::string name;
   std::vector<SavedComment> comments;
   std::array<uint8_t, 16> guid{};
@@ -682,6 +699,45 @@ struct SavedItems {
   // Named locators, searches, GUIDs and item-path strings are not evaluated.
   Id model = none;
   bool associations_verified = false, implicit_node_map = false;
+};
+// ElementItemPath separates names with LF, not slash. Empty components are
+// significant; an entirely empty path denotes the element's implicit root.
+std::vector<std::string> split_saved_item_path(std::string_view,
+                                               uint64_t max_parts = 20000000);
+enum class SavedItemPathStatus {
+  missing,
+  resolved,
+  element_root,
+  unavailable,
+  ambiguous_element,
+  context_required
+};
+enum class SavedItemPathSemantics {
+  require_context,     // empty components differ between native generations
+  modern,              // resolve empty components as null/empty child names
+  legacy_stop_at_empty // an empty component returns the current group/item
+};
+struct SavedItemPathResult {
+  SavedItemPathStatus status = SavedItemPathStatus::missing;
+  Id block = none, item = none; // ProductData block and SavedItems item IDs
+  // Native lookup picks the first sibling in source order. This flag records
+  // duplicates encountered along that route, including on unsuccessful paths.
+  bool duplicate_names = false;
+};
+struct ProductData;
+// Immutable index for one ProductData/source. owner_chunk supplies the exact
+// namespace; element_name is ElementItemPath.first and path is .second.
+class SavedItemPathIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit SavedItemPathIndex(const ProductData &,
+                              uint64_t max_items = 20000000);
+  SavedItemPathResult resolve(
+      std::string_view owner_chunk, std::string_view element_name,
+      std::string_view path,
+      SavedItemPathSemantics = SavedItemPathSemantics::require_context) const;
 };
 struct TimeLinerGui {
   std::optional<int32_t> module_version;

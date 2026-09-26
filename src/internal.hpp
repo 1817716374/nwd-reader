@@ -68,8 +68,10 @@ public:
     return v;
   }
   uint8_t byte() { return raw(1)[0]; }
-  std::string string() {
+  std::string string(bool *is_null = nullptr) {
     uint32_t n = u32();
+    if (is_null)
+      *is_null = n == UINT32_MAX;
     if (n == UINT32_MAX)
       return {};
     auto s = raw(n);

@@ -151,9 +151,28 @@ for (const auto& item : saved.items) { // saved 是 nwd::SavedItems
 }
 ```
 
-条件保存 `negated`、`open_bracket`、`close_bracket`、`has_operator` 和 `operator_code`（0=AND、1=OR）。未知模式/操作代码保持原值；有类型的 `Value` 中字符串和对象引用继续使用所属图的编号。`AnimationPlayRecord` 返回播放完成开关、起止模式和起止时间；`AnimationCollisionRecord.gravity` 返回保存的重力选项。解析器返回保存记录，调用方决定如何使用或执行。
+条件保存 `negated`、`open_bracket`、`close_bracket`、`has_operator` 和 `operator_code`（0=AND、1=OR）。未知模式/操作代码保持原值；有类型的 `Value` 中字符串和对象引用继续使用所属图的编号。`AnimationPlayRecord` 返回结束时暂停开关、起止模式和起止时间（秒）；`AnimationCollisionRecord.gravity` 返回保存的重力选项。解析器返回保存记录，调用方决定如何使用或执行。
 
-脚本、视点和动画名称路径以及命名选择仍需调用方处理未解析的关联。脚本对象的模式枚举尚未全部命名，尚缺含非空脚本的原生文件验证；应检查每块状态，不据此认定全格式解析完成。
+`animation_enum_name(AnimationEnum, value)` 查询播放起止、停止、变量、定时器和事件触发模式的稳定名称；未知值返回空视图。例如播放起点值2表示 `current_position`，终点值2表示 `specified_time`，须选择对应枚举域。原始数值保持不变。含非空脚本的原生文件验证仍不足，应检查每块状态。
+
+### 保存对象之间的名称引用
+
+`SavedItemPathIndex` 可解析动画、脚本、视点和TimeLiner等记录中的元素名称路径。索引属于一个 `ProductData`，查询使用拥有该引用的完整块名确定命名空间，结果给出目标块和 `SavedItem` 编号。
+
+```cpp
+nwd::SavedItemPathIndex paths(products); // products 是 nwd::ProductData
+auto target = paths.resolve(owner_chunk, reference.first, reference.second);
+if (target.status == nwd::SavedItemPathStatus::resolved) {
+    const auto& items = std::get<nwd::SavedItems>(products.blocks[target.block].value);
+    std::cout << items.items[target.item].name << '\n';
+}
+```
+
+名称路径以换行符分隔层级，斜杠属于名称；`split_saved_item_path()`可拆分并保留空分量。`SavedItem.name_is_null`区分原始空指针名称与空字符串。同名兄弟遵循保存顺序选择第一个，同时返回 `duplicate_names`；同名元素块则返回 `ambiguous_element`。完全空路径返回 `element_root`，此时没有SavedItem编号。
+
+含空分量的路径在不同原生实现中存在语义差别，默认返回 `context_required`。调用方可通过第四参数选择 `SavedItemPathSemantics::modern`（查找空名称子项）或 `legacy_stop_at_empty`（停在当前对象）。未解码目标返回 `unavailable`，不存在的目标返回 `missing`。索引查询不跨来源文件猜测身份，建立后可并行只读查询。
+
+名称引用查找与几何PathLink验证、动态搜索和GUID关联是独立接口。它不会修改块的解析状态或执行脚本。
 
 ### 几何、属性与对象身份
 

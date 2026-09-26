@@ -416,7 +416,7 @@ void legacy_clash_items(Cursor &r, SavedItems &out, Id parent, uint32_t n,
         throw Unsupported("legacy clash issue type " + std::to_string(type));
       s.type = type == 0 ? 51 : 52;
     }
-    s.name = r.string();
+    s.name = r.string(&s.name_is_null);
     auto children = clash(r, s, version, objects, options, true);
     if (children)
       legacy_clash_items(r, out, id, children, version, objects, options,
@@ -440,7 +440,7 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
     s.child_list = child_list;
     s.offset = r.pos;
     s.type = fixed_type == none ? r.u32() : fixed_type;
-    s.name = r.string();
+    s.name = r.string(&s.name_is_null);
     comments(r, s.comments, options);
     if (version >= 246)
       guid(r, s.guid);
