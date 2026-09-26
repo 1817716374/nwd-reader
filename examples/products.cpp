@@ -29,6 +29,16 @@ static int run(const std::filesystem::path &path) {
       if (!block.diagnostic.empty())
         std::cerr << block.diagnostic << '\n';
       if (const auto *view = std::get_if<nwd::CurrentView>(&block.value)) {
+        if (const auto viewer = view->named_viewer()) {
+          std::cout << "  viewer radius=" << viewer->radius
+                    << " height=" << viewer->height
+                    << " collision=" << viewer->collision_detection
+                    << " gravity=" << viewer->gravity << '\n';
+          if (viewer->avatar)
+            std::cout << "    avatar=" << *viewer->avatar << '\n';
+          else
+            std::cout << "    avatar=NULL\n";
+        }
         const auto state = view->named_state();
         if (state.focal_distance)
           std::cout << "  focal distance=" << *state.focal_distance << '\n';

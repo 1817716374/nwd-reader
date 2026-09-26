@@ -312,6 +312,24 @@ struct ViewpointState {
   // Always serialized from version425, independently of the parts mask.
   std::optional<ViewpointRenderSettings> render_settings;
 };
+struct ViewerState {
+  double radius = 0, height = 0, actual_height = 0, eye_height_offset = 0;
+  // Borrowed from CurrentView::viewer; invalidated by mutation/destruction.
+  // nullopt is a stored NULL; an empty string_view is a stored empty string.
+  std::optional<std::string_view> avatar;
+  uint32_t camera_mode = 0; // 0=first person, 1=third person; retains unknown codes
+  double first_to_third_angle = 0, first_to_third_distance = 0;
+  double first_to_third_param = 0; // multiplier of first_to_third_distance
+  bool first_to_third_correction = false, collision_detection = false,
+       gravity = false;
+  // Stored from version50 and version55, respectively; never invented defaults.
+  std::optional<double> gravity_value, terminal_velocity;
+  std::optional<bool> auto_crouch;
+  // Applies an explicit signed scale to dimensions, third-person distance,
+  // gravity value and terminal velocity. Angles and the multiplier stay intact.
+  // Preserves missing fields; does not infer a project transform or run physics.
+  ViewerState scaled(double factor) const noexcept;
+};
 struct CurrentView {
   std::string chunk_name;
   uint32_t parts = 0;
@@ -319,9 +337,12 @@ struct CurrentView {
   ViewFields viewer, state, clip_set;
   std::vector<ViewFields> clip_planes;
   uint32_t wire_version = 0;
+  bool viewer_avatar_is_null = false;
   // Interprets the current raw arrays without allocation or cached copies.
   // Absent fields remain absent. Invalid or inconsistent arrays throw Error.
   ViewpointState named_state() const;
+  // nullopt means parts2 is absent; avatar strings borrow storage from this.
+  std::optional<ViewerState> named_viewer() const;
 };
 struct Background {
   int32_t mode = 0;

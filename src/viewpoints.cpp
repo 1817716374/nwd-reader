@@ -6,6 +6,61 @@ uint32_t viewpoint_tool(uint32_t raw, uint32_t version) {
   return version < 120 ? (raw == 6 ? 0 : raw + 600) : raw;
 }
 } // namespace
+ViewerState ViewerState::scaled(double factor) const noexcept {
+  auto result = *this;
+  result.radius *= factor;
+  result.height *= factor;
+  result.actual_height *= factor;
+  result.eye_height_offset *= factor;
+  result.first_to_third_distance *= factor;
+  if (result.gravity_value)
+    *result.gravity_value *= factor;
+  if (result.terminal_velocity)
+    *result.terminal_velocity *= factor;
+  return result;
+}
+std::optional<ViewerState> CurrentView::named_viewer() const {
+  using detail::require;
+  require(wire_version >= 46, "unsupported legacy viewpoint version");
+  require((parts & ~0xfffu) == 0, "unknown viewpoint parts");
+  if (!(parts & 2)) {
+    require(viewer.numbers.empty() && viewer.integers.empty() &&
+                viewer.strings.empty() && !viewer_avatar_is_null,
+            "viewer fields without viewer part");
+    return std::nullopt;
+  }
+  require(viewer.numbers.size() == (wire_version >= 50 ? 9u : 7u) &&
+              viewer.integers.size() == (wire_version >= 55 ? 5u : 4u) &&
+              viewer.strings.size() == 1,
+          "inconsistent viewer field arrays");
+  require(!viewer_avatar_is_null || viewer.strings[0].empty(),
+          "nonempty NULL viewer avatar");
+  auto boolean = [&](size_t i) {
+    require(viewer.integers[i] <= 1, "viewer boolean");
+    return viewer.integers[i] != 0;
+  };
+  ViewerState result;
+  result.radius = viewer.numbers[0];
+  result.height = viewer.numbers[1];
+  result.actual_height = viewer.numbers[2];
+  result.eye_height_offset = viewer.numbers[3];
+  if (!viewer_avatar_is_null)
+    result.avatar = viewer.strings[0];
+  result.camera_mode = viewer.integers[0];
+  result.first_to_third_angle = viewer.numbers[4];
+  result.first_to_third_distance = viewer.numbers[5];
+  result.first_to_third_param = viewer.numbers[6];
+  result.first_to_third_correction = boolean(1);
+  result.collision_detection = boolean(2);
+  result.gravity = boolean(3);
+  if (wire_version >= 50) {
+    result.gravity_value = viewer.numbers[7];
+    result.terminal_velocity = viewer.numbers[8];
+  }
+  if (wire_version >= 55)
+    result.auto_crouch = boolean(4);
+  return result;
+}
 ViewpointState CurrentView::named_state() const {
   using detail::require;
   require(wire_version >= 46, "unsupported legacy viewpoint version");
@@ -98,7 +153,7 @@ CurrentView detail::read_viewpoint(Cursor &r, uint32_t version) {
   if (v.parts & 2) {
     auto &f = v.viewer;
     doubles(f, 4);
-    f.strings.push_back(r.string());
+    f.strings.push_back(r.string(&v.viewer_avatar_is_null));
     integer(f);
     doubles(f, 3);
     for (unsigned i = 0; i < 3; ++i)
