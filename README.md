@@ -24,7 +24,8 @@
 - **空间树**：读取原生空间层级及分片槽引用，保留父子结构并关联模型实例。
 - **旧式 Presenter**：读取 LightWorks 实体树、有类型的着色参数、编码图像、灯光、材质槽分配和纹理映射，保留归档内共享身份与路径关联。
 - **灯光与文档信息**：读取现代灯光资产、位置/目标点、图纸目录、默认图纸、发布字段、缓存配置、超链接、序列号和几何压缩参数。
-- **文档辅助数据**：读取 GUID 仓库、统计报告、节点覆盖、工具与图形设置。
+- **节点 GUID**：读取 GUID 仓库和独立 GUID 属性，将节点的原始索引关联到来源模型的仓库，支持根、内联分区和共享节点。
+- **文档辅助数据**：读取统计报告、节点覆盖、工具与图形设置。
 - **读取状态**：保留块目录，区分已解析、部分解析、读取失败和尚未由产品模块处理的内容。
 - **并行读取**：支持几何记录、压缩块和属性页并行处理；线程数可配置。
 
@@ -154,6 +155,28 @@ for (const auto& item : saved.items) { // saved 是 nwd::SavedItems
 条件保存 `negated`、`open_bracket`、`close_bracket`、`has_operator` 和 `operator_code`（0=AND、1=OR）。未知模式/操作代码保持原值；有类型的 `Value` 中字符串和对象引用继续使用所属图的编号。`AnimationPlayRecord` 返回结束时暂停开关、起止模式和起止时间（秒）；`AnimationCollisionRecord.gravity` 返回保存的重力选项。解析器返回保存记录，调用方决定如何使用或执行。
 
 `animation_enum_name(AnimationEnum, value)` 查询播放起止、停止、变量、定时器和事件触发模式的稳定名称；未知值返回空视图。例如播放起点值2表示 `current_position`，终点值2表示 `specified_time`，须选择对应枚举域。原始数值保持不变。含非空脚本的原生文件验证仍不足，应检查每块状态。
+
+### 节点 GUID
+
+开启 `Options.products` 后，`NodeGuidIndex` 可按模型编号和路径编号查询节点的 GUID：
+
+```cpp
+nwd::Options options;
+options.products = true;
+auto scene = nwd::Document("model.nwd", options).read_scene();
+nwd::NodeGuidIndex identities(scene);
+auto identity = identities.resolve(model_id, path_id);
+if (identity.status == nwd::NodeGuidStatus::resolved) {
+    const auto& bytes = *identity.guid; // 原始16字节GUID
+    // identity.index 是源文件中的1起始索引；identity.block 指向产品仓库块。
+}
+```
+
+索引按来源模型的完整块命名空间绑定仓库，包含根节点和模型内部的分区。建立后可并行只读查询，单次查询不分配内存、不复制GUID。索引与返回指针借用 `scene` 中的数据，使用期间应保持场景及其模型、产品数据存活且不变。
+
+状态区分 `no_index`（源值为0）、`missing_store`（缺少仓库或未启用产品读取）、`unavailable_store`（仓库未完整解码）、`ambiguous_store`（重复命名空间或仓库块）和 `index_out_of_range`。全零GUID仍是有效保存记录。相同GUID不代表同一个路径出现，不能据此合并实例。
+
+`node_guid_index(object)` 返回原始索引；`guid_attribute(object)` 返回type180属性中的GUID，其他类型返回空optional。GUID保留小端源布局：前4、2、2字节为三个整数域，最后8字节保持顺序。接口不执行应用运行时的模型重挂接、GUID重生成或独立对象属性回退；跨模块业务身份仍须分别核对。
 
 ### 保存对象之间的名称引用
 

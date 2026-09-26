@@ -511,6 +511,15 @@ public:
           });
       break;
     }
+    case 180: {
+      common(o);
+      require(version < 41 || !(o.flags & 0x10000),
+              "invalid GUID attribute property-vector flag");
+      r.align(4);
+      const auto bytes = r.raw(16);
+      o.bytes.assign(bytes.begin(), bytes.end());
+      break;
+    }
     case 77:
     case 79: {
       common(o);

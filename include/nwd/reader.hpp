@@ -1446,4 +1446,41 @@ Reference path_reference(const Model &model,
                          Id path); // root resolves to partition graph
 const Object &resolve_object(const Model &model, Reference reference);
 std::string_view resolve_string(const ObjectGraph &graph, Id string);
+
+// Serialized node index, 1-based; zero means no store index. Non-node types
+// return nullopt. Incomplete node records throw Error.
+std::optional<uint32_t> node_guid_index(const Object &object);
+// Type 180 stores the original 16 GUID bytes in Object.bytes (4-byte aligned
+// on disk). Non-GUID attributes return nullopt; malformed payloads throw.
+std::optional<std::array<uint8_t, 16>> guid_attribute(const Object &object);
+
+enum class NodeGuidStatus {
+  resolved,
+  no_index,
+  missing_store,
+  unavailable_store,
+  ambiguous_store,
+  index_out_of_range
+};
+struct NodeGuidResult {
+  NodeGuidStatus status = NodeGuidStatus::no_index;
+  uint32_t index = 0; // original 1-based value, never a path/object ID
+  Id block = none;    // Scene.products block, when uniquely identified
+  const std::array<uint8_t, 16> *guid = nullptr; // borrowed, only if resolved
+};
+// Binds serialized node indices to the same model namespace's GuidStore.
+// The Scene, its products and models must stay alive and unchanged. Duplicate
+// namespaces are ambiguous. Inline partitions share the outer serialized
+// model's store, including indexed roots. No GUID copies or deduplication.
+// This does not execute the application's detached-node attribute fallback,
+// generate GUIDs, or equate node identity with a unique path occurrence.
+class NodeGuidIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit NodeGuidIndex(const Scene &scene);
+  NodeGuidIndex(Scene &&) = delete;
+  NodeGuidResult resolve(Id model, Id path) const;
+};
 } // namespace nwd
