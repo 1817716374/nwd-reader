@@ -137,13 +137,13 @@ void detail::read_source_references(Cursor &r,
     x.angular_units = r.u32();
     x.orientation_flag = r.u32();
     x.up = vector3(r);
-    x.front = vector3(r);
+    x.north = vector3(r);
     x.extra_enum = r.u32();
     x.extra = r.string();
     read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
                     object_reader, options, budget);
     if (version >= 109)
-      x.north = vector3(r);
+      x.front = vector3(r);
     if (version >= 246)
       x.reference_guid = guid(r);
     references.push_back(std::move(x));
@@ -159,8 +159,8 @@ NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
   out.linear_units = r.u32();
   out.angular_units = r.u32();
   out.up = vector3(r);
-  out.front = vector3(r);
   out.north = vector3(r);
+  out.front = vector3(r);
   r.exact();
   return out;
 }

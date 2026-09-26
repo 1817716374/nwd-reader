@@ -223,6 +223,8 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `NwfReference.load_flags` 的 bit0、bit1、bit2 分别表示采用保存的单位、基准变换和朝向向量；版本244之前的缺省值为7，之后保留文件中的显式值。引用放置仅在 bit1 启用时替换基准变换；未启用单位和变换覆盖时保留源米制坐标。单位覆盖、跨单位基准替换及嵌套引用的复杂放置仍会明确报告不支持。朝向向量保留原始记录，尚未提供加载后的有效向量查询。
 
+`NwfReference` 和 `NwfData` 的 `up`、`north`、`front` 分别返回保存的上向、北向和前向向量，不自动归一化或推算缺失方向。来源记录在格式版本109之前没有前向字段，`front` 返回零向量。
+
 直接、同单位引用且源模型没有已保存的对象覆盖时，`project_world_matrix()` 还会应用 NWF 对象变换。`nwf_transform_matrix()` 提供原始载荷到列主序矩阵的转换，`Project.transform_overrides` 保留每个实例的米制覆盖矩阵。
 
 `Instance.auxiliary_transform` 引用 `Model.auxiliary_transforms` 中的辅助仿射、平移或平移＋旋转记录。这些数据保持源值，与当前实例矩阵分开返回。
