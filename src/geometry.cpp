@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "geometry_stream.hpp"
 namespace nwd::detail {
 static std::vector<int32_t> indices(Cursor &r, uint32_t n) {
   require(n <= 100000000, "index count limit");
@@ -57,15 +58,18 @@ static std::vector<uint32_t> unsigned_indices(Cursor &r, uint32_t n,
   }
   return out;
 }
-static std::vector<uint32_t> packed(Cursor &r) {
-  uint32_t bits = r.u32(), count = r.u32();
-  require(bits <= 32 && (bits || !count), "invalid packed bit width");
+static std::vector<uint32_t> packed(Cursor &r, uint64_t limit) {
+  uint32_t bits = r.byte(), count = r.u32();
+  require(bits <= 32, "invalid packed bit width");
+  require(count <= limit, "packed array resource limit");
   size_t nw = (static_cast<uint64_t>(bits) * count + 31) / 32;
   auto raw = r.raw(nw * 4);
   std::vector<uint32_t> words(nw);
   if (nw)
     std::memcpy(words.data(), raw.data(), raw.size());
   std::vector<uint32_t> out(count);
+  if (!bits)
+    return out;
   for (uint64_t i = 0; i < count; ++i) {
     uint64_t bit = i * bits;
     size_t w = bit / 32;
@@ -80,6 +84,66 @@ static std::vector<uint32_t> packed(Cursor &r) {
     }
     out[i] = static_cast<uint32_t>(v & mask);
   }
+  return out;
+}
+GeometryStripPayload read_geometry_strips(Cursor &r, uint32_t type,
+                                          const GeometryStreamContext &context,
+                                          uint32_t vertex_count,
+                                          uint64_t max_entries) {
+  require(type == 94 || type == 95, "invalid strip geometry type");
+  const bool narrow = context.version >= 75;
+  auto count = [&](bool compressed) {
+    const int64_t value = r.read<int32_t>();
+    require(compressed || value >= 0, "negative raw strip count");
+    const auto n = uint64_t(value < 0 ? -value : value);
+    require(n <= max_entries && n <= 100000000, "strip array resource limit");
+    return uint32_t(n);
+  };
+  auto raw = [&](uint32_t n) {
+    auto bytes = r.raw(uint64_t(n) * (narrow ? 2 : 4));
+    std::vector<uint32_t> result(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      if (narrow) {
+        uint16_t x;
+        std::memcpy(&x, bytes.data() + i * 2, 2);
+        result[i] = x;
+      } else {
+        int32_t x;
+        std::memcpy(&x, bytes.data() + i * 4, 4);
+        require(x >= 0, "negative strip value");
+        result[i] = uint32_t(x);
+      }
+    }
+    return result;
+  };
+  GeometryStripPayload out;
+  const bool compressed_lengths = (context.compression.flags & 0x10) != 0;
+  const auto groups = count(compressed_lengths);
+  if (compressed_lengths) {
+    out.lengths = packed(r, max_entries);
+    // Native length readers copy the first `groups` values; their reduced
+    // palette path ultimately fails its bounds check. Do not invent mapping.
+    require(out.lengths.size() >= groups, "strip length palette too small");
+    out.lengths.resize(groups);
+  } else {
+    out.lengths = raw(groups);
+  }
+  if (type == 94 && context.version >= 20) {
+    const bool compressed_indices = (context.compression.flags & 0x20) != 0;
+    const auto n = count(compressed_indices);
+    if (n) {
+      out.implicit_indices = false;
+      out.indices =
+          compressed_indices ? unsigned_indices(r, n, vertex_count) : raw(n);
+      for (auto index : out.indices)
+        require(index < vertex_count, "strip index outside vertex array");
+    }
+  }
+  uint64_t total = 0;
+  for (auto length : out.lengths)
+    total += length;
+  require(total == (out.implicit_indices ? vertex_count : out.indices.size()),
+          "strip length/index count mismatch");
   return out;
 }
 } // namespace nwd::detail
@@ -250,39 +314,17 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
     r.exact();
     return g;
   }
-  uint32_t groups = r.u32();
-  if (raw_strips) {
-    auto bytes = r.raw(uint64_t(groups) * 2);
-    g.strip_lengths.resize(groups);
-    for (uint32_t i = 0; i < groups; ++i) {
-      uint16_t x;
-      std::memcpy(&x, bytes.data() + i * 2, 2);
-      g.strip_lengths[i] = x;
-    }
-  } else
-    g.strip_lengths = packed(r);
-  require(g.strip_lengths.size() == groups, "strip group count mismatch");
-  uint32_t ns = g.type == 94 ? r.u32() : 0;
-  if (ns && raw_strips) {
-    auto bytes = r.raw(uint64_t(ns) * 2);
-    g.strip_indices.resize(ns);
-    for (uint32_t i = 0; i < ns; ++i) {
-      uint16_t x;
-      std::memcpy(&x, bytes.data() + i * 2, 2);
-      require(x < n, "raw strip index outside palette");
-      g.strip_indices[i] = x;
-    }
-  } else if (ns)
-    g.strip_indices = unsigned_indices(r, ns, n);
-  else {
+  GeometryStreamContext context;
+  context.version = 75; // standalone API retains its modern array framing
+  context.compression.flags = raw_strips ? 0 : 0x30;
+  auto strips = read_geometry_strips(r, g.type, context, n, 100000000);
+  g.strip_lengths = std::move(strips.lengths);
+  g.strip_indices = std::move(strips.indices);
+  if (strips.implicit_indices) {
     g.strip_indices.resize(n);
     for (uint32_t j = 0; j < n; ++j)
       g.strip_indices[j] = j;
   }
-  uint64_t total = 0;
-  for (auto len : g.strip_lengths)
-    total += len;
-  require(total == g.strip_indices.size(), "strip length/index count mismatch");
   r.exact();
   return g;
 }

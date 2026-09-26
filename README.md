@@ -431,6 +431,8 @@ for (const auto& path : locator.paths) {
 
 通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF 通过 `load_project()` 并设置 `ProjectOptions.reader.products = true` 时，用 `Project.product_bindings` 返回 Presenter、TextureSpace、Hyperlink 和 NodeOverride 的候选关联。`owner` 是 NWF 的引用出现节点，`block/record` 指向该 source 的产品块和记录；`kind` 区分列表，`node_scope` 区分路径或节点范围。仅 `status == ProductBindingStatus::resolved` 时使用 `node/path` 访问联合模型目标。`empty` 表示空选择器，`unresolved` 表示缺少路径上下文或匹配不唯一，并使项目报告不完整。不同引用位置保持独立，源记录和共享几何不复制。单独 `read_products()` 不绑定模型。
 
+`GeometryCompression` 返回原始压缩标志及法线、颜色、纹理坐标和坐标精度。内部版本 26 前只保存标志，未保存的精度字段为 0；调用方应结合来源版本区分缺失与保存的零值。此字段布局范围不表示同版本的整文件均可读取。
+
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。
 
 NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`；内部版本不等同于软件发布年份。NWF 当前主要支持内部版本 `448` 的引用与完整材质覆盖。

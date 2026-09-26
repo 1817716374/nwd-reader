@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "geometry_stream.hpp"
 #include "blowfish.hpp"
 namespace nwd {
 namespace {
@@ -799,12 +800,7 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
   } else if (kind == "LcOpNwdSerial") {
     b.value.emplace<FileSerial>().value = r.string();
   } else if (kind == "LcOpNwdGeometryCompress") {
-    auto &v = b.value.emplace<GeometryCompression>();
-    v.flags = r.u32();
-    v.normal_precision = r.byte();
-    v.color_precision = r.byte();
-    v.texture_coordinate_precision = r.byte();
-    v.coordinate_precision = r.read<float>();
+    b.value.emplace<GeometryCompression>(read_geometry_compression(r, version));
   } else if (kind == "LcOpFileDatabaseElement" ||
              kind == "LcOpFileDatabaseElementNWD") {
     read_file_database(b.value.emplace<FileDatabase>(), r,
