@@ -404,6 +404,10 @@ public:
     case 25:
     case 22:
     case 32: {
+      // Before28 the root includes inline hierarchy/spatial records and extra
+      // legacy fields. Do not interpret that layout as a modern chunk root.
+      if (o.type == 32 && version < 28)
+        throw UnsupportedLayout("partition layout before version28");
       if (o.type == 32)
         o.integers.push_back(version >= 203 ? r.u32() : 0);
       common(o);
@@ -429,11 +433,12 @@ public:
         o.integers.push_back(r.u32());
         o.integers.push_back(r.u32());
         o.integers.push_back(r.u32());
-        doubles(o, 6);
-        o.integers.push_back(r.u32());
-        o.strings.push_back(str());
-        o.integers.push_back(r.u32());
-        o.strings.push_back(str());
+        if (version >= 53)
+          doubles(o, 6);
+        o.integers.push_back(version >= 80 ? r.u32() : 0);
+        o.strings.push_back(version >= 80 ? str() : none);
+        o.integers.push_back(version >= 45 ? r.u32() : 0);
+        o.strings.push_back(version >= 57 ? str() : none);
         if (version >= 109)
           doubles(o, 3);
         if (version >= 230)
