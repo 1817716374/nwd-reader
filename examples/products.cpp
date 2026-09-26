@@ -28,6 +28,20 @@ static int run(const std::filesystem::path &path) {
                     block.status == nwd::ProductStatus::failed;
       if (!block.diagnostic.empty())
         std::cerr << block.diagnostic << '\n';
+      if (const auto *view = std::get_if<nwd::CurrentView>(&block.value)) {
+        if (view->parts & 1) {
+          const auto &camera = view->camera;
+          std::cout << "  camera projection=" << camera.projection
+                    << " aspect=" << camera.aspect_ratio()
+                    << " height/angle=" << camera.height_field()
+                    << " near=" << camera.near_distance()
+                    << " far=" << camera.far_distance() << '\n';
+          if (const auto up = camera.up_offset_factor())
+            std::cout << "    up offset factor=" << *up << '\n';
+          if (const auto right = camera.right_offset_factor())
+            std::cout << "    right offset factor=" << *right << '\n';
+        }
+      }
       if (const auto *database =
               std::get_if<nwd::DatabaseLinks>(&block.value)) {
         std::cout << "  database links=" << database->links.size() << '\n';

@@ -8,7 +8,8 @@ Camera detail::read_camera(Cursor &r, uint32_t version) {
     x = r.f64();
   for (auto &x : c.orientation)
     x = r.f64();
-  for (unsigned i = 0; i < (version >= 425 ? 6u : 4u); ++i)
+  c.offset_factors_present = version >= 425;
+  for (unsigned i = 0; i < (c.offset_factors_present ? 6u : 4u); ++i)
     c.parameters[i] = r.read<double>();
   return c;
 }

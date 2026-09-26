@@ -261,11 +261,27 @@ struct Timing {
          viewpoints_ms = 0, resources_ms = 0, total_ms = 0;
 };
 struct Camera {
-  uint32_t projection = 0;
+  uint32_t projection = 0; // 0=perspective, 1=orthographic
   std::array<double, 3> position{};
   std::array<double, 4> orientation{}; // XYZW
-  // Aspect, height/angle, near, far, then version >=425 lens fields.
+  // Aspect, height/angle, near, far, then version >=425 up/right offset factors.
   std::array<double, 6> parameters{};
+  bool offset_factors_present = false;
+  double aspect_ratio() const noexcept { return parameters[0]; }
+  // Full vertical angle in radians for perspective; full height for orthographic.
+  double height_field() const noexcept { return parameters[1]; }
+  double near_distance() const noexcept { return parameters[2]; }
+  double far_distance() const noexcept { return parameters[3]; }
+  // Fractions of the vertical/horizontal extent, respectively. Absence is
+  // different from a stored zero. Raw parameters remain available unchanged.
+  std::optional<double> up_offset_factor() const noexcept {
+    return offset_factors_present ? std::optional<double>(parameters[4])
+                                  : std::nullopt;
+  }
+  std::optional<double> right_offset_factor() const noexcept {
+    return offset_factors_present ? std::optional<double>(parameters[5])
+                                  : std::nullopt;
+  }
 };
 // Secondary fields retain their serialization order; see docs/FORMAT.md.
 struct ViewFields {
