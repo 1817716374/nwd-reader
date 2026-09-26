@@ -126,7 +126,7 @@ struct Path {
 struct AttributeArray {
   bool raw = false;
   bool finite =
-      true; // invalid source UV ranges are retained, never silently repaired
+      true; // nonfinite source values/decoded results are retained, not repaired
   std::array<float, 4> quantization_bounds{};
   std::array<uint8_t, 4> component_bits{};
   uint32_t type = 0, flag = 0, bits = 0, palette_count = 0;
@@ -1631,8 +1631,8 @@ CurrentView decode_current_view(std::span<const uint8_t> data,
 std::vector<uint32_t> triangle_indices(const Geometry &geometry);
 // On-demand slot decoding: XYZ normals, RGBA colors, or UV in the first lanes.
 // Short normals divide by 32767; values are not clamped or renormalized.
-// Invalid source UV ranges remain non-finite. No expanded vertex arrays are
-// cached.
+// Nonfinite source values and decoded results (including one-bit float normal
+// palettes) are retained. No expanded vertex arrays are cached.
 std::array<float, 4> attribute_value(const AttributeArray &attribute,
                                      size_t slot);
 std::array<double, 16> world_matrix(const Model &model,

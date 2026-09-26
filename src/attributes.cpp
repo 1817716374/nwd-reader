@@ -48,7 +48,7 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
     }
   } else {
     require(a.type == 100  ? a.bits >= 1 && a.bits <= 16
-            : a.type == 59 ? a.bits >= 2 && a.bits <= 23
+            : a.type == 59 ? a.bits <= 32
                            : a.bits >= 1 && a.bits <= 8,
             "unsupported attribute precision");
     for (unsigned j = 0; j < components; ++j) {
@@ -56,14 +56,18 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
           a.packed_palette, (uint64_t(index) * components + j) * a.bits,
           a.bits);
       if (normal) {
-        int32_t signed_value = static_cast<int32_t>(value);
-        if (value & (1u << (a.bits - 1)))
-          signed_value -= (1u << a.bits);
+        int64_t signed_value = value;
+        if (a.bits && (value & (1u << (a.bits - 1))))
+          signed_value -= int64_t(1) << a.bits;
         out[j] =
             a.type == 100
                 ? (signed_value * static_cast<int32_t>(1u << (16 - a.bits))) /
                       32767.f
-                : signed_value / static_cast<float>((1u << (a.bits - 1)) - 1);
+                // Native 32-bit shifts mask the count. In particular bits0
+                // yields a zero code divided by float(INT32_MAX), and bits1
+                // yields division by zero. Retain the resulting IEEE values.
+                : static_cast<float>(signed_value) /
+                      static_cast<float>((1u << ((a.bits - 1) & 31)) - 1);
       } else
         out[j] = static_cast<float>(value << (8 - a.bits)) / 255.f;
     }

@@ -385,15 +385,17 @@ Scene Document::read_scene() const {
             "not decoded from external descriptors; schema properties and "
             "bounds decoded");
       out.parsed_chunks[static_cast<size_t>(&c - out.chunks.data())] = true;
-      size_t invalid_uv = 0;
+      size_t invalid_attributes = 0;
       for (const auto &g : m.geometries)
         for (const auto &a : g.attributes)
           if (!a.finite)
-            ++invalid_uv;
-      if (invalid_uv)
-        out.warnings.push_back(m.name + ": " + std::to_string(invalid_uv) +
-                               " source UV arrays contain non-finite ranges; "
-                               "values retained and flagged");
+            ++invalid_attributes;
+      if (invalid_attributes)
+        out.warnings.push_back(m.name + ": " +
+                               std::to_string(invalid_attributes) +
+                               " vertex attribute arrays contain non-finite "
+                               "source values or decoded results; values "
+                               "retained and flagged");
       size_t invalid_quantized_coordinates = 0;
       for (const auto &g : m.geometries)
         if (g.coordinate_quantization && !g.coordinate_quantization->finite)

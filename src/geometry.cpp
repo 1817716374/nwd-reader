@@ -259,8 +259,8 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
     if (compressed && (type == 100 || type == 58))
       require(slots < 0,
               "compressed integer attribute requires packed payload");
-    if (compressed && slots < 0 && type == 59 && (a.bits < 2 || a.bits > 23))
-      throw UnsupportedLayout("float-normal packed precision outside 2..23");
+    if (compressed && slots < 0 && type == 59 && a.bits > 32)
+      throw UnsupportedLayout("float-normal packed precision above 32");
   }
   if (a.type == 61 && slots < 0) {
     require(slots == -static_cast<int64_t>(n), "UV slot count mismatch");
@@ -342,6 +342,7 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
   }
   a.palette_count = r.u32();
   require(slots == -static_cast<int64_t>(n), "attribute slot count mismatch");
+  require(a.palette_count <= 100000000, "attribute palette count limit");
   unsigned components = a.type == 58 ? 4 : 3;
   size_t bytes =
       4 * ((uint64_t(a.palette_count) * components * a.bits + 31) / 32);
@@ -353,10 +354,13 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
       a.indices[j] = static_cast<int32_t>(j);
   } else
     a.indices = indices(r, n);
-  for (auto j : a.indices)
+  for (auto j : a.indices) {
     require(j >= (a.type == 100 || a.type == 59 ? -6 : 0) &&
                 (j < 0 || static_cast<uint32_t>(j) < a.palette_count),
             "attribute index outside palette");
+    if (a.type == 59 && a.bits == 1 && j >= 0)
+      a.finite = false; // palette values divide by zero; six axis codes do not
+  }
   return a;
 }
 AttributeArray
@@ -455,7 +459,7 @@ Geometry detail::decode_geometry_record(std::span<const uint8_t> data,
                                         uint64_t max_entries) {
   auto selected = context;
   if (normal_override) {
-    require(normal_override <= 23,
+    require(normal_override <= 32,
             "normal precision override outside supported range");
     selected.compression.normal_precision = uint8_t(normal_override);
   }
@@ -568,7 +572,7 @@ void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
   if (context)
     parse(o.normal_bits ? o.normal_bits
           : context->compression.normal_precision >= 1 &&
-                  context->compression.normal_precision <= 23
+                  context->compression.normal_precision <= 32
               ? context->compression.normal_precision
               : 16,
           !(context->compression.flags & 1));
