@@ -951,16 +951,29 @@ Matrix model_base_matrix(const Model &m) {
 }
 Matrix reference_placement_matrix(const Model &m, const NwfReference &r,
                                   uint32_t parent_units) {
-  detail::require(m.linear_units >= 0 &&
-                      r.linear_units == static_cast<uint32_t>(m.linear_units),
+  detail::require(m.linear_units >= 0, "unknown NWF source units");
+  const auto source_units = static_cast<uint32_t>(m.linear_units);
+  (void)unit(source_units);
+  (void)unit(parent_units);
+  const bool replace_units = (r.load_flags & 1) != 0;
+  const bool replace_transform = (r.load_flags & 2) != 0;
+  detail::require(!replace_units || r.linear_units == source_units,
                   "NWF source unit override not supported");
   detail::require(r.orientation_flag <= 1, "invalid NWF orientation hint");
+  // An unselected serialized transform is not applied or even evaluated.
+  // With unchanged source units, parent-unit conversion preserves metric
+  // positions and does not require inverting a possibly singular old base.
+  if (!replace_transform)
+    return identity();
+  // A selected reference affine maps reference-input units to parent units.
+  // Numeric equality with the old affine does not imply physical equality
+  // when those units differ. Leave the loading conversion explicit for now.
+  detail::require(r.linear_units == source_units &&
+                      parent_units == source_units,
+                  "NWF mixed-unit placement override not supported");
   auto old = model_base_matrix(m), next = affine(r.affine);
-  // An unchanged base needs no conversion even with a different parent unit.
   if (old == next)
     return identity();
-  detail::require(parent_units == r.linear_units,
-                  "NWF mixed-unit placement override not supported");
   auto delta = multiply(next, inverse(old));
   for (unsigned i = 0; i < 3; ++i)
     delta[12 + i] *= unit(r.linear_units);

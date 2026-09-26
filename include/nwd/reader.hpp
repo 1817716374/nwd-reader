@@ -679,7 +679,10 @@ struct CachePlugin {
 struct NwfReference {
   std::string name, original_path, partition, display_name, plugin, extra;
   std::array<uint8_t, 16> source_guid{}, reference_guid{};
-  uint32_t flags = 0, load_flags = 0, linear_units = 0, angular_units = 0,
+  // load_flags: bit0 replaces source units; bit1 replaces the base transform;
+  // bit2 replaces up/front/north vectors. Before version244 these are all set.
+  // The orientation_flag below is a separate transform execution hint.
+  uint32_t flags = 0, load_flags = 7, linear_units = 0, angular_units = 0,
            orientation_flag = 0, extra_enum = 0;
   std::array<double, 12> affine{}; // native row-major 3x3, then translation
   std::array<double, 3> up{}, front{}, north{};

@@ -221,6 +221,8 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 同单位 NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放和剪切；源几何仍共享。`model_base_matrix()` 返回源基准矩阵，`reference_placement_matrix()` 返回引用所需的米制修正矩阵。方向提示的变化单独保存在节点的 `orientation_changed` 中。
 
+`NwfReference.load_flags` 的 bit0、bit1、bit2 分别表示采用保存的单位、基准变换和朝向向量；版本244之前的缺省值为7，之后保留文件中的显式值。引用放置仅在 bit1 启用时替换基准变换；未启用单位和变换覆盖时保留源米制坐标。单位覆盖、跨单位基准替换及嵌套引用的复杂放置仍会明确报告不支持。朝向向量保留原始记录，尚未提供加载后的有效向量查询。
+
 直接、同单位引用且源模型没有已保存的对象覆盖时，`project_world_matrix()` 还会应用 NWF 对象变换。`nwf_transform_matrix()` 提供原始载荷到列主序矩阵的转换，`Project.transform_overrides` 保留每个实例的米制覆盖矩阵。
 
 `Instance.auxiliary_transform` 引用 `Model.auxiliary_transforms` 中的辅助仿射、平移或平移＋旋转记录。这些数据保持源值，与当前实例矩阵分开返回。

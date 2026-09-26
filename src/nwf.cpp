@@ -130,8 +130,7 @@ void detail::read_source_references(Cursor &r,
     }
     x.plugin = r.string();
     x.flags = r.u32();
-    if (version >= 244)
-      x.load_flags = r.u32();
+    x.load_flags = version >= 244 ? r.u32() : 7;
     for (auto &v : x.affine)
       v = r.f64();
     x.linear_units = r.u32();
