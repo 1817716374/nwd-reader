@@ -295,7 +295,7 @@ void read_file_database(FileDatabase &, Cursor &, bool wrapped,
                         const Options &);
 CurrentView read_viewpoint(Cursor &, uint32_t version);
 Camera read_camera(Cursor &, uint32_t version);
-void read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
+uint32_t read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
                       uint32_t version);
 SchemaInstance read_schema_instance(Cursor &,
                                     std::span<const SchemaDefinition>);

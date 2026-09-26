@@ -6,6 +6,88 @@ uint32_t viewpoint_tool(uint32_t raw, uint32_t version) {
   return version < 120 ? (raw == 6 ? 0 : raw + 600) : raw;
 }
 } // namespace
+ClipPlane clip_plane_fields(const ViewFields &raw, uint32_t version) {
+  using detail::require;
+  require(raw.integers.size() == 2 && raw.strings.empty() &&
+              raw.numbers.size() == (version >= 116 ? 9u : 5u),
+          "inconsistent clip plane fields");
+  ClipPlane result;
+  result.alignment = raw.integers[1];
+  if (version < 116) {
+    require(raw.integers[0] <= 1, "legacy clip plane boolean");
+    auto &plane = result.value.emplace<LegacyClipPlane>();
+    plane.enabled = raw.integers[0] != 0;
+    plane.distance = raw.numbers[0];
+    std::copy_n(raw.numbers.begin() + 1, 3, plane.normal.begin());
+    plane.legacy_value = raw.numbers[4];
+  } else {
+    auto &plane = result.value.emplace<ClipPlaneFrame>();
+    plane.state = raw.integers[0];
+    std::copy_n(raw.numbers.begin(), 3, plane.location.begin());
+    std::copy_n(raw.numbers.begin() + 3, 3, plane.direction.begin());
+    std::copy_n(raw.numbers.begin() + 6, 3, plane.x_direction.begin());
+  }
+  return result;
+}
+ClipSettings clip_settings_fields(const ViewFields &raw, uint32_t version) {
+  using detail::require;
+  if (version < 18)
+    throw detail::UnsupportedLayout(
+        "legacy clip range layout before version18");
+  require(raw.integers.size() == (version >= 107 ? 4u : 2u) &&
+              raw.numbers.size() == (version >= 118   ? 16u
+                                     : version >= 107 ? 12u
+                                                      : 6u) &&
+              raw.strings.empty(),
+          "inconsistent clip set fields");
+  auto boolean = [&](size_t i) {
+    require(raw.integers[i] <= 1, "clip set boolean");
+    return raw.integers[i] != 0;
+  };
+  auto bounds = [&](size_t offset) {
+    ClipBounds box;
+    std::copy_n(raw.numbers.begin() + offset, 3, box.min.begin());
+    std::copy_n(raw.numbers.begin() + offset + 3, 3, box.max.begin());
+    return box;
+  };
+  ClipSettings result;
+  result.linked = boolean(0);
+  result.current_plane = std::bit_cast<int32_t>(raw.integers[1]);
+  result.range = bounds(0);
+  if (version >= 107) {
+    result.mode = raw.integers[2];
+    result.enabled = boolean(3);
+    result.box = bounds(6);
+  }
+  if (version >= 118) {
+    std::array<double, 4> rotation;
+    std::copy_n(raw.numbers.begin() + 12, 4, rotation.begin());
+    result.box_orientation = rotation;
+  }
+  return result;
+}
+ClipPlane CurrentView::named_clip_plane(size_t index) const {
+  detail::require(index < clip_planes.size(), "clip plane index outside set");
+  return clip_plane_fields(clip_planes[index], wire_version);
+}
+std::optional<ClipSettings> CurrentView::named_clip_settings() const {
+  if (clip_planes.empty() && clip_set.integers.empty() &&
+      clip_set.numbers.empty() && clip_set.strings.empty() &&
+      !clip_declared_plane_count)
+    return std::nullopt;
+  detail::require(wire_version >= 116
+                      ? clip_planes.size() == 6
+                      : !clip_planes.empty() && clip_planes.size() <= 6,
+                  "inconsistent clip plane count");
+  if (clip_declared_plane_count) {
+    const auto count = *clip_declared_plane_count;
+    detail::require(wire_version >= 116 ? count == 6
+                                        : count <= 6 && std::max(count, 1u) ==
+                                                            clip_planes.size(),
+                    "inconsistent declared clip plane count");
+  }
+  return clip_settings_fields(clip_set, wire_version);
+}
 ViewerState ViewerState::scaled(double factor) const noexcept {
   auto result = *this;
   result.radius *= factor;
@@ -196,11 +278,14 @@ CurrentView detail::read_viewpoint(Cursor &r, uint32_t version) {
 }
 CurrentView detail::read_current_view(Cursor &r, uint32_t version) {
   auto v = read_viewpoint(r, version);
-  read_clip_planes(r, v.clip_planes, v.clip_set, version);
+  v.clip_declared_plane_count =
+      read_clip_planes(r, v.clip_planes, v.clip_set, version);
   return v;
 }
-void detail::read_clip_planes(Cursor &r, std::vector<ViewFields> &planes,
-                              ViewFields &clips, uint32_t version) {
+uint32_t detail::read_clip_planes(Cursor &r, std::vector<ViewFields> &planes,
+                                  ViewFields &clips, uint32_t version) {
+  if (version < 18)
+    throw UnsupportedLayout("legacy clip range layout before version18");
   auto doubles = [&](ViewFields &f, unsigned n) {
     while (n--)
       f.numbers.push_back(r.read<double>());
@@ -212,20 +297,23 @@ void detail::read_clip_planes(Cursor &r, std::vector<ViewFields> &planes,
   };
   auto plane = [&] {
     ViewFields p;
-    integer(p);
+    const auto state = integer(p);
+    require(version >= 116 || state <= 1, "legacy clip plane boolean");
     integer(p);
     doubles(p, version >= 116 ? 9 : 5);
     planes.push_back(std::move(p));
   };
+  uint32_t declared_count;
   if (version >= 116) {
-    require(r.u32() == 6, "clip plane count");
+    declared_count = r.u32();
+    require(declared_count == 6, "clip plane count");
     for (unsigned i = 0; i < 6; ++i)
       plane();
   } else {
     plane();
-    auto count = r.u32();
-    require(count >= 1 && count <= 6, "legacy clip plane count");
-    for (unsigned i = 1; i < count; ++i)
+    declared_count = r.u32();
+    require(declared_count <= 6, "legacy clip plane count");
+    for (unsigned i = 1; i < declared_count; ++i)
       plane();
   }
   require(integer(clips) <= 1, "clip set boolean");
@@ -238,6 +326,7 @@ void detail::read_clip_planes(Cursor &r, std::vector<ViewFields> &planes,
   }
   if (version >= 118)
     doubles(clips, 4);
+  return declared_count;
 }
 CurrentView decode_current_view(std::span<const uint8_t> data,
                                 uint32_t version) {

@@ -330,6 +330,40 @@ struct ViewerState {
   // Preserves missing fields; does not infer a project transform or run physics.
   ViewerState scaled(double factor) const noexcept;
 };
+struct LegacyClipPlane {
+  bool enabled = false;
+  double distance = 0;
+  std::array<double, 3> normal{};
+  double legacy_value = 0; // retained field discarded by investigated loaders
+};
+struct ClipPlaneFrame {
+  uint32_t state = 0; // 0=default, 1=enabled, 2=disabled; preserves unknown codes
+  std::array<double, 3> location{}, direction{}, x_direction{};
+};
+struct ClipPlane {
+  uint32_t alignment = 0; // raw alignment identifier
+  // Version116 replaces the legacy plane equation with a surface frame.
+  // Vectors are saved values, without loader normalization or orthogonalization.
+  std::variant<LegacyClipPlane, ClipPlaneFrame> value;
+};
+struct ClipBounds {
+  std::array<double, 3> min{}, max{};
+};
+struct ClipSettings {
+  bool linked = false;
+  int32_t current_plane = 0;
+  ClipBounds range; // saved range, separate from the clipping box
+  // Stored from version107, independent of the selected mode.
+  std::optional<uint32_t> mode; // 0=planes, 1=box; preserves unknown codes
+  std::optional<bool> enabled;
+  std::optional<ClipBounds> box;
+  // Stored from version118. XYZW, not normalized or replaced with identity.
+  std::optional<std::array<double, 4>> box_orientation;
+};
+// Interpret saved clip arrays, including those on AnimationKeyFrame.
+// No allocation or normalization; inconsistent arrays throw Error.
+ClipPlane clip_plane_fields(const ViewFields &, uint32_t wire_version);
+ClipSettings clip_settings_fields(const ViewFields &, uint32_t wire_version);
 struct CurrentView {
   std::string chunk_name;
   uint32_t parts = 0;
@@ -338,11 +372,16 @@ struct CurrentView {
   std::vector<ViewFields> clip_planes;
   uint32_t wire_version = 0;
   bool viewer_avatar_is_null = false;
+  // Legacy count0 still follows one independently serialized first plane.
+  std::optional<uint32_t> clip_declared_plane_count;
   // Interprets the current raw arrays without allocation or cached copies.
   // Absent fields remain absent. Invalid or inconsistent arrays throw Error.
   ViewpointState named_state() const;
   // nullopt means parts2 is absent; avatar strings borrow storage from this.
   std::optional<ViewerState> named_viewer() const;
+  ClipPlane named_clip_plane(size_t index) const;
+  // nullopt for viewpoint-only records that do not store a clip set.
+  std::optional<ClipSettings> named_clip_settings() const;
 };
 struct Background {
   int32_t mode = 0;
@@ -566,6 +605,7 @@ struct AnimationKeyFrame {
   std::optional<Camera> camera;
   std::vector<ViewFields> clip_planes;
   ViewFields clip_set;
+  std::optional<uint32_t> clip_declared_plane_count;
 };
 struct TimeLinerStatus {
   uint32_t mode = 0;

@@ -39,6 +39,22 @@ static int run(const std::filesystem::path &path) {
           else
             std::cout << "    avatar=NULL\n";
         }
+        if (const auto clip = view->named_clip_settings()) {
+          std::cout << "  clip planes=" << view->clip_planes.size()
+                    << " linked=" << clip->linked
+                    << " current plane=" << clip->current_plane << '\n';
+          if (view->clip_declared_plane_count)
+            std::cout << "    declared count=" << *view->clip_declared_plane_count << '\n';
+          for (std::size_t p = 0; p < view->clip_planes.size(); ++p) {
+            const auto plane = view->named_clip_plane(p);
+            std::cout << "    alignment=" << plane.alignment;
+            if (const auto *frame = std::get_if<nwd::ClipPlaneFrame>(&plane.value))
+              std::cout << " state=" << frame->state;
+            else
+              std::cout << " enabled=" << std::get<nwd::LegacyClipPlane>(plane.value).enabled;
+            std::cout << '\n';
+          }
+        }
         const auto state = view->named_state();
         if (state.focal_distance)
           std::cout << "  focal distance=" << *state.focal_distance << '\n';

@@ -51,6 +51,14 @@
 
 整个 viewer 缺失时返回空 `optional`。其中 `avatar` 使用借用的 `std::string_view`，保留 NULL 与空字符串区别；使用期间须保留来源视点，并避免修改其字符串存储。`ViewerState::scaled(factor)` 可按显式比例返回尺寸、第三人称距离、重力值和终端速度的缩放副本，保留角度、倍率、标志及缺失字段；比例由调用方提供。
 
+## 裁剪数据
+
+`CurrentView::named_clip_settings()` 返回保存的链接状态、当前平面索引、裁剪范围，以及按版本可选的模式、启用标记、裁剪盒和 XYZW 四元数。只有视点而没有裁剪集合的记录返回空 `optional`。范围与裁剪盒分别保存，向量和四元数保留原值。
+
+`named_clip_plane(index)` 返回 `ClipPlane`：`alignment` 保留原始标识，`value` 在旧格式中是 `LegacyClipPlane`（启用标记、距离、法向及原始辅助数值），新版是 `ClipPlaneFrame`（状态、位置、方向与 X 方向）。新版状态 0 为默认、1 为启用、2 为禁用；集合模式 0 为平面、1 为盒。接口提供保存参数，不自动求有效裁剪几何。
+
+`clip_declared_plane_count` 保存原始计数；旧格式的 0 仍伴随一个独立保存的首平面，实际记录数以 `clip_planes.size()` 为准。动画裁剪关键帧复用相同数组与计数接口，可用 `clip_plane_fields(record, version)`、`clip_settings_fields(settings, version)` 按文档版本取得具名数据。
+
 ## 构建
 
 需要 CMake 3.20 及以上、支持 C++20 的编译器和 64 位小端平台。依赖源码已随库提供，构建过程无需联网。

@@ -174,7 +174,8 @@ AnimationKeyFrame keyframe(Cursor &r, uint32_t type, uint32_t version) {
     if (version >= 102)
       v.focal_distance = r.read<double>();
   } else if (type == 41)
-    read_clip_planes(r, v.clip_planes, v.clip_set, version);
+    v.clip_declared_plane_count =
+        read_clip_planes(r, v.clip_planes, v.clip_set, version);
   else {
     v.flags = r.u32();
     if (v.flags & ~127u)
