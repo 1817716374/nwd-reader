@@ -146,12 +146,152 @@ GeometryStripPayload read_geometry_strips(Cursor &r, uint32_t type,
           "strip length/index count mismatch");
   return out;
 }
+static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
+                                        unsigned normal_bits,
+                                        const GeometryStreamContext *context) {
+  require(n <= 100000000, "vertex attribute count limit");
+  AttributeArray a;
+  a.type = type;
+  if (a.type == 58) {
+    a.flag = r.u32();
+    a.bits = 8;
+  } else if (a.type == 100 || a.type == 59)
+    a.bits = normal_bits;
+  else if (a.type == 61)
+    a.bits = 32;
+  else
+    r.fail("unsupported vertex attribute " + std::to_string(a.type));
+  const unsigned mode = type == 58 ? 4 : type == 61 ? 8 : 2;
+  const bool compressed = !context || (context->compression.flags & mode);
+  if (context) {
+    if (type == 100)
+      a.bits = normal_bits >= 1 && normal_bits <= 15 ? normal_bits : 16;
+    if (type == 58) {
+      auto bits = context->compression.color_precision;
+      a.bits = bits >= 1 && bits <= 7 ? bits : 8;
+    }
+  }
+  int32_t slots = r.read<int32_t>();
+  if (context) {
+    require(compressed || slots >= 0,
+            "compressed attribute in raw stream mode");
+    if (compressed && (type == 100 || type == 58))
+      require(slots < 0,
+              "compressed integer attribute requires packed payload");
+    if (compressed && slots < 0 && type == 59 && (a.bits < 2 || a.bits > 23))
+      throw UnsupportedLayout("float-normal packed precision outside 2..23");
+  }
+  if (a.type == 61 && slots < 0) {
+    require(slots == -static_cast<int64_t>(n), "UV slot count mismatch");
+    for (auto &x : a.quantization_bounds) {
+      x = r.read<float>();
+      a.finite = a.finite && std::isfinite(x);
+    }
+    for (auto &x : a.component_bits) {
+      x = r.byte();
+      require(x <= 32, "UV component bit width");
+    }
+    a.palette_count = r.u32();
+    auto raw = r.raw(4 * ((uint64_t(a.palette_count) *
+                               (a.component_bits[0] + a.component_bits[1]) +
+                           31) /
+                          32));
+    a.packed_palette.assign(raw.begin(), raw.end());
+    if (a.palette_count < n)
+      a.indices = indices(r, n);
+    else {
+      a.indices.resize(n);
+      for (uint32_t j = 0; j < n; ++j)
+        a.indices[j] = j;
+    }
+    for (auto index : a.indices)
+      require(index >= 0 && uint32_t(index) < a.palette_count,
+              "UV index outside palette");
+    return a;
+  }
+  if (((a.type == 61 && compressed) ||
+       (a.type == 59 && context && compressed)) &&
+      slots >= 0) {
+    require(static_cast<uint32_t>(slots) == n,
+            "float attribute slot count mismatch");
+    const auto components = a.type == 61 ? 2u : 3u;
+    auto floats = r.u32();
+    require(floats % components == 0, "float attribute palette size");
+    a.palette_count = floats / components;
+    a.raw = true;
+    a.bits = 32;
+    auto raw = r.raw(uint64_t(floats) * 4);
+    a.packed_palette.assign(raw.begin(), raw.end());
+    for (uint32_t j = 0; j < floats; ++j) {
+      float v;
+      std::memcpy(&v, raw.data() + 4ull * j, 4);
+      a.finite = a.finite && std::isfinite(v);
+    }
+    if (a.palette_count < n)
+      a.indices = indices(r, n);
+    else {
+      a.indices.resize(n);
+      for (uint32_t j = 0; j < n; ++j)
+        a.indices[j] = j;
+    }
+    for (auto index : a.indices)
+      require(index >= (a.type == 59 ? -6 : 0) &&
+                  (index < 0 || uint32_t(index) < a.palette_count),
+              "float attribute index outside palette");
+    return a;
+  }
+  if (slots >= 0) {
+    require(static_cast<uint32_t>(slots) == n, "raw attribute slot mismatch");
+    a.palette_count = slots;
+    a.raw = true;
+    a.bits = a.type == 100 ? 16 : a.type == 58 ? 8 : 32;
+    unsigned components = a.type == 61 ? 2 : a.type == 58 ? 4 : 3;
+    auto raw = r.raw(uint64_t(n) * components * a.bits / 8);
+    a.packed_palette.assign(raw.begin(), raw.end());
+    if (a.bits == 32)
+      for (uint64_t j = 0; j < uint64_t(n) * components; ++j) {
+        float value;
+        std::memcpy(&value, raw.data() + j * 4, 4);
+        a.finite = a.finite && std::isfinite(value);
+      }
+    a.indices.resize(n);
+    for (uint32_t j = 0; j < n; ++j)
+      a.indices[j] = j;
+    return a;
+  }
+  a.palette_count = r.u32();
+  require(slots == -static_cast<int64_t>(n), "attribute slot count mismatch");
+  unsigned components = a.type == 58 ? 4 : 3;
+  size_t bytes =
+      4 * ((uint64_t(a.palette_count) * components * a.bits + 31) / 32);
+  auto raw = r.raw(bytes);
+  a.packed_palette.assign(raw.begin(), raw.end());
+  if (a.palette_count >= n) {
+    a.indices.resize(n);
+    for (uint32_t j = 0; j < n; ++j)
+      a.indices[j] = static_cast<int32_t>(j);
+  } else
+    a.indices = indices(r, n);
+  for (auto j : a.indices)
+    require(j >= (a.type == 100 || a.type == 59 ? -6 : 0) &&
+                (j < 0 || static_cast<uint32_t>(j) < a.palette_count),
+            "attribute index outside palette");
+  return a;
+}
+AttributeArray
+read_geometry_attribute_payload(Cursor &r, uint32_t type, uint32_t n,
+                                const GeometryStreamContext &context) {
+  return attribute_payload(r, type, n, context.compression.normal_precision,
+                           &context);
+}
 } // namespace nwd::detail
 namespace nwd {
-Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
-                         bool raw_coordinates, bool raw_strips) {
+static Geometry geometry_record(std::span<const uint8_t> data,
+                                unsigned normal_bits, bool raw_coordinates,
+                                bool raw_strips,
+                                const detail::GeometryStreamContext *context) {
   using namespace detail;
-  require(normal_bits == 8 || normal_bits == 16,
+  require(context || normal_bits == 8 || normal_bits == 16,
           "unsupported normal precision");
   Cursor r(data, "geometry");
   require(r.u32() == 100, "geometry root ID must reset to 100");
@@ -189,6 +329,9 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
           "unsupported geometry type " + std::to_string(g.type));
   require(r.u32() == 101 && r.u32() == 60, "unsupported coordinate object");
   uint32_t n = r.u32();
+  if (context && !raw_coordinates && (n & 0x80000000u))
+    throw UnsupportedLayout(
+        "quantized coordinate payload in explicit stream context");
   require(n <= 100000000, "coordinate count limit");
   uint32_t nf = raw_coordinates ? n * 3 : r.u32();
   require(nf % 3 == 0 && nf <= (data.size() - r.pos) / 4,
@@ -207,106 +350,8 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
     if (!oid)
       continue;
     require(oid >= 102, "unexpected attribute object reference");
-    AttributeArray a;
-    a.type = r.u32();
-    if (a.type == 58) {
-      a.flag = r.u32();
-      a.bits = 8;
-    } else if (a.type == 100 || a.type == 59)
-      a.bits = normal_bits;
-    else if (a.type == 61)
-      a.bits = 32;
-    else
-      r.fail("unsupported vertex attribute " + std::to_string(a.type));
-    int32_t slots = r.read<int32_t>();
-    if (a.type == 61 && slots < 0) {
-      require(slots == -static_cast<int64_t>(n), "UV slot count mismatch");
-      for (auto &x : a.quantization_bounds) {
-        x = r.read<float>();
-        a.finite = a.finite && std::isfinite(x);
-      }
-      for (auto &x : a.component_bits) {
-        x = r.byte();
-        require(x <= 32, "UV component bit width");
-      }
-      a.palette_count = r.u32();
-      auto raw = r.raw(4 * ((uint64_t(a.palette_count) *
-                                 (a.component_bits[0] + a.component_bits[1]) +
-                             31) /
-                            32));
-      a.packed_palette.assign(raw.begin(), raw.end());
-      if (a.palette_count < n)
-        a.indices = indices(r, n);
-      else {
-        a.indices.resize(n);
-        for (uint32_t j = 0; j < n; ++j)
-          a.indices[j] = j;
-      }
-      for (auto index : a.indices)
-        require(index >= 0 && uint32_t(index) < a.palette_count,
-                "UV index outside palette");
-      g.attributes.emplace_back(std::move(a));
-      continue;
-    }
-    if (a.type == 61 && slots >= 0) {
-      require(static_cast<uint32_t>(slots) == n, "UV slot count mismatch");
-      auto floats = r.u32();
-      require(floats % 2 == 0, "UV float palette size");
-      a.palette_count = floats / 2;
-      a.raw = true;
-      a.bits = 32;
-      auto raw = r.raw(uint64_t(floats) * 4);
-      a.packed_palette.assign(raw.begin(), raw.end());
-      for (uint32_t j = 0; j < floats; ++j) {
-        float v;
-        std::memcpy(&v, raw.data() + 4ull * j, 4);
-        a.finite = a.finite && std::isfinite(v);
-      }
-      if (a.palette_count < n)
-        a.indices = indices(r, n);
-      else {
-        a.indices.resize(n);
-        for (uint32_t j = 0; j < n; ++j)
-          a.indices[j] = j;
-      }
-      for (auto index : a.indices)
-        require(index >= 0 && uint32_t(index) < a.palette_count,
-                "UV float index outside palette");
-      g.attributes.emplace_back(std::move(a));
-      continue;
-    }
-    if (slots >= 0) {
-      require(static_cast<uint32_t>(slots) == n, "raw attribute slot mismatch");
-      a.palette_count = slots;
-      a.raw = true;
-      a.bits = a.type == 100 ? 16 : a.type == 58 ? 8 : 32;
-      unsigned components = a.type == 61 ? 2 : a.type == 58 ? 4 : 3;
-      auto raw = r.raw(uint64_t(n) * components * a.bits / 8);
-      a.packed_palette.assign(raw.begin(), raw.end());
-      a.indices.resize(n);
-      for (uint32_t j = 0; j < n; ++j)
-        a.indices[j] = j;
-      g.attributes.emplace_back(std::move(a));
-      continue;
-    }
-    a.palette_count = r.u32();
-    require(slots == -static_cast<int64_t>(n), "attribute slot count mismatch");
-    unsigned components = a.type == 58 ? 4 : 3;
-    size_t bytes =
-        4 * ((uint64_t(a.palette_count) * components * a.bits + 31) / 32);
-    auto raw = r.raw(bytes);
-    a.packed_palette.assign(raw.begin(), raw.end());
-    if (a.palette_count >= n) {
-      a.indices.resize(n);
-      for (uint32_t j = 0; j < n; ++j)
-        a.indices[j] = static_cast<int32_t>(j);
-    } else
-      a.indices = indices(r, n);
-    for (auto j : a.indices)
-      require(j >= (a.type == 100 || a.type == 59 ? -6 : 0) &&
-                  (j < 0 || static_cast<uint32_t>(j) < a.palette_count),
-              "attribute index outside palette");
-    g.attributes.emplace_back(std::move(a));
+    g.attributes.push_back(
+        attribute_payload(r, r.u32(), n, normal_bits, context));
   }
   if (g.type == 96) {
     g.flags = r.u32();
@@ -314,10 +359,11 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
     r.exact();
     return g;
   }
-  GeometryStreamContext context;
-  context.version = 75; // standalone API retains its modern array framing
-  context.compression.flags = raw_strips ? 0 : 0x30;
-  auto strips = read_geometry_strips(r, g.type, context, n, 100000000);
+  GeometryStreamContext standalone;
+  standalone.version = 75; // standalone API retains its modern array framing
+  standalone.compression.flags = raw_strips ? 0 : 0x30;
+  auto strips = read_geometry_strips(r, g.type, context ? *context : standalone,
+                                     n, 100000000);
   g.strip_lengths = std::move(strips.lengths);
   g.strip_indices = std::move(strips.indices);
   if (strips.implicit_indices) {
@@ -327,6 +373,23 @@ Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
   }
   r.exact();
   return g;
+}
+Geometry decode_geometry(std::span<const uint8_t> data, unsigned normal_bits,
+                         bool raw_coordinates, bool raw_strips) {
+  return geometry_record(data, normal_bits, raw_coordinates, raw_strips,
+                         nullptr);
+}
+Geometry detail::decode_geometry_record(std::span<const uint8_t> data,
+                                        const GeometryStreamContext &context,
+                                        unsigned normal_override) {
+  auto selected = context;
+  if (normal_override) {
+    require(normal_override <= 23,
+            "normal precision override outside supported range");
+    selected.compression.normal_precision = uint8_t(normal_override);
+  }
+  return geometry_record(data, selected.compression.normal_precision,
+                         !(selected.compression.flags & 1), false, &selected);
 }
 std::vector<uint32_t> triangle_indices(const Geometry &g) {
   std::vector<uint32_t> out;
@@ -360,7 +423,7 @@ std::vector<uint32_t> triangle_indices(const Geometry &g) {
 } // namespace nwd
 namespace nwd::detail {
 void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
-                   const Options &o) {
+                   const Options &o, const GeometryStreamContext *context) {
   require(c.flags == 1, "unsupported geometry chunk encoding");
   require(c.prefix_bytes && c.index_bytes &&
               c.index_bytes < c.size - c.prefix_bytes,
@@ -415,9 +478,11 @@ void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
   auto parse = [&](unsigned bits, bool raw = false) {
     parallel_for(count, o.threads, [&](size_t i) {
       try {
-        model.geometries[i] = decode_geometry(
-            std::span(bytes).subspan(record_offsets[i], record_sizes[i]), bits,
-            raw, raw);
+        auto data =
+            std::span(bytes).subspan(record_offsets[i], record_sizes[i]);
+        model.geometries[i] =
+            context ? decode_geometry_record(data, *context, o.normal_bits)
+                    : decode_geometry(data, bits, raw, raw);
       } catch (const Error &e) {
         throw Error("record " + std::to_string(i + 1) + ": " + e.what());
       }
@@ -425,7 +490,14 @@ void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
     model.normal_bits = bits;
     model.raw_coordinates = raw;
   };
-  if (o.normal_bits)
+  if (context)
+    parse(o.normal_bits ? o.normal_bits
+          : context->compression.normal_precision >= 1 &&
+                  context->compression.normal_precision <= 23
+              ? context->compression.normal_precision
+              : 16,
+          !(context->compression.flags & 1));
+  else if (o.normal_bits)
     parse(o.normal_bits);
   else {
     try {

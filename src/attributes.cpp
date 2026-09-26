@@ -71,7 +71,10 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
       bit += width;
     }
   } else {
-    require(a.bits == 8 || a.bits == 16, "unsupported attribute precision");
+    require(a.type == 100  ? a.bits >= 1 && a.bits <= 16
+            : a.type == 59 ? a.bits >= 2 && a.bits <= 23
+                           : a.bits >= 1 && a.bits <= 8,
+            "unsupported attribute precision");
     for (unsigned j = 0; j < components; ++j) {
       uint32_t value =
           bits_at(a.packed_palette, (uint64_t(index) * components + j) * a.bits,
@@ -86,7 +89,7 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
                       32767.f
                 : signed_value / static_cast<float>((1u << (a.bits - 1)) - 1);
       } else
-        out[j] = value / static_cast<float>((1u << a.bits) - 1);
+        out[j] = static_cast<float>(value << (8 - a.bits)) / 255.f;
     }
   }
   return out;

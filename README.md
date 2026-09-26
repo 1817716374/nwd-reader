@@ -431,6 +431,10 @@ for (const auto& path : locator.paths) {
 
 通过 `read_scene()` 读取并且 `PresenterData.associations_verified` 为true时，`model` 指向所属模型，NWD分配记录中的 `paths` 对应该模型的路径索引。`node_scope=true` 表示覆盖共享节点：用 `path_reference()` 取得节点身份，处理它的各次出现；路径范围则保持特定出现位置。NWF 通过 `load_project()` 并设置 `ProjectOptions.reader.products = true` 时，用 `Project.product_bindings` 返回 Presenter、TextureSpace、Hyperlink 和 NodeOverride 的候选关联。`owner` 是 NWF 的引用出现节点，`block/record` 指向该 source 的产品块和记录；`kind` 区分列表，`node_scope` 区分路径或节点范围。仅 `status == ProductBindingStatus::resolved` 时使用 `node/path` 访问联合模型目标。`empty` 表示空选择器，`unresolved` 表示缺少路径上下文或匹配不唯一，并使项目报告不完整。不同引用位置保持独立，源记录和共享几何不复制。单独 `read_products()` 不绑定模型。
 
+`Document::read_scene()` 按模型范围读取几何压缩配置，分别选择坐标、法线、颜色、UV、带长度和带索引的编码；存在配置时按该配置单次解码。不同模型使用各自的配置，重复或损坏的配置会报错。`Options::normal_bits` 非零时显式覆盖法线精度；没有配置块时保留候选模式检查。
+
+顶点属性保留各自的 `bits`、原始/打包数据和索引。短整型法线支持 1–16 位有效精度，字节颜色支持 1–8 位，浮点法线的打包载荷支持 2–23 位；`attribute_value()` 按属性类型还原数值。颜色先扩展到字节，低精度最大值不会强制变成 1。未压缩 UV 及压缩流内的浮点法线/UV 浮点值表均可读取。单独的 `decode_geometry()` 仍保留原有参数及记录封装约定。量化坐标载荷、浮点法线的其他精度与旧版共享对象表尚未完整支持。
+
 `GeometryCompression` 返回原始压缩标志及法线、颜色、纹理坐标和坐标精度。内部版本 26 前只保存标志，未保存的精度字段为 0；调用方应结合来源版本区分缺失与保存的零值。此字段布局范围不表示同版本的整文件均可读取。
 
 使用示例 [examples/products.cpp](examples/products.cpp) 展示逐块状态及保存项访问，构建后运行 `nwd_products_example model.nwd`。

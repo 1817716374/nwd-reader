@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "geometry_stream.hpp"
 #include "blowfish.hpp"
 #include <fstream>
 #include <string_view>
@@ -328,6 +329,16 @@ Scene Document::read_scene() const {
   out.parsed_chunks.resize(out.chunks.size(), false);
   out.timing.container_ms = impl_->container_ms;
   bool schemas_seen = false;
+  std::unordered_map<std::string_view, size_t> compression_blocks;
+  for (size_t i = 0; i < out.chunks.size(); ++i) {
+    const auto &name = out.chunks[i].name;
+    if (name == "LcOpNwdGeometryCompress" ||
+        name.ends_with("\\LcOpNwdGeometryCompress")) {
+      auto [it, inserted] = compression_blocks.emplace(name, i);
+      if (!inserted)
+        it->second = SIZE_MAX;
+    }
+  }
   for (size_t i = 0; i < out.chunks.size(); ++i)
     if (out.chunks[i].name == "LcOpCommonSchemas") {
       require(!schemas_seen, "duplicate common schema table");
@@ -342,7 +353,23 @@ Scene Document::read_scene() const {
                    ? ""
                    : c.name.substr(0, c.name.rfind('\\'));
       auto phase = std::chrono::steady_clock::now();
-      read_geometry(m, impl_->file, c, impl_->options);
+      std::optional<GeometryStreamContext> geometry_context;
+      const std::string compression_name =
+          m.name.empty() ? "LcOpNwdGeometryCompress"
+                         : m.name + "\\LcOpNwdGeometryCompress";
+      if (auto found = compression_blocks.find(compression_name);
+          found != compression_blocks.end()) {
+        require(found->second != SIZE_MAX,
+                "duplicate model geometry compression block");
+        auto bytes = read_product_payload(found->second);
+        Cursor fields(bytes, compression_name);
+        geometry_context = GeometryStreamContext{
+            version(), read_geometry_compression(fields, version()), true};
+        fields.exact();
+        out.parsed_chunks[found->second] = true;
+      }
+      read_geometry(m, impl_->file, c, impl_->options,
+                    geometry_context ? &*geometry_context : nullptr);
       size_t external_count = 0;
       for (auto &g : m.geometries)
         if (g.external) {

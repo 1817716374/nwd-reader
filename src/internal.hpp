@@ -263,8 +263,9 @@ Inflated inflate_one(std::span<const uint8_t> input, uint64_t limit,
                      size_t hint = 65536);
 std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file,
                                 const Chunk &chunk, const Options &options);
+struct GeometryStreamContext;
 void read_geometry(Model &, std::span<const uint8_t>, const Chunk &,
-                   const Options &);
+                   const Options &, const GeometryStreamContext * = nullptr);
 void read_instances(Model &, std::span<const uint8_t>, uint32_t,
                     const Options &);
 void read_nwf_appearances(NwfData &, std::span<const uint8_t>, uint32_t,

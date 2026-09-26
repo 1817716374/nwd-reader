@@ -37,4 +37,11 @@ GeometryStripPayload read_geometry_strips(Cursor &, uint32_t type,
                                           const GeometryStreamContext &,
                                           uint32_t vertex_count,
                                           uint64_t max_entries);
+// Payload only: the enclosing arena owns the wire object ID and sharing.
+AttributeArray read_geometry_attribute_payload(Cursor &, uint32_t type,
+                                               uint32_t vertex_count,
+                                               const GeometryStreamContext &);
+Geometry decode_geometry_record(std::span<const uint8_t>,
+                                const GeometryStreamContext &,
+                                unsigned normal_override = 0);
 } // namespace nwd::detail

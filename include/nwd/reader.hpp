@@ -19,8 +19,8 @@ struct Error : std::runtime_error {
 };
 struct Options {
   unsigned threads = 0;
-  unsigned normal_bits = 0; // 0: inspect supported precision candidates, with
-                            // complete record validation.
+  unsigned normal_bits = 0; // 0: use saved model compression; if absent,
+                            // inspect candidates with complete record validation.
   bool metadata = true;
   bool viewpoints =
       false; // optional product data must not block core model processing
