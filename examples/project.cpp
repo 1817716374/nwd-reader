@@ -44,9 +44,19 @@ static int run(const std::filesystem::path &file) {
     }
     // bytes owns/aliases immutable source storage; no image conversion is
     // required.
-    for (const auto &t : project.textures)
+    for (const auto &t : project.textures) {
+      std::cout << t.alias << ": " << t.status;
       if (t.bytes)
-        std::cout << t.alias << ": " << t.bytes->size() << " bytes\n";
+        std::cout << ", " << t.bytes->size() << " bytes";
+      if (t.reference)
+        std::cout << ", XRef entry " << t.reference->xref_entry
+                  << ", resource block " << t.reference->resource_block;
+      std::cout << '\n';
+    }
+    for (const auto &g : project.external_geometry_files)
+      std::cout << "external source/model/geometry " << g.source << '/'
+                << g.model << '/' << g.geometry << ": "
+                << g.reference->status << '\n';
     return project.complete ? 0 : 3;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "xref_string.hpp"
 #include <fstream>
 #include <map>
 #include <set>
@@ -80,6 +81,10 @@ std::filesystem::path path(std::string s) {
   std::replace(s.begin(), s.end(), '\\', '/');
   return std::filesystem::path(
       std::u8string(reinterpret_cast<const char8_t *>(s.data()), s.size()));
+}
+std::filesystem::path path(std::u16string s) {
+  std::replace(s.begin(), s.end(), u'\\', u'/');
+  return std::filesystem::path(s);
 }
 std::string key(const std::filesystem::path &p) {
   auto s = utf8(p.lexically_normal());
@@ -166,6 +171,62 @@ class Loader {
   std::map<std::tuple<Id, Id, Id>, Matrix> transform_overrides;
   std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>
       texture_cache;
+  struct FileContext {
+    Document document;
+    EmbeddedResourceIndex resources;
+    ExternalReferenceTable table;
+    std::optional<ExternalReferenceIndex> xrefs;
+    ExternalReferenceScopeStatus scope = ExternalReferenceScopeStatus::absent;
+    Id block = none;
+    std::string diagnostic;
+    FileContext(const std::filesystem::path &file, const Options &options)
+        : document(file, options), resources(document.chunks()) {
+      const auto &chunks = document.chunks();
+      const auto root =
+          external_reference_scope(std::span<const Chunk>(chunks));
+      scope = root.status;
+      block = root.block;
+      if (scope == ExternalReferenceScopeStatus::ambiguous)
+        return;
+      if (block != none) {
+        scope = ExternalReferenceScopeStatus::unavailable;
+        try {
+          const auto &chunk = chunks[block];
+          require(chunk.flags <= 1 && !chunk.prefix_bytes && !chunk.index_bytes,
+                  "unsupported root XRef envelope");
+          auto bytes = document.read_chunk(block);
+          Cursor cursor(bytes, "project root XRef");
+          table = read_xref_table(cursor, options);
+          cursor.exact();
+          scope = ExternalReferenceScopeStatus::available;
+        } catch (const Error &e) {
+          diagnostic = e.what();
+          return;
+        }
+      }
+      xrefs.emplace(table);
+    }
+  };
+  std::map<std::string, std::unique_ptr<FileContext>> file_contexts;
+  std::map<std::tuple<Id, std::string, unsigned, bool>,
+           std::shared_ptr<const ProjectFileReference>>
+      file_references;
+  std::map<std::pair<std::string, Id>,
+           std::shared_ptr<const std::vector<uint8_t>>>
+      resource_cache;
+  FileContext &file_context(const std::filesystem::path &file) {
+    auto k = key(file);
+    auto found = file_contexts.find(k);
+    if (found == file_contexts.end()) {
+      require(file_contexts.size() < options.reader.max_objects,
+              "project resource file limit");
+      found =
+          file_contexts
+              .emplace(k, std::make_unique<FileContext>(file, options.reader))
+              .first;
+    }
+    return *found->second;
+  }
   void missing(std::string s) {
     out.complete = false;
     if (std::find(out.warnings.begin(), out.warnings.end(), s) ==
@@ -188,10 +249,9 @@ class Loader {
       return {};
     return {found.begin()->second, "resolved"};
   }
-  Resolution
-  resolve(const std::filesystem::path &owner, const std::string &requested,
-          const std::vector<std::pair<std::string, std::string>> &remaps = {}) {
-    auto p = path(requested);
+  Resolution resolve_path(
+      const std::filesystem::path &owner, const std::filesystem::path &p,
+      const std::vector<std::pair<std::string, std::string>> &remaps = {}) {
     std::vector<std::filesystem::path> candidates;
     for (const auto &[from, to] : options.remaps)
       if (key(path(from)) == key(p))
@@ -220,6 +280,165 @@ class Loader {
         candidates.push_back(dir / p);
     }
     return choose(candidates);
+  }
+  Resolution
+  resolve(const std::filesystem::path &owner, const std::string &requested,
+          const std::vector<std::pair<std::string, std::string>> &remaps = {}) {
+    return resolve_path(owner, path(requested), remaps);
+  }
+  // mode 0: binary ReadXRef; 1: JSON asset's converted QueryXRef;
+  // mode 2: JSON-only URI (not a saved file-reference field).
+  std::shared_ptr<const ProjectFileReference>
+  file_reference(Id sid, const std::string &requested, unsigned mode,
+                 bool null = false) {
+    const auto cache_key = std::tuple{sid, requested, mode, null};
+    if (auto found = file_references.find(cache_key);
+        found != file_references.end())
+      return found->second;
+    auto result = std::make_shared<ProjectFileReference>();
+    auto &r = *result;
+    r.requested_path = requested;
+    r.uses_xref = mode != 2;
+    const auto &owner = out.sources.at(sid).path;
+    try {
+      auto &context = file_context(owner);
+      r.scope_status = context.scope;
+      r.xref_block = context.block;
+      ExternalReadPathResolution read;
+      auto wide = xref_string(requested, mode == 0);
+      std::optional<Resolution> caller_override;
+      if (!null && (wide.valid || mode != 0) && !wide.value.empty() &&
+          !options.remaps.empty()) {
+        std::vector<std::filesystem::path> candidates;
+        const auto original_key = key(path(wide.value));
+        for (const auto &[from, to] : options.remaps)
+          if (key(path(from)) == original_key)
+            candidates.push_back(to);
+        if (!candidates.empty())
+          caller_override = choose(candidates);
+      }
+      r.source_encoding_replaced = !null && !wide.valid;
+      if (null) {
+        read.status = ExternalReadPathStatus::null_path;
+      } else if (mode == 0 && !wide.valid) {
+        read.status = ExternalReadPathStatus::invalid_encoding;
+        read.path = std::move(wide.value);
+      } else if (mode != 2 && !context.xrefs) {
+        r.status = context.scope == ExternalReferenceScopeStatus::ambiguous
+                       ? "xref_ambiguous"
+                       : "xref_unavailable";
+        r.diagnostic = context.diagnostic;
+        r.read_path = std::move(wide.value);
+      } else if (mode != 2) {
+        read = context.xrefs->query_path(wide.value);
+      } else {
+        read.path = std::move(wide.value);
+      }
+      if (r.status.empty()) {
+        r.read_status = read.status;
+        r.read_path = std::move(read.path);
+        r.xref_entry = read.entry;
+        r.xref_entries.assign(read.entries.begin(), read.entries.end());
+        r.table_encoding_replaced = read.table_encoding_replaced;
+        if (r.read_status == ExternalReadPathStatus::null_path)
+          r.status = "null_path";
+        else if (r.read_status == ExternalReadPathStatus::invalid_encoding)
+          r.status = "invalid_encoding";
+        else if (caller_override) {
+          r.caller_remapped = true;
+          r.status = caller_override->status;
+          r.file = caller_override->file;
+        } else if (r.read_path.empty())
+          r.status = "empty_path";
+        else if (r.read_path.starts_with(u"nwd:")) {
+          if (r.read_path.starts_with(u"nwd:///"))
+            r.embedded = parse_embedded_reference(r.read_path);
+          else // Existing explicit local block-name form used by assets.
+            r.embedded = EmbeddedReference{u".", xref_utf8(r.read_path), true};
+          if (!r.embedded) {
+            r.status = "invalid_embedded_reference";
+          } else {
+            auto container =
+                r.embedded->local
+                    ? Resolution{owner, "resolved"}
+                    : resolve_path(owner, path(r.embedded->filename));
+            r.status = container.status;
+            r.file = container.file;
+            if (container.status == "resolved") {
+              auto &target = file_context(container.file);
+              const auto found = target.resources.find(r.embedded->chunk_name);
+              r.resource_block = found.block;
+              r.resource_blocks.assign(found.blocks.begin(),
+                                       found.blocks.end());
+              r.status = found.block == none ? "missing_resource"
+                                             : "embedded_resource";
+            }
+          }
+        } else {
+          // Project search paths/remaps are caller policy, not a reproduction
+          // of the application's interactive resolver, callbacks or downloads.
+          auto found = resolve_path(owner, path(r.read_path));
+          r.status = found.status;
+          r.file = found.file;
+        }
+      }
+    } catch (const std::exception &e) {
+      r.status = "reference_error";
+      r.diagnostic = e.what();
+    }
+    file_references.emplace(cache_key, result);
+    return result;
+  }
+  std::shared_ptr<const std::vector<uint8_t>>
+  reference_bytes(const ProjectFileReference &r) {
+    if (r.status == "embedded_resource") {
+      auto k = std::pair{key(r.file), r.resource_block};
+      auto found = resource_cache.find(k);
+      if (found == resource_cache.end()) {
+        auto data =
+            file_context(r.file).document.read_resource(r.resource_block);
+        found = resource_cache
+                    .emplace(k, std::make_shared<const std::vector<uint8_t>>(
+                                    std::move(data.bytes)))
+                    .first;
+      }
+      return found->second;
+    }
+    if (r.status != "resolved")
+      return {};
+    auto k = key(r.file);
+    auto found = texture_cache.find(k);
+    if (found == texture_cache.end()) {
+      auto size = std::filesystem::file_size(r.file);
+      require(size <= options.reader.max_decoded_chunk,
+              "texture file resource limit");
+      auto bytes =
+          std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(size));
+      std::ifstream f(r.file, std::ios::binary);
+      require(bool(f.read(reinterpret_cast<char *>(bytes->data()),
+                          static_cast<std::streamsize>(size))),
+              "texture read error");
+      found = texture_cache.emplace(k, bytes).first;
+    }
+    return found->second;
+  }
+  void external_files() {
+    for (Id sid = 0; sid < out.sources.size(); ++sid) {
+      const auto &source = out.sources[sid];
+      if (!source.scene)
+        continue;
+      for (Id mid = 0; mid < source.scene->models.size(); ++mid) {
+        const auto &model = source.scene->models[mid];
+        for (Id gid = 0; gid < model.geometries.size(); ++gid) {
+          const auto &external = model.geometries[gid].external;
+          if (!external)
+            continue;
+          auto reference = file_reference(sid, external->source_path, 0,
+                                          external->null_strings[2]);
+          out.external_geometry_files.push_back({sid, mid, gid, reference});
+        }
+      }
+    }
   }
   Id source(const std::filesystem::path &file) {
     auto k = key(file);
@@ -258,6 +477,17 @@ class Loader {
     auto id = static_cast<Id>(out.sources.size());
     out.sources.push_back(std::move(s));
     cache.emplace(k, id);
+    // Reuse eager Scene resource buffers, retaining file directory identity.
+    if (auto scene = out.sources[id].scene; scene && options.reader.resources) {
+      size_t resource = 0;
+      for (Id block = 0; block < scene->chunks.size(); ++block)
+        if (scene->chunks[block].name.starts_with("nwd:")) {
+          const auto &data = scene->resources.at(resource++);
+          resource_cache.emplace(
+              std::pair{k, block},
+              std::shared_ptr<const std::vector<uint8_t>>(scene, &data.bytes));
+        }
+    }
     return id;
   }
   const Model &model(Id node) const {
@@ -785,7 +1015,9 @@ class Loader {
             t.bytes = {s.nwf, &f.bytes};
           out.textures.push_back(std::move(t));
         }
+        size_t file_number = 0;
         for (const auto &[alias, stored] : files) {
+          const unsigned mode = file_number++ < a.files.size() ? 1u : 2u;
           TextureFile t;
           t.source = sid;
           t.model = mid;
@@ -793,7 +1025,7 @@ class Loader {
           t.alias = alias;
           t.active = active;
           t.thumbnail = preview(alias);
-          t.requested_path = stored.empty() ? alias : stored;
+          t.requested_path = mode == 1 ? stored : alias;
           const auto &requested = t.requested_path;
           auto embedded =
               std::find_if(a.embedded_files.begin(), a.embedded_files.end(),
@@ -806,40 +1038,20 @@ class Loader {
               t.bytes = {s.scene, &embedded->bytes};
             else
               t.bytes = {s.nwf, &embedded->bytes};
-          } else if (s.scene && requested.starts_with("nwd:")) {
-            auto it = std::find_if(
-                s.scene->resources.begin(), s.scene->resources.end(),
-                [&](const auto &f) { return f.name == requested; });
-            if (it != s.scene->resources.end()) {
-              t.status = "embedded_resource";
-              t.bytes = {s.scene, &it->bytes};
+          } else {
+            t.reference = file_reference(sid, requested, mode);
+            t.status = t.reference->status;
+            t.resolved_path = t.reference->file;
+            try {
+              t.bytes = reference_bytes(*t.reference);
+            } catch (const std::exception &e) {
+              t.status = "resource_read_error";
+              if (t.active && !t.thumbnail)
+                missing("texture resource read failed: " + requested + ": " +
+                        e.what());
             }
-          }
-          if (!t.bytes) {
-            auto r = resolve(
-                s.path, requested,
-                s.nwf ? s.nwf->path_remaps
-                      : std::vector<std::pair<std::string, std::string>>{});
-            t.status = r.status;
-            t.resolved_path = r.file;
-            if (r.status == "resolved") {
-              auto k = key(r.file);
-              auto it = texture_cache.find(k);
-              if (it == texture_cache.end()) {
-                auto size = std::filesystem::file_size(r.file);
-                require(size <= options.reader.max_decoded_chunk,
-                        "texture file resource limit");
-                auto bytes = std::make_shared<std::vector<uint8_t>>(
-                    static_cast<size_t>(size));
-                std::ifstream f(r.file, std::ios::binary);
-                require(bool(f.read(reinterpret_cast<char *>(bytes->data()),
-                                    static_cast<std::streamsize>(size))),
-                        "texture read error");
-                it = texture_cache.emplace(k, bytes).first;
-              }
-              t.bytes = it->second;
-            } else if (t.active && !t.thumbnail)
-              missing("texture " + r.status + ": " + requested);
+            if (!t.bytes && t.active && !t.thumbnail)
+              missing("texture " + t.status + ": " + requested);
           }
           out.textures.push_back(std::move(t));
         }
@@ -873,6 +1085,8 @@ public:
       return std::move(out);
     }
     visit(f, 0, 0);
+    if (options.resolve_external_geometry)
+      external_files();
     if (options.load_textures)
       textures();
     for (const auto &[key, value] : overrides)

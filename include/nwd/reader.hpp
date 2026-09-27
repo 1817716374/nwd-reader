@@ -1285,6 +1285,20 @@ struct ExternalPathResolution {
   std::string_view path;
   std::span<const Id> entries; // saved table positions, including duplicates
 };
+enum class ExternalReadPathStatus {
+  null_path,
+  original,
+  remapped,
+  invalid_encoding
+};
+struct ExternalReadPathResolution {
+  ExternalReadPathStatus status = ExternalReadPathStatus::original;
+  std::u16string
+      path;        // owned native UTF-16 units, including unpaired surrogates
+  Id entry = none; // last matching saved table entry
+  std::span<const Id> entries; // all matches in saved order; borrows the index
+  bool table_encoding_replaced = false;
+};
 // Build once for a caller-selected XRef scope. Exact case-sensitive keys;
 // no basename/prefix matching or filesystem access. Keep the source table
 // alive and unchanged while the index and its returned views are used.
@@ -1295,6 +1309,23 @@ class ExternalReferenceIndex {
 public:
   explicit ExternalReferenceIndex(const ExternalReferenceTable &);
   ExternalPathResolution resolve(const ExternalGeometry &) const;
+  // UTF-8 stream read semantics: NUL termination, native conversion and last
+  // matching table entry. Raw inspection above retains exact saved byte keys.
+  ExternalReadPathResolution resolve_read_path(const ExternalGeometry &) const;
+  // QueryXRef on an already converted native wide path; no binary stream error
+  // handling or additional UTF-8 conversion. Empty/NUL paths bypass lookup.
+  ExternalReadPathResolution query_path(std::u16string_view) const;
+};
+enum class ExternalReferenceScopeStatus {
+  absent,
+  available,
+  unavailable,
+  ambiguous
+};
+struct ExternalReferenceScope {
+  ExternalReferenceScopeStatus status = ExternalReferenceScopeStatus::absent;
+  Id block = none; // file directory/ProductData.blocks index, not a model ID
+  const ExternalReferenceTable *table = nullptr; // borrowed source record
 };
 using DatabaseCell = std::variant<std::monostate, int64_t, double, std::string,
                                   std::vector<uint8_t>>;
@@ -1524,6 +1555,29 @@ struct EmbeddedResource {
   uint32_t block_size_hint = 0;
   std::vector<uint8_t> bytes; // original encoded file; no image transcoding
 };
+struct EmbeddedReference {
+  std::u16string filename;
+  std::string chunk_name; // native UTF-8 bytes, including unpaired surrogates
+  bool local = false;     // original URL begins with nwd:///.#
+};
+// Native nwd:/// URL syntax, NUL termination and separator selection. No URL
+// unescaping, filesystem lookup or implicit selection of a containing file.
+std::optional<EmbeddedReference>
+parse_embedded_reference(std::u16string_view path);
+struct EmbeddedResourceLookup {
+  Id block = none; // first matching directory entry; pass to read_resource()
+  std::span<const Id> blocks; // all matching entries, borrowed from the index
+};
+class EmbeddedResourceIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+
+public:
+  // Index the explicitly selected source file. Keep chunks alive/unchanged.
+  explicit EmbeddedResourceIndex(std::span<const Chunk> chunks);
+  // Exact NUL-terminated byte identity, with native first-match precedence.
+  EmbeddedResourceLookup find(std::string_view chunk_name) const;
+};
 struct Scene {
   uint32_t version = 0;
   std::string header;
@@ -1538,6 +1592,18 @@ struct Scene {
   Timing timing;
   std::vector<std::string> warnings;
 };
+// One root LcOpXRefTable applies to the file's streams, including named sheets.
+// Prefixed tables are not substitutes. Scene lookup requires loaded products;
+// ProductData lookup also supports NWF. Keep the source storage
+// alive/unchanged.
+ExternalReferenceScope external_reference_scope(const Scene &);
+ExternalReferenceScope external_reference_scope(const ProductData &);
+// Directory-only lookup reports unavailable for an existing unique root.
+ExternalReferenceScope external_reference_scope(std::span<const Chunk>);
+// Expands the native nwd:///.#resource form using an explicitly supplied file
+// name. Performs no filesystem lookup or general path normalization.
+std::u16string expand_embedded_reference_path(std::u16string_view path,
+                                              std::u16string_view filename);
 struct NwfPath {
   Id parent = none;
   uint32_t flags = 0, type = 0;
@@ -1609,6 +1675,8 @@ struct ProjectOptions {
   std::vector<std::pair<std::string, std::filesystem::path>> remaps;
   bool load_textures = true;
   uint32_t max_reference_depth = 32;
+  bool resolve_external_geometry =
+      true; // locate files; plugin decoding separate
 };
 struct ProjectSource {
   std::filesystem::path path;
@@ -1784,6 +1852,26 @@ public:
   PropertyLocatorResult resolve(const SelectionLocatorPath &) const;
   std::span<const Id> owners(Reference attribute) const;
 };
+struct ProjectFileReference {
+  std::string requested_path, status, diagnostic;
+  std::u16string read_path;
+  ExternalReadPathStatus read_status = ExternalReadPathStatus::original;
+  ExternalReferenceScopeStatus scope_status =
+      ExternalReferenceScopeStatus::absent;
+  Id xref_block = none, xref_entry = none;
+  std::vector<Id> xref_entries;
+  bool source_encoding_replaced = false, table_encoding_replaced = false;
+  bool uses_xref = true;
+  bool caller_remapped = false;
+  std::filesystem::path file; // resource container or external file
+  std::optional<EmbeddedReference> embedded;
+  Id resource_block = none;
+  std::vector<Id> resource_blocks;
+};
+struct ExternalGeometryFile {
+  Id source = none, model = none, geometry = none;
+  std::shared_ptr<const ProjectFileReference> reference;
+};
 struct TextureFile {
   Id source = none, model = none, asset = none;
   std::string alias, requested_path, status;
@@ -1791,6 +1879,7 @@ struct TextureFile {
   std::shared_ptr<const std::vector<uint8_t>>
       bytes; // aliasing view for embedded files
   bool active = false, thumbnail = false;
+  std::shared_ptr<const ProjectFileReference> reference;
 };
 struct Project {
   std::vector<ProjectSource> sources; // each canonical file parsed once
@@ -1801,6 +1890,9 @@ struct Project {
   std::vector<TextureSpaceAssignment> texture_space_assignments;
   std::vector<ProductBinding> product_bindings; // NWF product selectors
   std::vector<TextureFile> textures;
+  // One per unique geometry record, not per instance. File resolution does not
+  // imply decoding of external point-cloud/mesh plugin formats.
+  std::vector<ExternalGeometryFile> external_geometry_files;
   std::vector<std::string> warnings;
   bool complete = true;
   // One entry per distinct source identity, sorted by (owner,block,path_link).

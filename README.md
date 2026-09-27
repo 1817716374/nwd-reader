@@ -133,7 +133,15 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；外部 RCS/RCP 或插件几何本体仍可能不可用，场景会报告警告。`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
 
-`ExternalReferenceIndex(table)` 为调用方选定的 `ExternalReferenceTable` 构建路径查询索引。`resolve(descriptor)` 使用区分大小写的完整路径键，返回原路径、重映射路径、NULL 或歧义状态；`entries` 保留对应的原始表位置。重复键不会按同名或相同值合并，索引也不执行目录前缀替换、磁盘搜索或自动跨模型选择引用表。使用返回视图期间，索引、源表和描述必须保持有效且不变。内嵌 NUL、非法 UTF8 与原生重复键覆盖规则尚未完整支持。
+`ExternalReferenceIndex(table)` 一次建立可复用的路径索引。`resolve()` 检查精确保存字节并保留重复项歧义；`resolve_read_path()` 执行 UTF-8 流的读取规则，返回拥有的 UTF-16 路径、末个同键表项及全部匹配编号。`query_path()` 查询已经转换的 UTF-16 路径。NULL、空路径和无效二进制编码分别保留状态，不做大小写或目录前缀归一化。使用借用视图期间，索引、源表和描述必须保持有效且不变。
+
+`external_reference_scope(scene)` 定位文件根部引用表，返回块编号及可用、缺失、未完整加载或重复根表歧义状态；需要 `Options.products=true`。也可对 `ProductData` 或块目录查询作用域，目录查询不自动读取表。模型前缀的同名块不会覆盖文件根表。
+
+`parse_embedded_reference()` 将 `nwd:///文件#资源` 拆成文件名和 `nwd:` 资源块名，保留 NUL、UTF-16 代理码点和多个 `#` 的读取规则。`expand_embedded_reference_path()` 用明确的当前文件名展开本地占位符。`EmbeddedResourceIndex(document.chunks())` 在明确选定的容器内返回首个匹配块和全部重复块号，再调用 `read_resource()` 获取原始字节，不按同名资源跨文件合并。资源索引借用目录名字，目录需保持有效且不变；匹配编号视图则依赖索引的有效期。
+
+`load_project()` 自动关联 JSON 材质文件项和外部几何描述。`TextureFile.reference` 和 `Project.external_geometry_files` 提供原始路径、读取路径、引用表条目、容器文件、资源块身份及失败诊断。相同源的查询结果与资源缓冲会共享；空映射目标不会自动退回原路径。调用方显式 `remaps` 仍可覆盖文件位置，保存映射的身份保持可查。`resolve_external_geometry=false` 可禁用外部几何文件定位；找到文件不代表 RCS/RCP 或其他插件坐标已解码。
+
+文件搜索采用调用方配置和库的目录查找策略，尚未完整复现产品的交互搜索、下载、取消及版本相关后处理。ACP 编码模式、异常 JSON 边界和旧 Protein 的完整资源关联仍有兼容限制。
 
 旧节点的修改对象记录保存在 `ObjectGraph::legacy_nodes`；旧分区附加字符串及字段存在性保存在 `legacy_partitions`。接口保留源数据，不隐式执行旧修改操作。裸 `decode_geometry()` 沿用现代独立记录约定；读取跨版本文件请使用 `Document`。示例见 [examples/geometry_descriptors.cpp](examples/geometry_descriptors.cpp)。
 
