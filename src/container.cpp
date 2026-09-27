@@ -346,12 +346,14 @@ Scene Document::read_scene() const {
       out.schemas = decode_schemas(read_chunk(i), version());
       out.parsed_chunks[i] = true;
     }
+  const bool inline_model = version() < 28;
+  const std::string_view anchor =
+      inline_model ? "LcOpNwdPartition" : "LcOpNwdGeometry";
+  const auto scoped_anchor = "\\" + std::string(anchor);
   for (auto &c : out.chunks)
-    if (c.name == "LcOpNwdGeometry" || c.name.ends_with("\\LcOpNwdGeometry")) {
+    if (c.name == anchor || c.name.ends_with(scoped_anchor)) {
       Model m;
-      m.name = c.name == "LcOpNwdGeometry"
-                   ? ""
-                   : c.name.substr(0, c.name.rfind('\\'));
+      m.name = c.name == anchor ? "" : c.name.substr(0, c.name.rfind('\\'));
       auto phase = std::chrono::steady_clock::now();
       std::optional<GeometryStreamContext> geometry_context;
       const std::string compression_name =
@@ -364,12 +366,76 @@ Scene Document::read_scene() const {
         auto bytes = read_product_payload(found->second);
         Cursor fields(bytes, compression_name);
         geometry_context = GeometryStreamContext{
-            version(), read_geometry_compression(fields, version()), true};
+            version(), read_geometry_compression(fields, version()), true, {}};
         fields.exact();
         out.parsed_chunks[found->second] = true;
       }
-      read_geometry(m, impl_->file, c, impl_->options,
-                    geometry_context ? &*geometry_context : nullptr);
+      if (inline_model) {
+        const auto prefix = m.name.empty() ? "" : m.name + "\\";
+        auto find_optional =
+            [&](std::string_view suffix) -> std::optional<size_t> {
+          std::optional<size_t> result;
+          const auto name = prefix + std::string(suffix);
+          for (size_t i = 0; i < out.chunks.size(); ++i)
+            if (out.chunks[i].name == name) {
+              require(!result, "duplicate inline model block");
+              result = i;
+            }
+          return result;
+        };
+        (void)find_optional(
+            "LcOpNwdPartition"); // reject duplicate model anchors
+        if (!geometry_context)
+          geometry_context.emplace();
+        auto &context = *geometry_context;
+        context.version = version();
+        const auto geometry = find_optional("LcOpNwdGeometry");
+        context.paged = geometry.has_value();
+        if (impl_->options.normal_bits) {
+          require(impl_->options.normal_bits <= 32,
+                  "normal precision override outside supported range");
+          context.compression.normal_precision =
+              static_cast<uint8_t>(impl_->options.normal_bits);
+        }
+        if (geometry) {
+          read_geometry(m, impl_->file, out.chunks[*geometry], impl_->options,
+                        &context);
+          context.geometry_record_count =
+              static_cast<uint32_t>(m.geometries.size());
+          out.parsed_chunks[*geometry] = true;
+        }
+        require(c.flags == 0 || c.flags == 1,
+                "unsupported inline partition encoding");
+        read_partition(m,
+                       read_chunk(static_cast<size_t>(&c - out.chunks.data())),
+                       version(), impl_->options, &context);
+        if (const auto shared = find_optional("LcOpNwdSharedNodes")) {
+          read_shared_nodes(m, read_chunk(*shared), version(), impl_->options);
+          out.parsed_chunks[*shared] = true;
+        }
+        project_inline_model(m, version(), impl_->options);
+        m.raw_coordinates = !(context.compression.flags & 1);
+        m.normal_bits = context.compression.normal_precision;
+        for (const auto &g : m.geometries)
+          if (g.type == 103)
+            require(g.text_style < m.shared_nodes.roots.size(),
+                    "text style outside shared nodes");
+        const auto unresolved =
+            std::count_if(m.inline_projection->instances.begin(),
+                          m.inline_projection->instances.end(),
+                          [](const auto &v) { return v.value == none; });
+        if (unresolved)
+          out.warnings.push_back(
+              m.name + ": " + std::to_string(unresolved) +
+              " inline shapes have no read-time path binding; raw records and "
+              "binding status retained");
+        if (!m.inline_projection->legacy_appearance_fields.empty())
+          out.warnings.push_back(m.name +
+                                 ": legacy appearance extra fields retained in "
+                                 "source arena; only base material projected");
+      } else
+        read_geometry(m, impl_->file, c, impl_->options,
+                      geometry_context ? &*geometry_context : nullptr);
       size_t external_count = 0;
       for (auto &g : m.geometries)
         if (g.external) {
@@ -406,6 +472,10 @@ Scene Document::read_scene() const {
             " quantized coordinate arrays contain non-finite fields or "
             "results; values retained and flagged");
       out.timing.geometry_ms += elapsed(phase);
+      if (inline_model) {
+        out.models.emplace_back(std::move(m));
+        continue;
+      }
       std::string prefix = m.name.empty() ? "" : m.name + "\\";
       auto find = [&](std::string_view suffix) -> size_t {
         for (size_t i = 0; i < out.chunks.size(); ++i)

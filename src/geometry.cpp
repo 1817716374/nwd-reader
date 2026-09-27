@@ -170,7 +170,8 @@ static std::vector<uint32_t> packed(Cursor &r, uint64_t limit) {
 GeometryStripPayload read_geometry_strips(Cursor &r, uint32_t type,
                                           const GeometryStreamContext &context,
                                           uint32_t vertex_count,
-                                          uint64_t max_entries) {
+                                          uint64_t max_entries,
+                                          bool retain_unused_entries) {
   require(type == 94 || type == 95, "invalid strip geometry type");
   const bool narrow = context.version >= 75;
   auto count = [&](bool compressed) {
@@ -215,22 +216,33 @@ GeometryStripPayload read_geometry_strips(Cursor &r, uint32_t type,
     if (n) {
       out.implicit_indices = false;
       out.indices =
-          compressed_indices ? unsigned_indices(r, n, vertex_count) : raw(n);
-      for (auto index : out.indices)
-        require(index < vertex_count, "strip index outside vertex array");
+          compressed_indices
+              ? unsigned_indices(
+                    r, n, retain_unused_entries ? UINT32_MAX : vertex_count)
+              : raw(n);
+      if (!retain_unused_entries)
+        for (auto index : out.indices)
+          require(index < vertex_count, "strip index outside vertex array");
     }
   }
   uint64_t total = 0;
   for (auto length : out.lengths)
     total += length;
-  require(total == (out.implicit_indices ? vertex_count : out.indices.size()),
+  const auto available =
+      out.implicit_indices ? vertex_count : out.indices.size();
+  require(retain_unused_entries ? total <= available : total == available,
           "strip length/index count mismatch");
+  if (retain_unused_entries && !out.implicit_indices)
+    for (size_t i = 0; i < total; ++i)
+      require(out.indices[i] < vertex_count,
+              "strip index outside vertex array");
   return out;
 }
 static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
                                         unsigned normal_bits,
-                                        const GeometryStreamContext *context) {
-  require(n <= 100000000, "vertex attribute count limit");
+                                        const GeometryStreamContext *context,
+                                        uint64_t max_entries = 100000000) {
+  require(n <= max_entries && n <= 100000000, "vertex attribute count limit");
   AttributeArray a;
   a.type = type;
   if (a.type == 58) {
@@ -273,6 +285,8 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
       require(x <= 32, "UV component bit width");
     }
     a.palette_count = r.u32();
+    require(a.palette_count <= max_entries && a.palette_count <= 100000000,
+            "UV palette count limit");
     auto raw = r.raw(4 * ((uint64_t(a.palette_count) *
                                (a.component_bits[0] + a.component_bits[1]) +
                            31) /
@@ -299,6 +313,8 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
     auto floats = r.u32();
     require(floats % components == 0, "float attribute palette size");
     a.palette_count = floats / components;
+    require(a.palette_count <= max_entries && a.palette_count <= 100000000,
+            "float attribute palette count limit");
     a.raw = true;
     a.bits = 32;
     auto raw = r.raw(uint64_t(floats) * 4);
@@ -342,7 +358,8 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
   }
   a.palette_count = r.u32();
   require(slots == -static_cast<int64_t>(n), "attribute slot count mismatch");
-  require(a.palette_count <= 100000000, "attribute palette count limit");
+  require(a.palette_count <= max_entries && a.palette_count <= 100000000,
+          "attribute palette count limit");
   unsigned components = a.type == 58 ? 4 : 3;
   size_t bytes =
       4 * ((uint64_t(a.palette_count) * components * a.bits + 31) / 32);
@@ -365,9 +382,10 @@ static AttributeArray attribute_payload(Cursor &r, uint32_t type, uint32_t n,
 }
 AttributeArray
 read_geometry_attribute_payload(Cursor &r, uint32_t type, uint32_t n,
-                                const GeometryStreamContext &context) {
+                                const GeometryStreamContext &context,
+                                uint64_t max_entries) {
   return attribute_payload(r, type, n, context.compression.normal_precision,
-                           &context);
+                           &context, max_entries);
 }
 } // namespace nwd::detail
 namespace nwd {
@@ -425,10 +443,11 @@ static Geometry geometry_record(std::span<const uint8_t> data,
       continue;
     require(oid >= 102, "unexpected attribute object reference");
     g.attributes.push_back(
-        attribute_payload(r, r.u32(), n, normal_bits, context));
+        attribute_payload(r, r.u32(), n, normal_bits, context, max_entries));
   }
   if (g.type == 96) {
-    g.flags = r.u32();
+    if (!context || context->version >= 14)
+      g.flags = r.u32();
     require(g.flags <= 1, "point-set boolean field");
     r.exact();
     return g;

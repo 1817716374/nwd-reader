@@ -39,6 +39,7 @@ struct GeometryStreamContext {
   uint32_t version = 0;
   GeometryCompression compression;
   bool paged = false;
+  std::optional<uint32_t> geometry_record_count; // source table, if supplied
   bool reference_uses_store() const { return version >= 25 && paged; }
 };
 
@@ -67,11 +68,13 @@ struct GeometryStripPayload {
 GeometryStripPayload read_geometry_strips(Cursor &, uint32_t type,
                                           const GeometryStreamContext &,
                                           uint32_t vertex_count,
-                                          uint64_t max_entries);
+                                          uint64_t max_entries,
+                                          bool retain_unused_entries = false);
 // Payload only: the enclosing arena owns the wire object ID and sharing.
-AttributeArray read_geometry_attribute_payload(Cursor &, uint32_t type,
-                                               uint32_t vertex_count,
-                                               const GeometryStreamContext &);
+AttributeArray
+read_geometry_attribute_payload(Cursor &, uint32_t type, uint32_t vertex_count,
+                                const GeometryStreamContext &,
+                                uint64_t max_entries = 100000000);
 Geometry decode_geometry_record(std::span<const uint8_t>,
                                 const GeometryStreamContext &,
                                 unsigned normal_override = 0,

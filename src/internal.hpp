@@ -277,7 +277,8 @@ class ObjectReader {
   std::unique_ptr<Impl> impl;
 
 public:
-  ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t, Options = {});
+  ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t, Options = {},
+               const GeometryStreamContext * = nullptr);
   ~ObjectReader();
   Id object(Cursor &);
   Id string(Cursor &);
@@ -301,7 +302,11 @@ uint32_t read_clip_planes(Cursor &, std::vector<ViewFields> &, ViewFields &,
 SchemaInstance read_schema_instance(Cursor &,
                                     std::span<const SchemaDefinition>);
 void read_partition(Model &, std::span<const uint8_t>, uint32_t,
-                    const Options &);
+                    const Options &, const GeometryStreamContext * = nullptr);
+void bind_inline_partition(Model &, const Options &);
+void project_inline_model(Model &, uint32_t, const Options &);
+void read_shared_nodes(Model &, std::span<const uint8_t>, uint32_t,
+                       const Options &);
 void read_metadata(Model &, std::span<const uint8_t>,
                    const std::vector<Chunk> &, uint32_t, const Options &,
                    std::vector<bool> &);

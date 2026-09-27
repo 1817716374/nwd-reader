@@ -4,7 +4,11 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
   using detail::require;
   require(slot < a.indices.size(), "attribute slot outside array");
   bool normal = a.type == 59 || a.type == 100;
-  require(normal || a.type == 58 || a.type == 61, "unsupported attribute type");
+  bool float_color = a.type == 56 || a.type == 57;
+  require(normal || float_color || a.type == 58 || a.type == 61,
+          "unsupported attribute type");
+  require(!float_color || a.raw,
+          "packed float color is not a legacy raw array");
   auto index = a.indices[slot];
   std::array<float, 4> out{};
   if (index < 0) {
@@ -15,7 +19,9 @@ std::array<float, 4> attribute_value(const AttributeArray &a, size_t slot) {
   }
   require(static_cast<uint32_t>(index) < a.palette_count,
           "attribute index outside palette");
-  unsigned components = normal ? 3 : a.type == 58 ? 4 : 2;
+  unsigned components = normal || a.type == 56         ? 3
+                        : a.type == 58 || a.type == 57 ? 4
+                                                       : 2;
   if (a.raw) {
     unsigned bytes_per_component = a.type == 100 ? 2 : a.type == 58 ? 1 : 4;
     size_t offset = uint64_t(index) * components * bytes_per_component;

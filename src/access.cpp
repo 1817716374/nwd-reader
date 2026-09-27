@@ -75,7 +75,7 @@ Reference path_reference(const Model &m, Id path) {
                     "missing partition root");
     return {0, m.graphs[0].roots[0]};
   }
-  return {1, m.paths[path].object};
+  return {m.hierarchy_graph, m.paths[path].object};
 }
 const Object &path_object(const Model &m, Id path) {
   return resolve_object(m, path_reference(m, path));

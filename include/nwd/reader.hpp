@@ -112,6 +112,19 @@ struct EmbeddedAssetFile {
   std::vector<uint8_t> bytes;
 };
 struct AnimationObject;
+// Raw extra records in wire22..27 partitions. Kept outside Object so modern
+// metadata objects incur no per-object storage cost. Spatial objects use their
+// own type1/2 child lists, separate from a partition's logical children.
+struct LegacyPartitionRecord {
+  Id owner = none;
+  Reference spatial_root;
+  std::vector<Reference> shapes; // original order, including null references
+  uint32_t flag = 0; // raw serialized boolean; semantic name not established
+  // Derived stream position immediately before the spatial root. At the
+  // stream's root partition this is when native logical links become ready.
+  std::optional<uint64_t> path_links_ready_offset;
+};
+struct GeometryObjectArena;
 struct ObjectGraph {
   std::vector<std::string> strings;
   std::vector<Object> objects;
@@ -119,14 +132,17 @@ struct ObjectGraph {
   std::vector<EmbeddedAssetFile>
       embedded_files; // sparse arena, no per-object overhead
   std::vector<AnimationObject> animation_objects; // sparse, ordered by owner ID
+  std::vector<LegacyPartitionRecord> legacy_partitions; // associate by owner ID
+  std::shared_ptr<GeometryObjectArena>
+      geometry_arena; // absent in ordinary graphs
 };
 struct Path {
   Id parent = none, object = none;
 };
 struct AttributeArray {
   bool raw = false;
-  bool finite =
-      true; // nonfinite source values/decoded results are retained, not repaired
+  bool finite = true; // nonfinite source values/decoded results are retained,
+                      // not repaired
   std::array<float, 4> quantization_bounds{};
   std::array<uint8_t, 4> component_bits{};
   uint32_t type = 0, flag = 0, bits = 0, palette_count = 0;
@@ -186,6 +202,61 @@ struct Geometry {
       external; // descriptor, not an embedded mesh
   std::shared_ptr<const CoordinateQuantization> coordinate_quantization;
 };
+// Shared object records keep graph-local identity; no copied per-primitive
+// coordinate or attribute arrays. Owners and references index ObjectGraph.
+struct GeometryCoordinateObject {
+  Id owner = none;
+  std::vector<float> values;
+  std::vector<uint32_t> indices;
+  std::shared_ptr<const CoordinateQuantization> quantization;
+};
+struct GeometryAttributeObject {
+  Id owner = none;
+  AttributeArray data;
+};
+struct GeometryPrimitiveObject {
+  Id owner = none, coordinates = none;
+  uint32_t type = 0, flags = 0, vertex_count = 0;
+  std::array<Id, 3> attributes{none, none,
+                               none}; // serialized UV, normal, color
+  std::vector<uint32_t> lengths, indices;
+  bool implicit_indices = true;
+};
+struct GeometryReferenceObject;
+struct GeometryShapeObject;
+struct GeometryAuxiliaryObject;
+struct GeometryLegacyShapeFields {
+  Id owner = none;
+  std::array<double, 6> initial_bounds{}, geometry_bounds{};
+  double geometry_tolerance = 0;
+  uint32_t geometry_present_word = 0;
+};
+struct LegacyMaterialObject;
+struct LegacyAppearanceObject;
+struct LegacyGeometryObject {
+  Id owner = none;
+  std::array<uint32_t, 5> enums{}; // four header enums, then trailing enum
+  int32_t saved_integer = 0;
+  std::array<Id, 8> references{none, none, none, none, none, none, none, none};
+  std::vector<int32_t>
+      saved_lengths; // retain values before native uint16 narrowing
+  GeometryPrimitiveObject
+      primitive; // implicit, shares graph arrays; not a new wire object
+};
+struct GeometryObjectArena {
+  // Each sparse table is ordered by owner. Graph references retain identity
+  // even when numeric payloads happen to be equal.
+  std::vector<GeometryCoordinateObject> coordinates;
+  std::vector<GeometryAttributeObject> attributes;
+  std::vector<GeometryPrimitiveObject> primitives;
+  std::vector<GeometryReferenceObject> references;
+  std::vector<GeometryShapeObject> shapes;
+  std::vector<GeometryAuxiliaryObject> auxiliary_transforms;
+  std::vector<GeometryLegacyShapeFields> legacy_shapes;
+  std::vector<LegacyMaterialObject> legacy_materials;
+  std::vector<LegacyAppearanceObject> legacy_appearances;
+  std::vector<LegacyGeometryObject> legacy_geometries;
+};
 struct Transform {
   uint32_t type = 0;
   std::array<double, 16> values{};
@@ -196,6 +267,13 @@ struct GeometryReference {
   float tolerance = 0;
   uint32_t checksum = 0;
   Id geometry = none;
+};
+struct GeometryReferenceObject {
+  Id owner = none, inline_geometry = none;
+  uint32_t data_id = 0; // raw page-record identity, never a graph object ID
+  bool uses_store = false, store_range_checked = false;
+  bool user_fields_present = false, checksum_present = false;
+  GeometryReference fields; // geometry stays none until a Model table is bound
 };
 struct Material {
   std::array<float, 14> values{};
@@ -213,6 +291,12 @@ struct Material {
   }
   float shininess() const { return values[12]; }
   float transparency() const { return values[13]; }
+};
+struct LegacyMaterialObject {
+  Id owner = none;
+  float saved_prefix = 0;
+  std::array<int16_t, 3> saved_modes{};
+  Material fields;
 };
 struct Asset {
   std::string json, extra;
@@ -244,6 +328,12 @@ struct Appearance {
   Id material = none, asset = none;
   std::array<uint32_t, 4> overrides{};
 };
+struct LegacyAppearanceObject {
+  Id owner = none;
+  uint64_t excluded_fields = UINT64_MAX; // zero bits select serialized fields
+  std::array<Id, 2> materials{none, none};
+  std::optional<uint32_t> saved_boolean, saved_enum;
+};
 struct Instance {
   Id path = none, geometry_reference = none, transform = none,
      appearance = none, auxiliary_transform = none;
@@ -256,6 +346,63 @@ struct AuxiliaryTransform {
   std::array<double, 12> values{}; // native order, unused entries zero
   bool orientation = false;        // serialized only for type 0
 };
+enum class GeometryShapePath { object, ordinal, link };
+struct GeometryShapeObject {
+  Id owner = none, path_object = none, transform = none, appearance = none,
+     geometry_reference = none, auxiliary_transform = none;
+  GeometryShapePath path_encoding = GeometryShapePath::object;
+  uint32_t path_reference = UINT32_MAX; // raw ordinal/link, not a resolved path
+  uint32_t primitive_count = 0, bits = 0, flags = 0;
+  double precision = 0;
+};
+struct GeometryAuxiliaryObject {
+  Id owner = none; // shape owner; table index is distinct from graph object ID
+  AuxiliaryTransform fields;
+};
+enum class InlinePathStatus { empty, no_exact_match, unique, ambiguous };
+struct InlinePathBinding {
+  Id owner = none; // Path44/RunPath73 object in partition graph0
+  InlinePathStatus status = InlinePathStatus::empty;
+  uint32_t offset = 0, count = 0; // range in path_candidates
+};
+enum class InlineShapePathStatus {
+  null_path, empty_path, different_root, non_geometry_terminal,
+  no_link, context_required, links_not_ready, resolved
+};
+struct InlineShapeBinding {
+  Id owner = none, path_binding = none; // null saved path stays none
+  Id path = none; // resolved Model.paths ID, never a spatial occurrence ID
+  InlineShapePathStatus status = InlineShapePathStatus::null_path;
+};
+struct InlineSpatialRoot {
+  Id partition = none, occurrence = none; // null spatial root stays none
+};
+struct InlinePartitionIndex {
+  // Candidate IDs index Model.paths. Equal node sequences may describe more
+  // than one occurrence; no arbitrary winner is selected. Ranges are shared.
+  // Exact complete root-to-node sequences only, not native FindLink's runtime
+  // search/fallback policy. No-exact-match does not establish a corrupt path.
+  std::vector<Id> path_candidates;
+  std::vector<InlinePathBinding> path_bindings;
+  // Read-time shape binding has a root/geometry-terminal gate. For a valid
+  // full path, native link search selects its first preorder occurrence;
+  // candidates remain available even when more than one occurrence matches.
+  std::vector<InlineShapeBinding> shape_bindings;
+  // Separate occurrence domain, preserving spatial child slots and DAG reuse.
+  // Path.object indexes graph0; Path.parent indexes spatial_occurrences.
+  std::vector<Path> spatial_occurrences;
+  std::vector<InlineSpatialRoot> spatial_roots;
+};
+struct InlineObjectBinding {
+  Id owner = none, value = none; // graph0 identity -> corresponding Model table
+};
+struct InlineModelProjection {
+  std::vector<InlineObjectBinding> geometries, geometry_references, transforms,
+      materials, appearances, assets, instances;
+  // These old appearance fields remain in graph0's geometry arena rather
+  // than being guessed into modern appearance flags/overrides.
+  std::vector<Id> legacy_appearance_fields;
+};
 struct Model {
   std::string name;
   std::vector<Id> schema_references; // Scene.schemas indices; none for null
@@ -267,10 +414,14 @@ struct Model {
   std::vector<Asset> assets;
   std::vector<Appearance> appearances;
   std::vector<Instance>
-      instances; // serialized fragment slots; repeated slots retained
+      instances; // modern fragment slots (including repeats); old inline models
+                 // project each bound shape object once; see inline_projection
   std::vector<ObjectGraph>
       graphs; // 0 partition, 1 hierarchy, 2+ property pages
   std::vector<Path> paths;
+  Id hierarchy_graph = 1; // inline old logical nodes share partition graph0
+  std::shared_ptr<const InlinePartitionIndex> inline_partition;
+  std::shared_ptr<const InlineModelProjection> inline_projection;
   ObjectGraph
       shared_nodes; // text styles and other shared resources, own ID space
   uint64_t property_attribute_count = 0, source_transform_count = 0;

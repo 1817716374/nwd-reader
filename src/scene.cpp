@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "shape_fields.hpp"
 namespace nwd::detail {
 struct Ref {
   uint32_t type = 0;
@@ -61,17 +62,7 @@ class Fragments {
       // The native reader translates serialized bit 29 to internal bit 17.
       // Testing bit 17 in the on-disk flags misses the optional record.
       if (version >= 243 && (x.flags & 0x20000080u) == 0x20000080u) {
-        AuxiliaryTransform saved;
-        saved.type = r.u32();
-        require(saved.type <= 2, "unknown auxiliary shape transform type");
-        const unsigned count = saved.type == 0 ? 12 : saved.type == 1 ? 3 : 7;
-        for (unsigned i = 0; i < count; ++i)
-          saved.values[i] = r.f64();
-        if (saved.type == 0) {
-          auto flag = r.u32();
-          require(flag <= 1, "invalid auxiliary transform orientation");
-          saved.orientation = flag != 0;
-        }
+        auto saved = read_auxiliary_transform_fields(r);
         x.auxiliary_transform = static_cast<Id>(m.auxiliary_transforms.size());
         m.auxiliary_transforms.push_back(saved);
       }
@@ -81,18 +72,7 @@ class Fragments {
       ref.index = static_cast<Id>(m.instances.size());
       m.instances.push_back(x);
     } else if (type >= 14 && type <= 17) {
-      Transform t;
-      t.type = type;
-      if (type == 17) {
-        for (unsigned i = 0; i < 13; ++i)
-          t.values[i] = r.f32();
-        for (unsigned i = 13; i < 16; ++i)
-          t.values[i] = r.f64();
-      } else {
-        unsigned n = type == 14 ? 3 : type == 15 ? 7 : 8;
-        for (unsigned i = 0; i < n; ++i)
-          t.values[i] = r.f64();
-      }
+      auto t = read_run_transform_fields(r, type, version);
       ++m.source_transform_count;
       if (options.intern_transforms) {
         auto h = transform_hash(t);
@@ -149,13 +129,7 @@ class Fragments {
       ref.index = static_cast<Id>(m.assets.size());
       m.assets.push_back(std::move(a));
     } else if (type == 93) {
-      GeometryReference g;
-      for (auto &v : g.bounds)
-        v = r.f32();
-      for (auto &v : g.origin)
-        v = r.f64();
-      g.tolerance = r.f32();
-      g.checksum = r.u32();
+      auto g = read_geometry_reference_user(r, version);
       uint32_t gid = r.u32();
       require(gid >= 1 && gid <= m.geometries.size(),
               "geometry ID outside record table");

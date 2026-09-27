@@ -1,4 +1,7 @@
 #include "internal.hpp"
+#include "geometry_stream.hpp"
+#include "shape_fields.hpp"
+#include "legacy_cs.hpp"
 namespace nwd::detail {
 class GraphReader {
   Cursor r;
@@ -7,13 +10,54 @@ class GraphReader {
   uint32_t version;
   const Options &options;
   bool root_partition;
+  std::optional<GeometryStreamContext> geometry_context;
+  struct ActiveNode {
+    Id id;
+    ActiveNode *previous;
+  };
+  ActiveNode *active_node = nullptr;
   std::vector<Id> ids;
   std::unordered_map<std::string, Id> strings;
   unsigned depth = 0;
+  GeometryObjectArena &geometry_arena() {
+    if (!geometry_context)
+      throw UnsupportedLayout(
+          "geometry object requires explicit stream context");
+    if (!graph.geometry_arena)
+      graph.geometry_arena = std::make_shared<GeometryObjectArena>();
+    return *graph.geometry_arena;
+  }
+  template <class T>
+  const T &geometry_owner(const std::vector<T> &table, Id id) {
+    auto it = std::lower_bound(
+        table.begin(), table.end(), id,
+        [](const T &value, Id owner) { return value.owner < owner; });
+    require(it != table.end() && it->owner == id,
+            "geometry object has no completed payload");
+    return *it;
+  }
   uint32_t count() {
     auto n = r.u32();
     require(n <= options.max_objects, "metadata count resource limit");
     return n;
+  }
+  void validate_primitive_attributes(const GeometryPrimitiveObject &value,
+                                     bool legacy = false) {
+    auto &arena = *graph.geometry_arena;
+    for (unsigned slot = 0; slot < 3; ++slot) {
+      const auto id = value.attributes[slot];
+      if (id == none)
+        continue;
+      const auto &a = geometry_owner(arena.attributes, id).data;
+      require(legacy || graph.objects[id].type == a.type,
+              "legacy array in a modern checked geometry reference");
+      require(slot == 0   ? a.type == 61
+              : slot == 1 ? a.type == 59 || a.type == 100
+                          : a.type >= 56 && a.type <= 58,
+              "primitive attribute object type");
+      require(a.indices.size() >= value.vertex_count,
+              "primitive attribute slot mismatch");
+    }
   }
   Id str() {
     r.align(4);
@@ -288,9 +332,14 @@ class GraphReader {
 
 public:
   GraphReader(std::span<const uint8_t> b, ObjectGraph &g, Id gid, uint32_t ver,
-              const Options &op, bool root = false)
+              const Options &op, bool root = false,
+              const GeometryStreamContext *context = nullptr)
       : r(b, "metadata graph " + std::to_string(gid)), graph(g), graph_id(gid),
-        version(ver), options(op), root_partition(root) {}
+        version(ver), options(op), root_partition(root),
+        geometry_context(context ? std::optional(*context) : std::nullopt) {
+    require(!context || context->version == version,
+            "geometry context version mismatch");
+  }
   Id object() {
     require(++depth < 512, "metadata recursion limit");
     struct Guard {
@@ -320,6 +369,333 @@ public:
     o.type = r.u32();
     o.stream_offset = start;
     switch (o.type) {
+    case 3: {
+      auto &arena = geometry_arena();
+      arena.legacy_materials.push_back(read_legacy_material(r, index));
+      break;
+    }
+    case 4: {
+      auto &arena = geometry_arena();
+      const auto slot = arena.legacy_appearances.size();
+      arena.legacy_appearances.emplace_back();
+      LegacyAppearanceObject value;
+      value.owner = index;
+      const uint64_t low = r.u32(), high = r.u32();
+      value.excluded_fields = low | (high << 32);
+      const auto present = ~value.excluded_fields;
+      if (present & ~uint64_t(0x03000600))
+        throw UnsupportedLayout("legacy appearance field mask");
+      for (unsigned i = 0; i < 2; ++i) {
+        if (present & (uint64_t(1) << (24 + i))) {
+          const auto material = object();
+          require((i == 1 && material == none) ||
+                      (material != none && graph.objects[material].type == 3),
+                  "legacy appearance material type");
+          value.materials[i] = material;
+          o.references.push_back({graph_id, material});
+        }
+      }
+      if (present & (1u << 9))
+        value.saved_boolean = r.u32();
+      if (present & (1u << 10))
+        value.saved_enum = r.u32();
+      arena.legacy_appearances[slot] = std::move(value);
+      break;
+    }
+    case 5: {
+      auto &arena = geometry_arena();
+      auto value = read_coordinate_payload(
+          r, true,
+          std::min<uint64_t>(options.max_objects,
+                             options.max_decoded_chunk / (3 * sizeof(float))));
+      arena.coordinates.push_back(
+          {index, std::move(value.values), std::move(value.indices), {}});
+      break;
+    }
+    case 6:
+    case 8:
+    case 9:
+    case 10: {
+      auto &arena = geometry_arena();
+      const auto type = o.type == 6   ? 59u
+                        : o.type == 8 ? 56u
+                        : o.type == 9 ? 57u
+                                      : 61u;
+      auto value = read_legacy_float_attribute(r, type, options.max_objects);
+      arena.attributes.push_back({index, std::move(value)});
+      break;
+    }
+    case 7:
+    case 11:
+      throw UnsupportedLayout("unresolved legacy cs array type " +
+                              std::to_string(o.type));
+    case 12: {
+      auto &arena = geometry_arena();
+      const auto slot = arena.legacy_geometries.size();
+      arena.legacy_geometries.emplace_back();
+      LegacyGeometryObject value;
+      value.owner = index;
+      value.enums[0] = r.u32();
+      value.saved_integer = r.read<int32_t>();
+      for (unsigned i = 1; i < 4; ++i)
+        value.enums[i] = r.u32();
+      for (auto &ref : value.references) {
+        ref = object();
+        o.references.push_back({graph_id, ref});
+      }
+      value.enums[4] = r.u32();
+      const auto n = count();
+      const auto raw = r.raw(uint64_t(n) * sizeof(int32_t));
+      value.saved_lengths.resize(n);
+      if (n)
+        std::memcpy(value.saved_lengths.data(), raw.data(), raw.size());
+      auto &primitive = value.primitive;
+      primitive.owner = index;
+      primitive.type = 94;
+      primitive.coordinates = value.references[0];
+      primitive.attributes = {value.references[3], value.references[1],
+                              value.references[2]};
+      uint64_t used = 0;
+      primitive.lengths.reserve(n);
+      for (auto saved : value.saved_lengths) {
+        // Native Arrayus::SetArray(Arrayi) takes each low16 bits. Preserve
+        // both.
+        const auto length = static_cast<uint16_t>(saved);
+        primitive.lengths.push_back(length);
+        used += length;
+      }
+      const auto vertices =
+          primitive.coordinates == none
+              ? 0
+              : geometry_owner(arena.coordinates, primitive.coordinates)
+                    .indices.size();
+      require(used <= vertices, "legacy strips exceed coordinate slots");
+      primitive.vertex_count = static_cast<uint32_t>(used);
+      validate_primitive_attributes(primitive, true);
+      arena.legacy_geometries[slot] = std::move(value);
+      break;
+    }
+    case 93: {
+      auto &arena = geometry_arena();
+      const auto slot = arena.references.size();
+      arena.references.emplace_back();
+      GeometryReferenceObject value;
+      value.owner = index;
+      value.uses_store = geometry_context->reference_uses_store();
+      if (!value.uses_store) {
+        value.inline_geometry = object();
+        require(value.inline_geometry != none,
+                "null inline geometry reference");
+        (void)geometry_owner(arena.primitives, value.inline_geometry);
+        o.references.push_back({graph_id, value.inline_geometry});
+      }
+      value.user_fields_present = version >= 2;
+      value.checksum_present = version >= 5;
+      value.fields = read_geometry_reference_user(r, version);
+      value.data_id = r.u32();
+      if (value.uses_store && geometry_context->geometry_record_count) {
+        require(value.data_id &&
+                    value.data_id <= *geometry_context->geometry_record_count,
+                "geometry reference outside source record table");
+        value.store_range_checked = true;
+      }
+      arena.references[slot] = std::move(value);
+      break;
+    }
+    case 14:
+    case 15:
+    case 16:
+    case 17: {
+      auto value = read_run_transform_fields(r, o.type, version);
+      const auto n = o.type == 14   ? 3u
+                     : o.type == 15 ? 7u
+                     : o.type == 16 ? 8u
+                                    : 16u;
+      o.numbers.assign(value.values.begin(), value.values.begin() + n);
+      break;
+    }
+    case 60: {
+      auto &arena = geometry_arena();
+      auto value = read_coordinate_payload(
+          r, !(geometry_context->compression.flags & 1),
+          std::min<uint64_t>(options.max_objects,
+                             options.max_decoded_chunk / (3 * sizeof(float))));
+      arena.coordinates.push_back({index, std::move(value.values),
+                                   std::move(value.indices),
+                                   std::move(value.quantization)});
+      break;
+    }
+    case 58:
+    case 59:
+    case 61:
+    case 100: {
+      auto &arena = geometry_arena();
+      const auto start = r.pos;
+      if (o.type == 58)
+        (void)r.u32();
+      const int64_t slots = r.read<int32_t>();
+      r.pos = start;
+      const uint64_t n = slots < 0 ? -slots : slots;
+      require(n <= options.max_objects && n <= 100000000,
+              "geometry attribute slot limit");
+      auto value = read_geometry_attribute_payload(
+          r, o.type, static_cast<uint32_t>(n), *geometry_context,
+          options.max_objects);
+      arena.attributes.push_back({index, std::move(value)});
+      break;
+    }
+    case 94:
+    case 95:
+    case 96: {
+      geometry_arena();
+      GeometryPrimitiveObject value;
+      value.owner = index;
+      value.type = o.type;
+      value.coordinates = object();
+      require(value.coordinates == none ||
+                  graph.objects[value.coordinates].type == 60,
+              "primitive coordinate object type");
+      o.references.push_back({graph_id, value.coordinates});
+      for (auto &attribute : value.attributes) {
+        attribute = object();
+        o.references.push_back({graph_id, attribute});
+      }
+      auto &arena = *graph.geometry_arena;
+      const auto n = value.coordinates == none
+                         ? 0
+                         : geometry_owner(arena.coordinates, value.coordinates)
+                               .indices.size();
+      if (o.type == 96) {
+        value.vertex_count = static_cast<uint32_t>(n);
+        if (version >= 14)
+          value.flags = r.u32();
+        require(value.flags <= 1, "point-set boolean field");
+      } else {
+        auto strips = read_geometry_strips(r, o.type, *geometry_context,
+                                           static_cast<uint32_t>(n),
+                                           options.max_objects, true);
+        value.lengths = std::move(strips.lengths);
+        value.indices = std::move(strips.indices);
+        value.implicit_indices = strips.implicit_indices;
+        uint64_t used = 0;
+        for (auto length : value.lengths)
+          used += length;
+        if (value.implicit_indices)
+          value.vertex_count = static_cast<uint32_t>(used);
+        else
+          for (size_t i = 0; i < used; ++i)
+            value.vertex_count =
+                std::max(value.vertex_count, value.indices[i] + 1);
+      }
+      validate_primitive_attributes(value);
+      arena.primitives.push_back(std::move(value));
+      break;
+    }
+    case 1:
+    case 2: {
+      if (version >= 28)
+        throw UnsupportedLayout("tagged spatial children from version28");
+      auto n = count();
+      o.children.reserve(n);
+      for (uint32_t j = 0; j < n; ++j) {
+        auto child = object();
+        require(child != none, "null legacy spatial child");
+        const auto type = graph.objects[child].type;
+        require(o.type == 2 ? type == 13 : type == 1 || type == 2 || type == 13,
+                "legacy spatial child type");
+        o.children.push_back(child);
+      }
+      break;
+    }
+    case 13: {
+      auto &arena = geometry_arena();
+      const auto slot = arena.shapes.size();
+      arena.shapes.emplace_back();
+      GeometryShapeObject value;
+      value.owner = index;
+      std::optional<GeometryLegacyShapeFields> legacy;
+      const auto legacy_slot = arena.legacy_shapes.size();
+      if (version == 0) {
+        legacy.emplace();
+        legacy->owner = index;
+        arena.legacy_shapes.emplace_back();
+        for (auto &v : legacy->initial_bounds)
+          v = r.f64();
+      }
+      value.precision = r.f64();
+      value.primitive_count = r.u32();
+      value.bits = r.u32();
+      value.flags = r.u32();
+      if (version < 28) {
+        value.path_object = object();
+        require(value.path_object == none ||
+                    graph.objects[value.path_object].type ==
+                        (version == 0 ? 44u : 73u),
+                "core shape path object type");
+        o.references.push_back({graph_id, value.path_object});
+      } else {
+        value.path_encoding =
+            version < 32 ? GeometryShapePath::ordinal : GeometryShapePath::link;
+        value.path_reference = r.u32();
+      }
+      if (legacy) {
+        for (auto &v : legacy->geometry_bounds)
+          v = r.f64();
+        legacy->geometry_tolerance = r.f64();
+      }
+      value.transform = object();
+      require(value.transform == none ||
+                  (graph.objects[value.transform].type >= 14 &&
+                   graph.objects[value.transform].type <= 17),
+              "core shape transform type");
+      value.appearance = object();
+      require(value.appearance == none ||
+                  graph.objects[value.appearance].type == 55 ||
+                  graph.objects[value.appearance].type == 4,
+              "core shape appearance type");
+      o.references.push_back({graph_id, value.transform});
+      o.references.push_back({graph_id, value.appearance});
+      if (version >= 243 && (value.flags & 0x20000080u) == 0x20000080u) {
+        auto saved = read_auxiliary_transform_fields(r);
+        value.auxiliary_transform =
+            static_cast<Id>(arena.auxiliary_transforms.size());
+        arena.auxiliary_transforms.push_back({index, std::move(saved)});
+      }
+      if (legacy) {
+        legacy->geometry_present_word = r.u32();
+        require(legacy->geometry_present_word != 0,
+                "version0 shape requires geometry");
+      }
+      value.geometry_reference = object();
+      require(value.geometry_reference != none &&
+                  (graph.objects[value.geometry_reference].type == 93 ||
+                   (version < 23 &&
+                    graph.objects[value.geometry_reference].type == 12)),
+              "core shape geometry reference type");
+      o.references.push_back({graph_id, value.geometry_reference});
+      arena.shapes[slot] = std::move(value);
+      if (legacy)
+        arena.legacy_shapes[legacy_slot] = std::move(*legacy);
+      break;
+    }
+    case 44:
+    case 73: {
+      const auto n = count();
+      o.references.reserve(n);
+      for (uint32_t j = 0; j < n; ++j) {
+        const auto node = ref();
+        require(node.object != none, "null temporary path node");
+        const auto type = graph.objects[node.object].type;
+        bool valid = type == 22 || type == 25 || type == 32 || type == 53;
+        // A serialized path can refer back to the partition/node currently
+        // being read. Its final Object has not yet been moved into the arena.
+        for (auto p = active_node; !valid && p; p = p->previous)
+          valid = p->id == node.object;
+        require(valid, "temporary path entry is not a logical node");
+        o.references.push_back(node);
+      }
+      break;
+    }
     case 150:
     case 151:
     case 152:
@@ -404,10 +780,15 @@ public:
     case 25:
     case 22:
     case 32: {
-      // Before28 the root includes inline hierarchy/spatial records and extra
-      // legacy fields. Do not interpret that layout as a modern chunk root.
-      if (o.type == 32 && version < 28)
-        throw UnsupportedLayout("partition layout before version28");
+      ActiveNode current{index, active_node};
+      active_node = &current;
+      struct NodeScope {
+        ActiveNode *&head;
+        ActiveNode *previous;
+        ~NodeScope() { head = previous; }
+      } scope{active_node, current.previous};
+      if (o.type == 32 && version < 22)
+        throw UnsupportedLayout("partition scene header before version22");
       if (o.type == 32)
         o.integers.push_back(version >= 203 ? r.u32() : 0);
       common(o);
@@ -416,7 +797,8 @@ public:
       o.attributes.reserve(n);
       for (uint32_t j = 0; j < n; ++j)
         o.attributes.push_back(ref());
-      if (o.type != 22 && !(root_partition && id == 100 && o.type == 32)) {
+      if (o.type != 22 &&
+          !(root_partition && id == 100 && o.type == 32 && version >= 28)) {
         n = count();
         o.children.reserve(n);
         for (uint32_t j = 0; j < n; ++j)
@@ -424,11 +806,35 @@ public:
       }
       if (o.type == 32) {
         o.integers.push_back(r.u32());
+        std::optional<LegacyPartitionRecord> legacy;
+        if (version < 28) {
+          legacy.emplace();
+          legacy->owner = index;
+          legacy->path_links_ready_offset = r.pos;
+          legacy->spatial_root = ref();
+          const auto spatial = legacy->spatial_root.object;
+          require(spatial == none || graph.objects[spatial].type == 1 ||
+                      graph.objects[spatial].type == 2,
+                  "legacy partition spatial root type");
+        }
         n = count();
         for (uint32_t j = 0; j < n; ++j)
           o.references.push_back(ref());
         doubles(o, 3);
         o.integers.push_back(r.u32());
+        if (legacy) {
+          n = count();
+          legacy->shapes.reserve(n);
+          for (uint32_t j = 0; j < n; ++j) {
+            const auto shape = ref();
+            require(shape.object == none ||
+                        graph.objects[shape.object].type == 13,
+                    "legacy partition shape type");
+            legacy->shapes.push_back(shape);
+          }
+          legacy->flag = r.u32();
+          graph.legacy_partitions.push_back(std::move(*legacy));
+        }
         o.strings.push_back(str());
         o.integers.push_back(r.u32());
         o.integers.push_back(r.u32());
@@ -676,20 +1082,24 @@ public:
 struct ObjectReader::Impl {
   Options options;
   GraphReader reader;
-  Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v, Options o)
-      : options(std::move(o)), reader(b, g, 0, v, options) {}
+  Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v, Options o,
+       const GeometryStreamContext *context)
+      : options(std::move(o)), reader(b, g, 0, v, options, false, context) {}
 };
 ObjectReader::ObjectReader(std::span<const uint8_t> b, ObjectGraph &g,
-                           uint32_t v, Options options)
-    : impl(std::make_unique<Impl>(b, g, v, std::move(options))) {}
+                           uint32_t v, Options options,
+                           const GeometryStreamContext *context)
+    : impl(std::make_unique<Impl>(b, g, v, std::move(options), context)) {}
 ObjectReader::~ObjectReader() = default;
 Id ObjectReader::object(Cursor &r) { return impl->reader.external(r, false); }
 Id ObjectReader::string(Cursor &r) { return impl->reader.external(r, true); }
 void read_partition(Model &model, std::span<const uint8_t> part,
-                    uint32_t version, const Options &options) {
+                    uint32_t version, const Options &options,
+                    const GeometryStreamContext *context) {
   model.graphs.resize(2);
   model.schema_references.clear();
-  GraphReader(part, model.graphs[0], 0, version, options, true).partition();
+  GraphReader(part, model.graphs[0], 0, version, options, true, context)
+      .partition();
   auto &partition = model.graphs[0].objects[model.graphs[0].roots[0]];
   require(partition.integers.size() >= 7, "incomplete partition header");
   model.linear_units = static_cast<int>(partition.integers[5]);
@@ -737,10 +1147,18 @@ void read_partition(Model &model, std::span<const uint8_t> part,
       model.schema_references.push_back(id ? id - 1 : none);
     }
   }
+  if (version < 28)
+    bind_inline_partition(model, options);
+}
+void read_shared_nodes(Model &model, std::span<const uint8_t> bytes,
+                       uint32_t version, const Options &options) {
+  GraphReader(bytes, model.shared_nodes, none, version, options).shared();
 }
 void read_metadata(Model &model, std::span<const uint8_t> file,
                    const std::vector<Chunk> &chunks, uint32_t version,
                    const Options &options, std::vector<bool> &parsed) {
+  if (version < 28)
+    throw UnsupportedLayout("inline model requires legacy container loading");
   auto find = [&](const std::string &suffix) -> const Chunk & {
     for (auto &c : chunks)
       if (c.name == (model.name.empty() ? "" : model.name + "\\") + suffix) {
@@ -763,7 +1181,7 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
     return data;
   };
   auto shared = raw("LcOpNwdSharedNodes");
-  GraphReader(shared, model.shared_nodes, none, version, options).shared();
+  read_shared_nodes(model, shared, version, options);
   for (const auto &geometry : model.geometries)
     if (geometry.type == 103)
       require(geometry.text_style < model.shared_nodes.roots.size(),
