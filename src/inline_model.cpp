@@ -67,6 +67,7 @@ void project_inline_model(Model &model, uint32_t version,
     case 55:
       add(projection->appearances, id);
       break;
+    case 182:
     case 185:
       add(projection->assets, id);
       break;
@@ -221,6 +222,11 @@ void project_inline_model(Model &model, uint32_t version,
   model.assets.resize(projection->assets.size());
   for (const auto &binding : projection->assets) {
     const auto &source = graph.objects[binding.owner];
+    if (source.type == 182) {
+      model.assets[binding.value].protein =
+          ProteinAssetReference{0, binding.owner, {}};
+      continue;
+    }
     auto text = [&](size_t at) {
       require(at < source.strings.size(), "inline asset string field");
       const auto value = resolve_string(graph, source.strings[at]);
@@ -261,15 +267,21 @@ void project_inline_model(Model &model, uint32_t version,
           !(legacy.excluded_fields & (1ull << 25)))
         projection->legacy_appearance_fields.push_back(binding.owner);
     } else {
-      require(source.references.size() == 2 && source.integers.size() == 4,
+      const bool ignored =
+          version < 405 && (source.flags & 2) && !(source.flags & 8);
+      require(source.references.size() == 2 &&
+                  source.integers.size() == (ignored ? 5u : 4u),
               "inline appearance fields");
       for (const auto ref : source.references)
         require(ref.graph == 0, "inline appearance graph");
       a.flags = source.flags;
       a.material = mapped(projection->materials, source.references[0].object);
       a.asset = mapped(projection->assets, source.references[1].object);
-      std::copy(source.integers.begin(), source.integers.end(),
-                a.overrides.begin());
+      std::copy_n(source.integers.begin(), 4, a.overrides.begin());
+      if (ignored)
+        a.legacy_discarded_enum = source.integers[4];
+      a.legacy_face_mode_default =
+          version < 405 && (source.flags & 8) && !(source.flags & 2);
     }
   }
   for (const auto &binding : model.inline_partition->shape_bindings) {

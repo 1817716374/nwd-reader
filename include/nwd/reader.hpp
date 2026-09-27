@@ -19,8 +19,9 @@ struct Error : std::runtime_error {
 };
 struct Options {
   unsigned threads = 0;
-  unsigned normal_bits = 0; // 0: use saved model compression; if absent,
-                            // inspect candidates with complete record validation.
+  unsigned normal_bits =
+      0; // 0: use saved model compression; if absent,
+         // inspect candidates with complete record validation.
   bool metadata = true;
   bool viewpoints =
       false; // optional product data must not block core model processing
@@ -197,7 +198,8 @@ struct ExternalGeometry {
 struct CoordinateQuantization {
   float saved_precision = 0;
   std::array<float, 6> bounds{}; // lower XYZ, upper XYZ, without repair
-  std::array<uint8_t, 4> component_bits{}; // fourth byte retained, unused in XYZ
+  std::array<uint8_t, 4>
+      component_bits{}; // fourth byte retained, unused in XYZ
   uint32_t palette_count = 0;
   std::vector<uint8_t> packed_palette; // little-endian words, MSB-first fields
   bool finite = true; // saved floats and decoded coordinates are all finite
@@ -327,10 +329,16 @@ struct LegacyMaterialObject {
   std::array<int16_t, 3> saved_modes{};
   Material fields;
 };
+struct ProteinAssetReference {
+  Id graph = none, object = none; // graph indexes Model.graphs when no arena
+  std::shared_ptr<const ObjectGraph>
+      record_graph; // fragment-local shared arena
+};
 struct Asset {
   std::string json, extra;
   std::vector<std::pair<std::string, std::string>> files;
   std::vector<EmbeddedAssetFile> embedded_files;
+  std::optional<ProteinAssetReference> protein; // pre443 original type182 graph
 };
 // Values retain source JSON types; connection IDs preserve the material graph.
 struct AssetParameter {
@@ -352,10 +360,60 @@ struct AssetDescription {
   std::vector<AssetUri> uris;
 };
 AssetDescription describe_asset(const Asset &);
+struct ProteinConnection {
+  Id owner = none, property = none, ordinal = none, target = none;
+  Id native_ordinal = none; // null saved entries are absent from native vector
+  bool enabled = false; // property connection flag, not literal-value enable
+};
+struct ProteinUriSlot {
+  Id owner = none, property = none, ordinal = none;
+  Id string = none, embedded_file = none;
+};
+struct ProteinReachableAsset {
+  Id object = none;
+  bool enabled_path = false; // at least one path of enabled connections
+};
+struct ProteinAssetFields {
+  Id library_id = none, definition_id = none;
+  std::optional<Reference> schema; // absent before254; present may be null
+  std::optional<std::array<uint8_t, 16>> guid; // saved bytes only, from411
+  std::optional<std::span<const Id>> thumbnails, categories,
+      keywords;                                               // from415
+  std::optional<Id> ui_name, default_preview_id, description; // 417/429/430
+};
+struct ProteinSchemaFields {
+  Id identifier = none, asset_type = none;
+  std::span<const uint8_t> data;
+  Reference parent;
+};
+// Borrow the immutable graph. IDs refer to its strings/objects; optional Id
+// distinguishes absent fields from a saved null string (present, value none).
+ProteinAssetFields protein_asset_fields(const ObjectGraph &, Id owner,
+                                        uint32_t wire_version, Id graph_id = 0);
+ProteinSchemaFields protein_schema_fields(const ObjectGraph &, Id owner,
+                                          Id graph_id = 0);
+// Index one immutable graph once. It must outlive the index and returned views.
+// Connection slots and URI ordinals retain their original property scope.
+// No shader-role inference or runtime conversion to JSON is performed.
+class ProteinGraphIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+
+public:
+  explicit ProteinGraphIndex(const ObjectGraph &, Id graph_id = 0);
+  const ObjectGraph &graph() const;
+  std::span<const ProteinConnection> connections(Id owner) const;
+  std::span<const ProteinUriSlot> uris(Id owner) const;
+  const ProteinUriSlot &uri(Id owner, Id property, Id ordinal) const;
+  std::vector<ProteinReachableAsset> reachable(Id root) const;
+};
 struct Appearance {
   uint32_t flags = 0;
   Id material = none, asset = none;
   std::array<uint32_t, 4> overrides{};
+  std::optional<uint32_t> legacy_discarded_enum; // pre405 bit2 without bit8
+  bool legacy_face_mode_default =
+      false; // pre405 bit8 without bit2: native 0x1b01
 };
 struct LegacyAppearanceObject {
   Id owner = none;
@@ -395,8 +453,14 @@ struct InlinePathBinding {
   uint32_t offset = 0, count = 0; // range in path_candidates
 };
 enum class InlineShapePathStatus {
-  null_path, empty_path, different_root, non_geometry_terminal,
-  no_link, context_required, links_not_ready, resolved
+  null_path,
+  empty_path,
+  different_root,
+  non_geometry_terminal,
+  no_link,
+  context_required,
+  links_not_ready,
+  resolved
 };
 struct InlineShapeBinding {
   Id owner = none, path_binding = none; // null saved path stays none
@@ -1014,7 +1078,8 @@ struct SavedLight {
   std::array<double, 3> position{}, target{};
 };
 struct SavedItem {
-  Id material_asset = none; // type 80; SavedItems.objects, type 185
+  // Saved item80: SavedItems.objects, type182 before wire443, type185 from443.
+  Id material_asset = none;
   std::optional<SavedSheetInfo> sheet_info;
   std::optional<SavedFileInfo> file_info;
   std::optional<SavedLight> light;
@@ -1299,12 +1364,63 @@ struct ExternalReadPathResolution {
   std::span<const Id> entries; // all matches in saved order; borrows the index
   bool table_encoding_replaced = false;
 };
+// Classification supplied by the containing application's protocol registry.
+// These are the native GetURLType values, not an inference from a URI prefix.
+enum class FileUrlType { local = 0, remote = 1, unsupported = 2 };
+enum class FileUrlGeneration { v2017, v2026 };
+enum class FileUrlStatus {
+  classified,
+  invalid_url,
+  unknown_protocol,
+  requires_character_classification
+};
+struct FileProtocolRegistration {
+  std::u16string scheme;
+  FileUrlType type = FileUrlType::local;
+};
+struct FileUrlClassification {
+  FileUrlStatus status = FileUrlStatus::unknown_protocol;
+  FileUrlType type = FileUrlType::unsupported;
+  std::u16string scheme; // owned, exact case; no percent decoding
+  Id protocol = none;    // first matching registration position
+  bool used_default = false;
+};
+// Immutable protocol snapshot. Defaults reproduce the verified local-file
+// registration, not every application/plugin protocol. First duplicate wins;
+// unknown nonempty schemes never use the default. Copies share the index.
+class FileProtocolContext {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+
+public:
+  // A non-ASCII scheme predicate must match the source runtime's combined
+  // iswalpha/iswdigit classification and be safe for concurrent const calls.
+  // Without it, relevant non-ASCII scheme characters remain explicitly unknown.
+  explicit FileProtocolContext(
+      std::vector<FileProtocolRegistration> = {{u"file", FileUrlType::local}},
+      std::optional<std::u16string> default_scheme = u"file",
+      std::function<bool(char16_t)> non_ascii_letter_or_digit = {});
+  FileUrlClassification classify(std::optional<std::u16string_view>,
+                                 FileUrlGeneration) const;
+};
+struct ProteinUriReadResolution {
+  ExternalReadPathResolution reference;
+  Id string = none;        // original ObjectGraph.strings identity
+  Id embedded_file = none; // original ObjectGraph.embedded_files identity
+  const EmbeddedAssetFile *embedded = nullptr; // borrows the immutable graph
+  bool uses_xref = false;
+  // Present only for the protocol-context overload; absent for embedded,
+  // null or invalid UTF8 input. Requires-character-classification never maps.
+  std::optional<FileUrlClassification> classification;
+};
 // Build once for a caller-selected XRef scope. Exact case-sensitive keys;
 // no basename/prefix matching or filesystem access. Keep the source table
 // alive and unchanged while the index and its returned views are used.
 class ExternalReferenceIndex {
   struct Impl;
   std::shared_ptr<const Impl> impl;
+  ProteinUriReadResolution query_protein(ProteinUriReadResolution,
+                                         FileUrlType) const;
 
 public:
   explicit ExternalReferenceIndex(const ExternalReferenceTable &);
@@ -1315,6 +1431,25 @@ public:
   // QueryXRef on an already converted native wide path; no binary stream error
   // handling or additional UTF-8 conversion. Empty/NUL paths bypass lookup.
   ExternalReadPathResolution query_path(std::u16string_view) const;
+  // Read one type13 Protein property's URI in an explicitly selected graph.
+  // UTF-8 stream mode only. Embedded entries bypass XRef; remote entries query
+  // it; local entries query only when the native absolute-path predicate holds.
+  // Supply explicit classification or a verified protocol snapshot/profile.
+  // These queries do not use the host filesystem or infer shader texture roles.
+  // Returned entry spans borrow this index; embedded bytes borrow the graph.
+  ProteinUriReadResolution resolve_protein_uri(const ObjectGraph &, Id owner,
+                                               Id property, Id ordinal,
+                                               FileUrlType) const;
+  ProteinUriReadResolution resolve_protein_uri(const ObjectGraph &, Id owner,
+                                               Id property, Id ordinal,
+                                               const FileProtocolContext &,
+                                               FileUrlGeneration) const;
+  // Indexed embedded lookup for bulk reads; avoids rescanning property files.
+  ProteinUriReadResolution resolve_protein_uri(const ProteinGraphIndex &,
+                                               Id owner, Id property,
+                                               Id ordinal,
+                                               const FileProtocolContext &,
+                                               FileUrlGeneration) const;
 };
 enum class ExternalReferenceScopeStatus {
   absent,
@@ -1677,6 +1812,9 @@ struct ProjectOptions {
   uint32_t max_reference_depth = 32;
   bool resolve_external_geometry =
       true; // locate files; plugin decoding separate
+  FileProtocolContext protein_protocols{};
+  // Explicit URL-classifier profile; independent of file wire version.
+  FileUrlGeneration protein_url_generation = FileUrlGeneration::v2026;
 };
 struct ProjectSource {
   std::filesystem::path path;
@@ -1867,6 +2005,7 @@ struct ProjectFileReference {
   std::optional<EmbeddedReference> embedded;
   Id resource_block = none;
   std::vector<Id> resource_blocks;
+  std::optional<FileUrlClassification> protein_classification;
 };
 struct ExternalGeometryFile {
   Id source = none, model = none, geometry = none;
@@ -1880,6 +2019,9 @@ struct TextureFile {
       bytes; // aliasing view for embedded files
   bool active = false, thumbnail = false;
   std::shared_ptr<const ProjectFileReference> reference;
+  std::optional<ProteinUriSlot>
+      protein_uri;          // graph selected by source/model/asset
+  bool enabled_path = true; // structural reachability, not shader evaluation
 };
 struct Project {
   std::vector<ProjectSource> sources; // each canonical file parsed once

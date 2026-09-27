@@ -141,7 +141,7 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `load_project()` 自动关联 JSON 材质文件项和外部几何描述。`TextureFile.reference` 和 `Project.external_geometry_files` 提供原始路径、读取路径、引用表条目、容器文件、资源块身份及失败诊断。相同源的查询结果与资源缓冲会共享；空映射目标不会自动退回原路径。调用方显式 `remaps` 仍可覆盖文件位置，保存映射的身份保持可查。`resolve_external_geometry=false` 可禁用外部几何文件定位；找到文件不代表 RCS/RCP 或其他插件坐标已解码。
 
-文件搜索采用调用方配置和库的目录查找策略，尚未完整复现产品的交互搜索、下载、取消及版本相关后处理。ACP 编码模式、异常 JSON 边界和旧 Protein 的完整资源关联仍有兼容限制。
+文件搜索采用调用方配置和库的目录查找策略，尚未完整复现产品的交互搜索、下载、取消及版本相关后处理。ACP 编码模式、异常 JSON 边界、插件协议和旧 Protein 的完整材质语义仍有兼容限制。
 
 旧节点的修改对象记录保存在 `ObjectGraph::legacy_nodes`；旧分区附加字符串及字段存在性保存在 `legacy_partitions`。接口保留源数据，不隐式执行旧修改操作。裸 `decode_geometry()` 沿用现代独立记录约定；读取跨版本文件请使用 `Document`。示例见 [examples/geometry_descriptors.cpp](examples/geometry_descriptors.cpp)。
 
@@ -329,7 +329,21 @@ if (target.status == nwd::SavedItemPathStatus::resolved) {
 
 NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字符串 ID 和对象引用属于 `NwfData.option_values`，枚举对象继续共享；这些设置仅供调用方读取。
 
-旧式 Protein 材质属性保留有类型的字段、连接和 URI。`ProteinProperty.embedded_files` 索引所属 `ObjectGraph.embedded_files`，可取得内嵌 URI 与二进制资源的原始字节、前后缀及所属对象。此类资源直接通过属性图访问；`Project.textures` 的活动状态查询目前针对实例关联的 JSON 资产。
+### 旧式 Protein 资产
+
+`Asset.protein` 存在时表示原始 Protein 对象图，此时不要调用只接受 JSON 资产的 `describe_asset()`。`record_graph` 存在时拥有共享图；否则 `graph` 索引所属 `Model.graphs`。`object` 标明资产根，不同根可以共享子资产或形成循环。
+
+`ProteinGraphIndex(graph, graph_id)` 可复用于同图资产：`connections(owner)` 保留属性位置、保存连接 ordinal、目标及启用标记，`native_ordinal` 区分跳过 NULL 后的位置；`uris(owner)` 返回属性内的字符串和嵌入文件身份。`reachable(root)` 每个可到达对象只返回一次，`enabled_path` 表示至少存在一条全部连接启用的路径；禁用路径的记录仍保留。它不执行着色器求值。
+
+`protein_asset_fields(graph, owner, wire_version, graph_id)` 返回库 ID、定义 ID、可选 Schema/GUID、缩略图 URI、分类、关键词、界面名称、默认预览 ID和描述。`protein_schema_fields()` 返回 Schema 标识、资产类型、原始 data 和父引用。列表和 Schema 数据借用原图，调用方应保持图存活且不变。`optional` 区分未保存与保存为空，`Id == none` 保留保存的 NULL；不生成文件中缺失的 GUID，也不展开或猜测 Schema 内部语义。
+
+`SavedItem.material_asset` 指向所属 `SavedItems.objects`，保存版本 443 前为旧资产 182，443 起为 JSON 资产 185。重复、NULL 和跨块的对象身份保持独立；保存材质的存在不等于它已应用到某个实例。
+
+`ExternalReferenceIndex::resolve_protein_uri` 支持明确协议分类或 `FileProtocolContext` 注册快照，图索引重载适合批量 URI 读取。嵌入文件绕过 XRef；本地路径仅在满足来源格式的绝对路径规则时查询，远程协议查询。注册区分大小写，同名首项生效；未知协议和缺少非 ASCII 字符分类环境的状态明确返回。
+
+`ProjectOptions.protein_protocols` 默认包含 file 注册和默认处理器，调用方可提供其他已知注册；`protein_url_generation` 选择分类行为，独立于文件保存版本。Project 读取旧资产 URI 并复用引用表、文件和资源缓冲。`TextureFile.protein_uri` 保留原始对象/属性/ordinal，`enabled_path` 是结构可达性，`active` 还要求根资产实际被已绑定外观使用。旧 URI 暂不推断 diffuse、bump 或 thumbnail 角色；缩略图列表可通过具名字段另行读取。
+
+`ProteinProperty.embedded_files` 索引所属 `ObjectGraph.embedded_files`，可取得原始字节、前后缀及所属对象。嵌入 ordinal 只在所属属性内有效，不能按同名或跨属性 ordinal 合并。Project 返回的共享字节缓冲可独立维持来源数据生命周期；独立图查询返回的视图则借用原图。
 
 ### 单位、材质与纹理
 
@@ -345,9 +359,9 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `Instance.auxiliary_transform` 引用 `Model.auxiliary_transforms` 中的辅助仿射、平移或平移＋旋转记录。这些数据保持源值，与当前实例矩阵分开返回。
 
-材质通过 `Material` 的 `ambient()`、`diffuse()`、`specular()`、`emissive()`、`shininess()` 和 `transparency()` 访问。资产图保留原始参数类型、连接和 URI，完整 JSON 仍在 `Asset.json` 中，便于调用方处理扩展字段。
+材质通过 `Material` 的 `ambient()`、`diffuse()`、`specular()`、`emissive()`、`shininess()` 和 `transparency()` 访问。资产图保留原始参数类型、连接和 URI；JSON 资产的完整数据在 `Asset.json`，旧资产原图在 `Asset.protein`。
 
-纹理保留编码后的原始字节，不做图片解码。通过 `TextureFile` 的源、模型、资产及别名关联材质；`active` 和 `thumbnail` 区分活动资产与缩略图。外部文件可使用 `ProjectOptions.search_paths` 查找，或通过 `remaps` 指定原路径到本机文件的映射。
+纹理保留编码后的原始字节，不做图片解码。通过 `TextureFile` 的源、模型、资产及别名关联材质；`active` 标明根资产的使用状态，`thumbnail` 用于已识别的 JSON 缩略图角色。外部文件可使用 `ProjectOptions.search_paths` 查找，或通过 `remaps` 指定原路径到本机文件的映射。
 
 `NwfData.texture_spaces` 返回盒形、平面、圆柱、球形和显式 UV 映射。向量、旋转和方向枚举保持序列化顺序，`parameters_present` 指明文件是否保存了参数。`Project.texture_space_assignments` 将记录关联到模型路径；通过 `owner` 找到所属 NWF，再以 `record` 访问记录。`node_scope` 表示共享节点赋值，可用 `path_reference()` 获取 graph/object 身份。这是赋值记录接口，多层映射覆盖的最终优先级由调用方处理。
 

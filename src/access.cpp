@@ -1,6 +1,100 @@
 #include "internal.hpp"
 #include "xref_string.hpp"
 namespace nwd {
+struct FileProtocolContext::Impl {
+  std::vector<FileProtocolRegistration> registrations;
+  std::unordered_map<std::u16string, Id> schemes;
+  Id fallback = none;
+  std::function<bool(char16_t)> classify_character;
+  Impl(std::vector<FileProtocolRegistration> entries,
+       const std::optional<std::u16string> &default_scheme,
+       std::function<bool(char16_t)> predicate)
+      : registrations(std::move(entries)),
+        classify_character(std::move(predicate)) {
+    detail::require(registrations.size() < none,
+                    "file protocol registry limit");
+    for (Id i = 0; i < registrations.size(); ++i) {
+      auto &entry = registrations[i];
+      detail::require(entry.type == FileUrlType::local ||
+                          entry.type == FileUrlType::remote,
+                      "invalid registered file protocol type");
+      if (auto nul = entry.scheme.find(u'\0'); nul != entry.scheme.npos)
+        entry.scheme.resize(nul);
+      schemes.emplace(entry.scheme, i);
+    }
+    if (default_scheme) {
+      auto key = default_scheme->substr(0, default_scheme->find(u'\0'));
+      if (auto it = schemes.find(key); it != schemes.end())
+        fallback = it->second;
+    }
+  }
+};
+FileProtocolContext::FileProtocolContext(
+    std::vector<FileProtocolRegistration> registrations,
+    std::optional<std::u16string> default_scheme,
+    std::function<bool(char16_t)> predicate)
+    : impl(std::make_shared<Impl>(std::move(registrations), default_scheme,
+                                  std::move(predicate))) {}
+FileUrlClassification
+FileProtocolContext::classify(std::optional<std::u16string_view> input,
+                              FileUrlGeneration generation) const {
+  detail::require(generation == FileUrlGeneration::v2017 ||
+                      generation == FileUrlGeneration::v2026,
+                  "unverified file URL generation");
+  FileUrlClassification out;
+  // The newer GetURLType wrapper copies nullptr into an empty std::wstring;
+  // the older wrapper passes nullptr directly to Crack, which rejects it.
+  if (!input && generation == FileUrlGeneration::v2017) {
+    out.status = FileUrlStatus::invalid_url;
+    return out;
+  }
+  auto path = input.value_or(std::u16string_view{});
+  path = path.substr(0, path.find(u'\0'));
+  if (path.size() >= 8192) {
+    out.status = FileUrlStatus::invalid_url;
+    return out;
+  }
+  path = path.substr(0, path.find(u'#'));
+  const auto colon = path.find(u':');
+  if (colon == 0) {
+    out.status = FileUrlStatus::invalid_url;
+    return out;
+  }
+  if (colon != path.npos && path.substr(colon).starts_with(u"://")) {
+    bool valid = true, unknown = false;
+    for (char16_t c : path.substr(0, colon)) {
+      if (c > 127) {
+        if (!impl->classify_character)
+          unknown = true;
+        else if (!impl->classify_character(c))
+          valid = false;
+      } else if (!((c >= u'A' && c <= u'Z') || (c >= u'a' && c <= u'z') ||
+                   (c >= u'0' && c <= u'9') || c == u'+' || c == u'-' ||
+                   c == u'.')) {
+        valid = false;
+      }
+    }
+    if (valid) {
+      out.scheme = path.substr(0, colon);
+      if (unknown) {
+        out.status = FileUrlStatus::requires_character_classification;
+        return out;
+      }
+    }
+  }
+  auto it = impl->schemes.find(out.scheme);
+  if (it != impl->schemes.end())
+    out.protocol = it->second;
+  else if (out.scheme.empty() && impl->fallback != none) {
+    out.protocol = impl->fallback;
+    out.used_default = true;
+  }
+  if (out.protocol != none) {
+    out.type = impl->registrations[out.protocol].type;
+    out.status = FileUrlStatus::classified;
+  }
+  return out;
+}
 std::optional<EmbeddedReference>
 parse_embedded_reference(std::u16string_view path) {
   path = path.substr(0, path.find(u'\0'));
@@ -165,6 +259,107 @@ ExternalReferenceIndex::query_path(std::u16string_view path) const {
   ExternalReadPathResolution result;
   result.path = path.substr(0, path.find(u'\0'));
   return impl->query(std::move(result));
+}
+namespace {
+ProteinUriReadResolution
+read_protein_uri(const ObjectGraph &graph, Id owner, Id property, Id ordinal,
+                 const ProteinUriSlot *indexed = nullptr) {
+  using detail::require;
+  require(owner < graph.objects.size(), "Protein URI owner outside graph");
+  const auto &object = graph.objects[owner];
+  require(property < object.protein_properties.size(),
+          "Protein URI property outside object");
+  const auto &p = object.protein_properties[property];
+  require(p.type == 13 && p.strings.size() == p.count && ordinal < p.count,
+          "invalid Protein URI property or ordinal");
+  ProteinUriReadResolution out;
+  out.string = p.strings[ordinal];
+  // File ordinals are local to the property, not the enclosing object.
+  // Never search all graph resources by owner/name or merge duplicate URIs.
+  if (indexed) {
+    out.embedded_file = indexed->embedded_file;
+    if (out.embedded_file != none)
+      out.embedded = &graph.embedded_files[out.embedded_file];
+  } else
+    for (const auto id : p.embedded_files) {
+      require(id < graph.embedded_files.size(),
+              "Protein URI file outside graph");
+      const auto &file = graph.embedded_files[id];
+      require(file.owner == owner && file.ordinal < p.count,
+              "Protein URI embedded ownership mismatch");
+      if (file.ordinal == ordinal) {
+        require(!out.embedded, "duplicate Protein URI embedded ordinal");
+        out.embedded_file = id;
+        out.embedded = &file;
+      }
+    }
+  auto &read = out.reference;
+  if (out.string == none) {
+    read.status = ExternalReadPathStatus::null_path;
+    return out;
+  }
+  require(out.string < graph.strings.size(),
+          "Protein URI string outside graph");
+  auto source = detail::xref_string(graph.strings[out.string], true);
+  read.path = std::move(source.value);
+  if (!source.valid) {
+    read.status = ExternalReadPathStatus::invalid_encoding;
+    return out;
+  }
+  return out;
+}
+} // namespace
+ProteinUriReadResolution
+ExternalReferenceIndex::query_protein(ProteinUriReadResolution out,
+                                      FileUrlType url_type) const {
+  auto &read = out.reference;
+  if (out.embedded || read.status != ExternalReadPathStatus::original)
+    return out;
+  const auto &path = read.path;
+  // LcUSysFile::IsAbsoluteW, verified in both generations. It deliberately
+  // accepts any first UTF-16 unit in X:/ and requires two leading backslashes.
+  const bool absolute =
+      (!path.empty() && path[0] == u'/') ||
+      (path.size() >= 3 && path[1] == u':' &&
+       (path[2] == u'/' || path[2] == u'\\')) ||
+      (path.size() >= 2 && path[0] == u'\\' && path[1] == u'\\');
+  out.uses_xref = url_type == FileUrlType::remote ||
+                  (url_type == FileUrlType::local && absolute);
+  if (out.uses_xref)
+    read = impl->query(std::move(read));
+  return out;
+}
+ProteinUriReadResolution
+ExternalReferenceIndex::resolve_protein_uri(const ObjectGraph &graph, Id owner,
+                                            Id property, Id ordinal,
+                                            FileUrlType url_type) const {
+  detail::require(url_type == FileUrlType::local ||
+                      url_type == FileUrlType::remote ||
+                      url_type == FileUrlType::unsupported,
+                  "invalid Protein URI protocol classification");
+  return query_protein(read_protein_uri(graph, owner, property, ordinal),
+                       url_type);
+}
+ProteinUriReadResolution ExternalReferenceIndex::resolve_protein_uri(
+    const ObjectGraph &graph, Id owner, Id property, Id ordinal,
+    const FileProtocolContext &context, FileUrlGeneration generation) const {
+  auto out = read_protein_uri(graph, owner, property, ordinal);
+  if (out.embedded || out.reference.status != ExternalReadPathStatus::original)
+    return out;
+  out.classification = context.classify(out.reference.path, generation);
+  const auto type = out.classification->type;
+  return query_protein(std::move(out), type);
+}
+ProteinUriReadResolution ExternalReferenceIndex::resolve_protein_uri(
+    const ProteinGraphIndex &index, Id owner, Id property, Id ordinal,
+    const FileProtocolContext &context, FileUrlGeneration generation) const {
+  const auto &slot = index.uri(owner, property, ordinal);
+  auto out = read_protein_uri(index.graph(), owner, property, ordinal, &slot);
+  if (out.embedded || out.reference.status != ExternalReadPathStatus::original)
+    return out;
+  out.classification = context.classify(out.reference.path, generation);
+  const auto type = out.classification->type;
+  return query_protein(std::move(out), type);
 }
 TextStyleResolution resolve_text_style(const Model &model, const Geometry &g) {
   if (g.type != 103)

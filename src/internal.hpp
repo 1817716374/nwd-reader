@@ -183,18 +183,35 @@ void read_publish_body(Cursor &r, uint32_t &flags, StringReader string_reader,
   for (unsigned i = 4; i < 8; ++i)
     string_reader(i);
 }
+// LcOglJsonProteinAsset::Read selects a legacy graph before wire443.
+constexpr uint32_t protein_asset_wire_type(uint32_t version) {
+  return version < 443 ? 182u : 185u;
+}
 template <class ReferenceReader>
-Appearance read_appearance(Cursor &r, ReferenceReader reference) {
+Appearance read_appearance(Cursor &r, uint32_t version,
+                           ReferenceReader reference) {
   Appearance a;
   a.flags = r.u32();
   if (a.flags & 1)
     a.material = reference(54);
   if (a.flags & 32)
-    a.asset = reference(185);
-  constexpr std::array<uint32_t, 4> bits{64, 2, 4, 8};
+    a.asset = reference(protein_asset_wire_type(version));
+  constexpr std::array<uint32_t, 3> bits{64, 2, 4};
   for (unsigned i = 0; i < bits.size(); ++i)
     if (a.flags & bits[i])
       a.overrides[i] = r.u32();
+  if (version >= 405) {
+    if (a.flags & 8)
+      a.overrides[3] = r.u32();
+  } else if (a.flags & 2) {
+    auto saved = r.u32();
+    if (a.flags & 8)
+      a.overrides[3] = saved;
+    else
+      a.legacy_discarded_enum = saved;
+  } else if (a.flags & 8) {
+    a.legacy_face_mode_default = true;
+  }
   return a;
 }
 inline EmbeddedAssetFile read_embedded_asset(Cursor &r, std::string name,
@@ -280,10 +297,12 @@ class ObjectReader {
 
 public:
   ObjectReader(std::span<const uint8_t>, ObjectGraph &, uint32_t, Options = {},
-               const GeometryStreamContext * = nullptr);
+               const GeometryStreamContext * = nullptr,
+               bool track_wire_objects = false);
   ~ObjectReader();
   Id object(Cursor &);
   Id string(Cursor &);
+  std::span<const std::pair<uint32_t, Id>> wire_objects() const;
 };
 void read_source_references(Cursor &, std::vector<NwfReference> &,
                             ObjectReader &, uint32_t version,

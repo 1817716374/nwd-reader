@@ -287,10 +287,11 @@ class Loader {
     return resolve_path(owner, path(requested), remaps);
   }
   // mode 0: binary ReadXRef; 1: JSON asset's converted QueryXRef;
-  // mode 2: JSON-only URI (not a saved file-reference field).
+  // mode 2: JSON-only URI; mode 3: preclassified Protein URI read.
   std::shared_ptr<const ProjectFileReference>
   file_reference(Id sid, const std::string &requested, unsigned mode,
-                 bool null = false) {
+                 bool null = false,
+                 const ProteinUriReadResolution *protein = nullptr) {
     const auto cache_key = std::tuple{sid, requested, mode, null};
     if (auto found = file_references.find(cache_key);
         found != file_references.end())
@@ -298,16 +299,19 @@ class Loader {
     auto result = std::make_shared<ProjectFileReference>();
     auto &r = *result;
     r.requested_path = requested;
-    r.uses_xref = mode != 2;
+    r.uses_xref = protein ? protein->uses_xref : mode != 2;
+    if (protein)
+      r.protein_classification = protein->classification;
     const auto &owner = out.sources.at(sid).path;
     try {
       auto &context = file_context(owner);
       r.scope_status = context.scope;
       r.xref_block = context.block;
       ExternalReadPathResolution read;
-      auto wide = xref_string(requested, mode == 0);
+      const bool binary = mode == 0 || mode == 3;
+      auto wide = xref_string(requested, binary);
       std::optional<Resolution> caller_override;
-      if (!null && (wide.valid || mode != 0) && !wide.value.empty() &&
+      if (!null && (wide.valid || !binary) && !wide.value.empty() &&
           !options.remaps.empty()) {
         std::vector<std::filesystem::path> candidates;
         const auto original_key = key(path(wide.value));
@@ -320,15 +324,17 @@ class Loader {
       r.source_encoding_replaced = !null && !wide.valid;
       if (null) {
         read.status = ExternalReadPathStatus::null_path;
-      } else if (mode == 0 && !wide.valid) {
+      } else if (binary && !wide.valid) {
         read.status = ExternalReadPathStatus::invalid_encoding;
         read.path = std::move(wide.value);
-      } else if (mode != 2 && !context.xrefs) {
+      } else if (r.uses_xref && !context.xrefs) {
         r.status = context.scope == ExternalReferenceScopeStatus::ambiguous
                        ? "xref_ambiguous"
                        : "xref_unavailable";
         r.diagnostic = context.diagnostic;
         r.read_path = std::move(wide.value);
+      } else if (protein) {
+        read = protein->reference;
       } else if (mode != 2) {
         read = context.xrefs->query_path(wide.value);
       } else {
@@ -348,6 +354,12 @@ class Loader {
           r.caller_remapped = true;
           r.status = caller_override->status;
           r.file = caller_override->file;
+        } else if (protein && protein->classification &&
+                   (protein->classification->status !=
+                        FileUrlStatus::classified ||
+                    protein->classification->type ==
+                        FileUrlType::unsupported)) {
+          r.status = "protocol_unresolved";
         } else if (r.read_path.empty())
           r.status = "empty_path";
         else if (r.read_path.starts_with(u"nwd:")) {
@@ -971,11 +983,84 @@ class Loader {
           active_assets.emplace(sid, mid, asset);
       }
     }
+    std::map<const ObjectGraph *, ProteinGraphIndex> protein_indices;
+    ExternalReferenceTable empty_table;
+    ExternalReferenceIndex empty_xrefs(empty_table);
     auto collect = [&](Id sid, Id mid, const Model &arena) {
       auto &s = out.sources.at(sid);
       for (Id aid = 0; aid < arena.assets.size(); ++aid) {
         const auto &a = arena.assets[aid];
         bool active = active_assets.contains({sid, mid, aid});
+        if (a.protein) {
+          try {
+            const auto &ref = *a.protein;
+            require(ref.record_graph || ref.graph < arena.graphs.size(),
+                    "Protein asset graph outside model");
+            const auto &graph =
+                ref.record_graph ? *ref.record_graph : arena.graphs[ref.graph];
+            auto found = protein_indices.find(&graph);
+            if (found == protein_indices.end())
+              found = protein_indices
+                          .try_emplace(&graph, graph,
+                                       ref.record_graph ? 0 : ref.graph)
+                          .first;
+            const auto &index = found->second;
+            auto &context = file_context(s.path);
+            const auto &xrefs = context.xrefs ? *context.xrefs : empty_xrefs;
+            for (const auto reachable : index.reachable(ref.object))
+              for (const auto &slot : index.uris(reachable.object)) {
+                require(out.textures.size() < options.reader.max_objects,
+                        "Protein texture record limit");
+                const auto uri = xrefs.resolve_protein_uri(
+                    index, slot.owner, slot.property, slot.ordinal,
+                    options.protein_protocols, options.protein_url_generation);
+                TextureFile t;
+                t.source = sid;
+                t.model = mid;
+                t.asset = aid;
+                t.protein_uri = slot;
+                t.enabled_path = reachable.enabled_path;
+                t.active = active && reachable.enabled_path;
+                if (slot.string != none)
+                  t.alias = graph.strings[slot.string];
+                t.requested_path = t.alias;
+                if (uri.embedded) {
+                  t.status = "embedded";
+                  if (ref.record_graph)
+                    t.bytes = {ref.record_graph, &uri.embedded->bytes};
+                  else if (s.scene)
+                    t.bytes = {s.scene, &uri.embedded->bytes};
+                  else
+                    t.bytes = {s.nwf, &uri.embedded->bytes};
+                } else {
+                  t.reference = file_reference(sid, t.requested_path, 3,
+                                               slot.string == none, &uri);
+                  t.status = t.reference->status;
+                  t.resolved_path = t.reference->file;
+                  try {
+                    t.bytes = reference_bytes(*t.reference);
+                  } catch (const std::exception &e) {
+                    t.status = "resource_read_error";
+                    if (t.active)
+                      missing("Protein resource read failed: " +
+                              t.requested_path + ": " + e.what());
+                  }
+                  if (!t.bytes && t.active)
+                    missing("Protein URI " + t.status + ": " +
+                            t.requested_path);
+                }
+                out.textures.push_back(std::move(t));
+              }
+          } catch (const Error &e) {
+            if (active)
+              missing(e.what());
+            // Inactive graph failures must also remain inspectable.
+            else
+              out.warnings.push_back(std::string("inactive Protein asset: ") +
+                                     e.what());
+          }
+          continue;
+        }
         AssetDescription desc;
         try {
           desc = describe_asset(a);

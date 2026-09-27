@@ -481,7 +481,8 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
     case 80:
       s.material_asset = objects.object(r);
       require(s.material_asset == none ||
-                  out.objects.objects.at(s.material_asset).type == 185,
+                  out.objects.objects.at(s.material_asset).type ==
+                      protein_asset_wire_type(version),
               "saved material asset type");
       break;
     case 70:

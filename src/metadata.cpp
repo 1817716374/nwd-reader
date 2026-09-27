@@ -17,6 +17,7 @@ class GraphReader {
   };
   ActiveNode *active_node = nullptr;
   std::vector<Id> ids;
+  std::vector<std::pair<uint32_t, Id>> *wire_objects = nullptr;
   std::unordered_map<std::string, Id> strings;
   unsigned depth = 0;
   GeometryObjectArena &geometry_arena() {
@@ -196,8 +197,13 @@ class GraphReader {
     p.count = count();
     p.enabled = r.u32() != 0;
     auto n = version >= 242 ? count() : 1;
-    for (uint32_t j = 0; j < n; ++j)
-      p.connections.push_back(ref());
+    for (uint32_t j = 0; j < n; ++j) {
+      const auto connection = ref();
+      require(connection.object == none ||
+                  graph.objects[connection.object].type == 182,
+              "Protein connection asset type");
+      p.connections.push_back(connection);
+    }
     switch (p.type) {
     case 0:
     case 11:
@@ -397,10 +403,12 @@ class GraphReader {
 public:
   GraphReader(std::span<const uint8_t> b, ObjectGraph &g, Id gid, uint32_t ver,
               const Options &op, bool root = false,
-              const GeometryStreamContext *context = nullptr)
+              const GeometryStreamContext *context = nullptr,
+              std::vector<std::pair<uint32_t, Id>> *wire = nullptr)
       : r(b, "metadata graph " + std::to_string(gid)), graph(g), graph_id(gid),
         version(ver), options(op), root_partition(root),
-        geometry_context(context ? std::optional(*context) : std::nullopt) {
+        geometry_context(context ? std::optional(*context) : std::nullopt),
+        wire_objects(wire) {
     require(!context || context->version == version,
             "geometry context version mismatch");
   }
@@ -435,6 +443,8 @@ public:
     // Publish the saved class identity before nested fields can refer back to
     // this object. Payload completion is still checked by the sparse arenas.
     graph.objects[index].type = o.type;
+    if (wire_objects)
+      wire_objects->emplace_back(id, index);
     switch (o.type) {
     case 3: {
       auto &arena = geometry_arena();
@@ -888,15 +898,17 @@ public:
         o.numbers.push_back(r.f32());
       break;
     case 55: {
-      auto a = read_appearance(r, [&](uint32_t type) {
+      auto a = read_appearance(r, version, [&](uint32_t type) {
         Id child = object();
-        require(child != none && graph.objects[child].type == type,
+        require(child == none || graph.objects[child].type == type,
                 "appearance child type");
         return child;
       });
       o.flags = a.flags;
       o.references = {{graph_id, a.material}, {graph_id, a.asset}};
       o.integers.assign(a.overrides.begin(), a.overrides.end());
+      if (a.legacy_discarded_enum)
+        o.integers.push_back(*a.legacy_discarded_enum);
       break;
     }
     case 52:
@@ -1113,6 +1125,10 @@ public:
     case 200:
       common(o);
       o.references.push_back(ref());
+      require(o.references.back().object == none ||
+                  graph.objects[o.references.back().object].type ==
+                      protein_asset_wire_type(version),
+              "Protein material attribute asset type");
       break;
     case 97:
       common(o);
@@ -1139,8 +1155,12 @@ public:
       auto n = count();
       for (uint32_t j = 0; j < n; ++j)
         o.protein_properties.push_back(protein(index));
-      if (version >= 254)
+      if (version >= 254) {
         o.references.push_back(ref());
+        require(o.references.back().object == none ||
+                    graph.objects[o.references.back().object].type == 183,
+                "Protein asset schema type");
+      }
       if (version >= 411) {
         r.align(4);
         auto b = r.raw(16);
@@ -1168,6 +1188,9 @@ public:
       auto b = r.raw(n);
       o.bytes.assign(b.begin(), b.end());
       o.references.push_back(ref());
+      require(o.references.back().object == none ||
+                  graph.objects[o.references.back().object].type == 183,
+              "Protein schema parent type");
       break;
     }
     case 185: {
@@ -1245,18 +1268,24 @@ public:
 };
 struct ObjectReader::Impl {
   Options options;
+  std::vector<std::pair<uint32_t, Id>> wire_objects;
   GraphReader reader;
   Impl(std::span<const uint8_t> b, ObjectGraph &g, uint32_t v, Options o,
-       const GeometryStreamContext *context)
-      : options(std::move(o)), reader(b, g, 0, v, options, false, context) {}
+       const GeometryStreamContext *context, bool track)
+      : options(std::move(o)), reader(b, g, 0, v, options, false, context,
+                                      track ? &wire_objects : nullptr) {}
 };
 ObjectReader::ObjectReader(std::span<const uint8_t> b, ObjectGraph &g,
                            uint32_t v, Options options,
-                           const GeometryStreamContext *context)
-    : impl(std::make_unique<Impl>(b, g, v, std::move(options), context)) {}
+                           const GeometryStreamContext *context, bool track)
+    : impl(std::make_unique<Impl>(b, g, v, std::move(options), context,
+                                  track)) {}
 ObjectReader::~ObjectReader() = default;
 Id ObjectReader::object(Cursor &r) { return impl->reader.external(r, false); }
 Id ObjectReader::string(Cursor &r) { return impl->reader.external(r, true); }
+std::span<const std::pair<uint32_t, Id>> ObjectReader::wire_objects() const {
+  return impl->wire_objects;
+}
 void read_partition(Model &model, std::span<const uint8_t> part,
                     uint32_t version, const Options &options,
                     const GeometryStreamContext *context) {

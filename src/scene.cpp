@@ -22,13 +22,30 @@ class Fragments {
   const Options &options;
   std::vector<Ref> references;
   std::unordered_multimap<uint64_t, Id> transforms;
+  std::shared_ptr<ObjectGraph> protein_graph;
+  std::unique_ptr<ObjectReader> protein_reader;
+  std::unordered_map<Id, Id> protein_assets;
+  size_t protein_wire_count = 0;
   uint32_t depth = 0;
+  Id protein_asset(Id object) {
+    if (object == none)
+      return none;
+    auto [it, added] =
+        protein_assets.try_emplace(object, static_cast<Id>(m.assets.size()));
+    if (added) {
+      Asset asset;
+      asset.protein = ProteinAssetReference{none, object, protein_graph};
+      m.assets.push_back(std::move(asset));
+    }
+    return it->second;
+  }
   Ref object() {
     require(++depth < 128, "fragment object recursion limit");
     struct Depth {
       uint32_t &d;
       ~Depth() { --d; }
     } depth_guard{depth};
+    const auto start = r.pos;
     uint32_t id = r.u32();
     if (!id)
       return {};
@@ -45,6 +62,8 @@ class Fragments {
     require(references[id].type == 0, "duplicate object ID");
     uint32_t type = r.u32();
     Ref ref{type, none};
+    if (type != 182)
+      references[id] = ref; // reserve before children can redefine this wire ID
     if (type == 13) {
       Instance x;
       x.precision = r.f64();
@@ -102,13 +121,30 @@ class Fragments {
       ref.index = static_cast<Id>(m.materials.size());
       m.materials.push_back(material);
     } else if (type == 55) {
-      auto a = read_appearance(r, [&](uint32_t type) {
+      auto a = read_appearance(r, version, [&](uint32_t type) {
         auto child = object();
-        require(child.type == type, "appearance child type");
-        return child.index;
+        require(!child.type || child.type == type, "appearance child type");
+        return type == 182 ? protein_asset(child.index) : child.index;
       });
       ref.index = static_cast<Id>(m.appearances.size());
       m.appearances.push_back(a);
+    } else if (type == 182) {
+      if (!protein_reader) {
+        protein_graph = std::make_shared<ObjectGraph>();
+        protein_reader = std::make_unique<ObjectReader>(
+            r.data, *protein_graph, version, options, nullptr, true);
+      }
+      r.pos = start;
+      ref.index = protein_reader->object(r);
+      const auto definitions = protein_reader->wire_objects();
+      for (; protein_wire_count < definitions.size(); ++protein_wire_count) {
+        auto [wire, object] = definitions[protein_wire_count];
+        if (wire >= references.size())
+          references.resize(wire + 1);
+        require(references[wire].type == 0,
+                "Protein graph redefines a fragment wire ID");
+        references[wire] = {protein_graph->objects[object].type, object};
+      }
     } else if (type == 185) {
       Asset a;
       a.json = r.string();
@@ -178,8 +214,9 @@ public:
     }
     if (version >= 438) {
       auto a = object();
-      require(!a.type || a.type == 185, "unsupported NWF global asset");
-      data.global_asset = a.index;
+      require(!a.type || a.type == protein_asset_wire_type(version),
+              "unsupported NWF global asset");
+      data.global_asset = a.type == 182 ? protein_asset(a.index) : a.index;
     }
     r.exact();
   }

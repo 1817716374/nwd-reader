@@ -31,9 +31,27 @@ static int run(const std::filesystem::path &file) {
                       << " transparency " << m.transparency() << '\n';
           }
           if (a.asset != nwd::none) {
-            auto graph = nwd::describe_asset(arena.assets.at(a.asset));
-            std::cout << graph.nodes.size() << " asset nodes, "
-                      << graph.uris.size() << " URIs\n";
+            const auto &asset = arena.assets.at(a.asset);
+            if (asset.protein) {
+              const auto &origin = *asset.protein;
+              const auto &graph = origin.record_graph
+                                      ? *origin.record_graph
+                                      : arena.graphs.at(origin.graph);
+              const auto graph_id = origin.record_graph ? 0 : origin.graph;
+              const auto fields = nwd::protein_asset_fields(
+                  graph, origin.object, project.sources.at(ref.source).version,
+                  graph_id);
+              nwd::ProteinGraphIndex assets(graph, graph_id);
+              std::cout << assets.reachable(origin.object).size()
+                        << " connected Protein assets";
+              if (fields.ui_name && *fields.ui_name != nwd::none)
+                std::cout << ": " << graph.strings.at(*fields.ui_name);
+              std::cout << '\n';
+            } else {
+              const auto graph = nwd::describe_asset(asset);
+              std::cout << graph.nodes.size() << " asset nodes, "
+                        << graph.uris.size() << " URIs\n";
+            }
           }
         }
         // Throws for explicitly unvalidated NWF placements; inspect raw
@@ -51,12 +69,17 @@ static int run(const std::filesystem::path &file) {
       if (t.reference)
         std::cout << ", XRef entry " << t.reference->xref_entry
                   << ", resource block " << t.reference->resource_block;
+      if (t.protein_uri)
+        std::cout << ", Protein object/property/ordinal "
+                  << t.protein_uri->owner << '/' << t.protein_uri->property
+                  << '/' << t.protein_uri->ordinal << ", enabled path "
+                  << t.enabled_path;
       std::cout << '\n';
     }
     for (const auto &g : project.external_geometry_files)
       std::cout << "external source/model/geometry " << g.source << '/'
-                << g.model << '/' << g.geometry << ": "
-                << g.reference->status << '\n';
+                << g.model << '/' << g.geometry << ": " << g.reference->status
+                << '\n';
     return project.complete ? 0 : 3;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';
