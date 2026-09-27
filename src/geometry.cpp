@@ -393,7 +393,9 @@ static Geometry geometry_record(std::span<const uint8_t> data,
                                 unsigned normal_bits, bool raw_coordinates,
                                 bool raw_strips,
                                 const detail::GeometryStreamContext *context,
-                                uint64_t max_entries = 100000000) {
+                                uint64_t max_entries = 100000000,
+                                uint32_t text_version = UINT32_MAX,
+                                bool use_shared_nodes = true) {
   using namespace detail;
   require(context || normal_bits == 8 || normal_bits == 16,
           "unsupported normal precision");
@@ -403,29 +405,47 @@ static Geometry geometry_record(std::span<const uint8_t> data,
   g.type = r.u32();
   if (g.type == 181) {
     auto e = std::make_shared<ExternalGeometry>();
-    e->loader = r.string();
-    e->format = r.string();
-    e->source_path = r.string();
-    e->payload_record_offset = r.pos;
+    read_external_header(r, *e);
     auto payload = r.raw(r.data.size() - r.pos);
     e->unparsed_payload.assign(payload.begin(), payload.end());
     g.external = std::move(e);
     return g;
   }
   if (g.type == 103) {
-    g.text = r.string();
-    for (unsigned j = 0; j < 12; ++j)
-      g.parameters[j] = r.f32();
-    g.text_style = r.u32();
+    if (context) {
+      text_version = context->version;
+      use_shared_nodes = context->use_shared_nodes;
+    }
+    if (!use_shared_nodes) {
+      auto graph = std::make_shared<ObjectGraph>();
+      GeometryStreamContext local =
+          context ? *context : GeometryStreamContext{};
+      local.version = text_version;
+      Options options;
+      options.max_objects = max_entries;
+      r.pos = 0;
+      ObjectReader reader(data, *graph, text_version, options, &local);
+      const auto root = reader.object(r);
+      r.exact();
+      require(root == 0 && graph->geometry_arena &&
+                  !graph->geometry_arena->special.empty(),
+              "text page root");
+      g = graph->geometry_arena->special.front().data;
+      auto fields = std::make_shared<TextGeometryFields>(*g.text_fields);
+      fields->record_graph = std::move(graph); // clone avoids a graph cycle
+      g.text_fields = std::move(fields);
+      return g;
+    }
+    auto fields = read_text_parameters(r, g, text_version);
+    fields->uses_shared_nodes = true;
+    fields->shared_node_index = r.read<int32_t>();
+    g.text_style = static_cast<Id>(fields->shared_node_index);
+    g.text_fields = std::move(fields);
     r.exact();
     return g;
   }
   if (g.type == 104 || g.type == 105) {
-    g.flags = r.u32();
-    unsigned nf = g.type == 104 ? 10 : 13;
-    for (unsigned j = 0; j < nf; ++j)
-      g.parameters[j] = r.f32();
-    require(g.parameters[nf - 1] >= 0, "negative radius");
+    read_analytic_fields(r, g);
     r.exact();
     return g;
   }
@@ -518,7 +538,8 @@ std::vector<uint32_t> triangle_indices(const Geometry &g) {
 } // namespace nwd
 namespace nwd::detail {
 void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
-                   const Options &o, const GeometryStreamContext *context) {
+                   const Options &o, const GeometryStreamContext *context,
+                   uint32_t wire_version, bool use_shared_nodes) {
   require(c.flags == 1, "unsupported geometry chunk encoding");
   require(c.prefix_bytes && c.index_bytes &&
               c.index_bytes < c.size - c.prefix_bytes,
@@ -580,7 +601,8 @@ void read_geometry(Model &model, std::span<const uint8_t> file, const Chunk &c,
         model.geometries[i] =
             context
                 ? decode_geometry_record(data, *context, o.normal_bits, limit)
-                : geometry_record(data, bits, raw, raw, nullptr, limit);
+                : geometry_record(data, bits, raw, raw, nullptr, limit,
+                                  wire_version, use_shared_nodes);
       } catch (const Error &e) {
         throw Error("record " + std::to_string(i + 1) + ": " + e.what());
       }

@@ -40,8 +40,38 @@ struct GeometryStreamContext {
   GeometryCompression compression;
   bool paged = false;
   std::optional<uint32_t> geometry_record_count; // source table, if supplied
+  bool use_shared_nodes = false; // separate from paging; set after shared load
+  // Borrowed immutable scene table; absent differs from a present empty table.
+  std::optional<std::span<const SchemaDefinition>> schemas;
   bool reference_uses_store() const { return version >= 25 && paged; }
 };
+
+inline void read_external_header(Cursor &r, ExternalGeometry &e) {
+  e.loader = r.string(&e.null_strings[0]);
+  e.format = r.string(&e.null_strings[1]);
+  // ReadXRef consumes a wide string both with and without a remapping context.
+  // Preserve the saved path here; resolution must not overwrite source data.
+  e.source_path = r.string(&e.null_strings[2]);
+  e.payload_record_offset = r.pos;
+}
+void read_external_body(Cursor &, ExternalGeometry &,
+                        std::span<const SchemaDefinition>, uint32_t version);
+
+inline void read_analytic_fields(Cursor &r, Geometry &g) {
+  require(g.type == 104 || g.type == 105, "analytic geometry type");
+  g.flags = r.u32();
+  for (unsigned i = 0; i < (g.type == 104 ? 10u : 13u); ++i)
+    g.parameters[i] = r.read<float>(); // retain signed/nonfinite source values
+}
+inline std::shared_ptr<TextGeometryFields>
+read_text_parameters(Cursor &r, Geometry &g, uint32_t version) {
+  auto fields = std::make_shared<TextGeometryFields>();
+  g.text = r.string(&fields->text_is_null);
+  fields->parameter_count = version < 103 ? 8 : 12;
+  for (unsigned i = 0; i < fields->parameter_count; ++i)
+    g.parameters[i] = r.read<float>();
+  return fields;
+}
 
 inline GeometryCompression read_geometry_compression(Cursor &r,
                                                      uint32_t version) {

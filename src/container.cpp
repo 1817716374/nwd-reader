@@ -366,7 +366,9 @@ Scene Document::read_scene() const {
         auto bytes = read_product_payload(found->second);
         Cursor fields(bytes, compression_name);
         geometry_context = GeometryStreamContext{
-            version(), read_geometry_compression(fields, version()), true, {}};
+            version(), read_geometry_compression(fields, version()),
+            true,      {},
+            false,     {}};
         fields.exact();
         out.parsed_chunks[found->second] = true;
       }
@@ -389,7 +391,9 @@ Scene Document::read_scene() const {
           geometry_context.emplace();
         auto &context = *geometry_context;
         context.version = version();
+        context.schemas = out.schemas;
         const auto geometry = find_optional("LcOpNwdGeometry");
+        const auto shared = find_optional("LcOpNwdSharedNodes");
         context.paged = geometry.has_value();
         if (impl_->options.normal_bits) {
           require(impl_->options.normal_bits <= 32,
@@ -398,8 +402,10 @@ Scene Document::read_scene() const {
               static_cast<uint8_t>(impl_->options.normal_bits);
         }
         if (geometry) {
+          auto page_context = context;
+          page_context.use_shared_nodes = shared.has_value();
           read_geometry(m, impl_->file, out.chunks[*geometry], impl_->options,
-                        &context);
+                        &page_context);
           context.geometry_record_count =
               static_cast<uint32_t>(m.geometries.size());
           out.parsed_chunks[*geometry] = true;
@@ -409,17 +415,14 @@ Scene Document::read_scene() const {
         read_partition(m,
                        read_chunk(static_cast<size_t>(&c - out.chunks.data())),
                        version(), impl_->options, &context);
-        if (const auto shared = find_optional("LcOpNwdSharedNodes")) {
-          read_shared_nodes(m, read_chunk(*shared), version(), impl_->options);
+        if (shared) {
+          read_shared_nodes(m, read_chunk(*shared), version(), impl_->options,
+                            &context);
           out.parsed_chunks[*shared] = true;
         }
         project_inline_model(m, version(), impl_->options);
         m.raw_coordinates = !(context.compression.flags & 1);
         m.normal_bits = context.compression.normal_precision;
-        for (const auto &g : m.geometries)
-          if (g.type == 103)
-            require(g.text_style < m.shared_nodes.roots.size(),
-                    "text style outside shared nodes");
         const auto unresolved =
             std::count_if(m.inline_projection->instances.begin(),
                           m.inline_projection->instances.end(),
@@ -433,13 +436,26 @@ Scene Document::read_scene() const {
           out.warnings.push_back(m.name +
                                  ": legacy appearance extra fields retained in "
                                  "source arena; only base material projected");
-      } else
+      } else {
+        const auto shared_name = m.name.empty()
+                                     ? "LcOpNwdSharedNodes"
+                                     : m.name + "\\LcOpNwdSharedNodes";
+        const bool use_shared = std::any_of(
+            out.chunks.begin(), out.chunks.end(),
+            [&](const Chunk &chunk) { return chunk.name == shared_name; });
+        auto page_context = geometry_context;
+        if (page_context)
+          page_context->use_shared_nodes = use_shared;
         read_geometry(m, impl_->file, c, impl_->options,
-                      geometry_context ? &*geometry_context : nullptr);
+                      page_context ? &*page_context : nullptr, version(),
+                      use_shared);
+      }
       size_t external_count = 0;
       for (auto &g : m.geometries)
         if (g.external) {
           ++external_count;
+          if (g.external->payload_decoded)
+            continue;
           auto e = std::make_shared<ExternalGeometry>(*g.external);
           decode_external_payload(*e, out.schemas, version());
           g.external = std::move(e);
@@ -494,7 +510,9 @@ Scene Document::read_scene() const {
       if (impl_->options.metadata) {
         phase = std::chrono::steady_clock::now();
         read_metadata(m, impl_->file, out.chunks, version(), impl_->options,
-                      out.parsed_chunks);
+                      out.parsed_chunks,
+                      geometry_context ? &*geometry_context : nullptr,
+                      out.schemas);
         for (Id schema : m.schema_references)
           require(schema == none || schema < out.schemas.size(),
                   "partition schema reference outside global table");

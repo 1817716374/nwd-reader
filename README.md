@@ -95,7 +95,7 @@ if (directions.front) {
 
 字段访问支持内部线流版本 53 起的已解码布局，109 前 `front` 为空。这个字段范围不扩展整文件读取的兼容范围。返回值保留零向量、非单位向量和非有限值，不进行方向修补、单位换算或 NWF 放置；它表示分区保存的方向，不能直接当作最终项目方向。错误对象类型、版本或数字字段数量抛出 `nwd::Error`，没有序列化内容的合成层级根也会被拒绝。成功路径只复制固定数量的数字，不分配堆内存；独立对象可由调用方并行查询。
 
-分区解码按各字段的线流门槛消费数据：方向标志从 45 起、up/north 从 53 起、源文件名从 57 起、语言信息从 80 起。未保存的字符串槽保留 `nwd::none`，未保存的方向不补进原始数字数组；整数槽中的缺省 0 须结合版本区分是否保存。内部版本 22～27 的分区内嵌布局可从场景入口读取；22 前的完整分区布局仍不支持。这些规则针对分区记录，不表示同版本的所有容器、几何和属性布局均已支持。
+分区解码按各字段的线流门槛消费数据：方向标志从 45 起、up/north 从 53 起、源文件名从 57 起、语言信息从 80 起。未保存的字符串槽保留 `nwd::none`，未保存的方向不补进原始数字数组；整数槽中的缺省 0 须结合版本区分是否保存。内部版本 0～27 的已支持对象类别可从分区内嵌场景入口读取；更早格式中的其他类别仍有兼容限制。这些规则针对分区记录，不表示同版本的所有容器、几何和属性布局均已支持。
 
 示例 [examples/partition_orientation.cpp](examples/partition_orientation.cpp) 读取 NWD/NWC 各模型的根分区：`nwd_partition_orientation_example model.nwd`。
 
@@ -113,9 +113,9 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 ## 旧版内嵌模型与来源对象
 
-`Document::read_scene()` 支持内部线流版本 22～27 的内嵌模型，以及 25～27 的独立几何表引用；NWF 引用加载复用同一入口。这些编号是文件内部版本，不是 Navisworks 产品年份。目前旧布局主要通过构造数据验证，真实旧文件与不同导出器的覆盖仍有限，不能据此推断所有对应版本文件均可读取。
+`Document::read_scene()` 支持内部线流版本 0～27 的已支持类别内嵌模型，以及 25～27 的独立几何表引用；NWF 引用加载复用同一入口。这些编号是文件内部版本，不是 Navisworks 产品年份。目前旧布局主要通过构造数据验证，真实旧文件与不同导出器的覆盖仍有限，不能据此推断所有对应版本文件均可读取。
 
-已实现的旧共享数据包括三角带、折线、点、坐标及法线/颜色/UV 数组、几何引用、变换、材质和外观。不同形状复用同一个来源几何时，`Model::geometries` 只保存一份；不同来源对象即使数值相同也保留独立身份。不同几何共享坐标数组时，兼容的 `Geometry` 表仍可能各保存一份数值数组；原始共享关系保留在 `ObjectGraph::geometry_arena`。
+已实现的旧共享数据包括三角带、折线、点、文字、圆、圆柱、外部几何描述、坐标及法线/颜色/UV 数组、几何引用、变换、材质和外观。不同形状复用同一个来源几何时，`Model::geometries` 只保存一份；不同来源对象即使数值相同也保留独立身份。不同几何共享坐标数组时，兼容的 `Geometry` 表仍可能各保存一份数值数组；原始共享关系保留在 `ObjectGraph::geometry_arena`。
 
 `Model::inline_projection` 将分区图内的 `owner` 映射到对应 Model 表的 `value`。每个成功绑定的形状对象生成一个实例，重复空间引用不扩增实例；未绑定形状的映射值是 `nwd::none`。`inline_partition` 保存逻辑路径候选、形状绑定状态和独立的空间出现树。逻辑路径编号、空间出现编号和来源对象编号属于不同的索引空间。访问结构树请使用 `path_reference()`、`path_object()` 和 `ModelIndex`，不要固定假设所有节点都位于 `graphs[1]`。
 
@@ -123,7 +123,19 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 旧模型的逻辑与几何数据交织保存，`Options::metadata=false` 仍会读取解析几何所需的分区图；旧模型的 `geometry_ms` 包含这部分读取和投影时间。共享几何投影可按 `Options::threads` 并行执行。使用示例见 [examples/inline_model.cpp](examples/inline_model.cpp)。
 
-尚未支持的更早分区、共享几何类别或编码明确报错；未绑定形状和未消费块保持可检查。整文件兼容性以实际返回状态为准。静态库与调用方需使用同一版本头文件并重新编译。
+尚未支持的旧对象类别、共享几何类别或编码明确报错；未绑定形状和未消费块保持可检查。整文件兼容性以实际返回状态为准。静态库与调用方需使用同一版本头文件并重新编译。
+
+## 文字、解析几何与外部描述
+
+文字的 `Geometry::text_fields` 保留参数数量、字符串是否为 NULL，以及样式采用共享表索引还是图内对象引用。通过 `resolve_text_style(model, geometry)` 获取样式与状态：`resolved` 表示可用的文字样式，`null_style` 表示空样式，`unavailable` 表示表未加载或索引不可用，`wrong_type` 表示原始引用指向其他类别。返回的图视图依赖所属 Model/Geometry 的有效期；原始引用仍可检查，不能把不同索引空间混用。
+
+内部版本 103 前文字保存 8 个参数，之后为 12 个，均按原始顺序存入 `parameters`。圆的前 9 个参数分别是原点、X 轴和 Y 轴，最后一个是半径；圆柱保存两个原点、两组附加向量和半径。库返回参数，不生成字形或离散曲面；负值、负零及非有限值保留，调用方自行决定处理策略。
+
+`Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；外部 RCS/RCP 或插件几何本体仍可能不可用，场景会报告警告。`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
+
+`ExternalReferenceIndex(table)` 为调用方选定的 `ExternalReferenceTable` 构建路径查询索引。`resolve(descriptor)` 使用区分大小写的完整路径键，返回原路径、重映射路径、NULL 或歧义状态；`entries` 保留对应的原始表位置。重复键不会按同名或相同值合并，索引也不执行目录前缀替换、磁盘搜索或自动跨模型选择引用表。使用返回视图期间，索引、源表和描述必须保持有效且不变。内嵌 NUL、非法 UTF8 与原生重复键覆盖规则尚未完整支持。
+
+旧节点的修改对象记录保存在 `ObjectGraph::legacy_nodes`；旧分区附加字符串及字段存在性保存在 `legacy_partitions`。接口保留源数据，不隐式执行旧修改操作。裸 `decode_geometry()` 沿用现代独立记录约定；读取跨版本文件请使用 `Document`。示例见 [examples/geometry_descriptors.cpp](examples/geometry_descriptors.cpp)。
 
 ## 构建
 

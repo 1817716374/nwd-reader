@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "geometry_stream.hpp"
 namespace nwd {
 namespace {
 using namespace detail;
@@ -139,31 +140,34 @@ SchemaInstance read_schema_instance(Cursor &r,
   }
   return instance;
 }
+void read_external_body(Cursor &r, ExternalGeometry &e,
+                        std::span<const SchemaDefinition> schemas,
+                        uint32_t version) {
+  e.schema = none;
+  e.properties = {};
+  if (version >= 434) {
+    auto instance = read_schema_instance(r, schemas);
+    e.schema = instance.schema;
+    e.properties = std::move(instance.value);
+  }
+  e.flags = r.u32();
+  for (auto &v : e.bounds)
+    v = r.read<float>();
+  e.flags2 = r.u32();
+  e.geometry_kind = r.u32();
+  e.payload_decoded = true;
+}
 void decode_external_payload(ExternalGeometry &e,
                              std::span<const SchemaDefinition> schemas,
                              uint32_t version) {
-  // Align relative to the original geometry record, not to the saved tail.
+  // Align relative to the enclosing source stream, not to the saved tail.
   size_t prefix = e.payload_record_offset % 8;
   Bytes b(prefix, 0);
   b.insert(b.end(), e.unparsed_payload.begin(), e.unparsed_payload.end());
   Cursor r(b, "external geometry payload");
   r.pos = prefix;
-  if (version >= 434) {
-    auto id = r.u32();
-    require(id <= schemas.size(), "external geometry schema reference");
-    if (id) {
-      e.schema = id - 1;
-      size_t budget = 1000000;
-      e.properties = value(r, schemas[e.schema].root, 0, budget);
-    }
-  }
-  e.flags = r.u32();
-  for (auto &v : e.bounds)
-    v = r.f32();
-  e.flags2 = r.u32();
-  e.geometry_kind = r.u32();
+  read_external_body(r, e, schemas, version);
   r.exact();
-  e.payload_decoded = true;
 }
 } // namespace detail
 } // namespace nwd

@@ -14,7 +14,7 @@ static Id mapped(const std::vector<InlineObjectBinding> &values, Id owner) {
 }
 void project_inline_model(Model &model, uint32_t version,
                           const Options &options) {
-  require(version >= 22 && version < 28 && model.inline_partition &&
+  require(version < 28 && model.inline_partition &&
               model.hierarchy_graph == 0 && !model.graphs.empty(),
           "inline model projection requires decoded old partition");
   require(model.instances.empty() && model.geometry_references.empty() &&
@@ -44,6 +44,10 @@ void project_inline_model(Model &model, uint32_t version,
     case 94:
     case 95:
     case 96:
+    case 103:
+    case 104:
+    case 105:
+    case 181:
       add(projection->geometries, id, store_count);
       break;
     case 93:
@@ -86,6 +90,11 @@ void project_inline_model(Model &model, uint32_t version,
   budget(projection->assets.size(), sizeof(Asset));
   budget(model.inline_partition->shape_bindings.size(), sizeof(Instance));
   for (const auto &binding : projection->geometries) {
+    const auto type = graph.objects[binding.owner].type;
+    if (type == 103 || type == 104 || type == 105 || type == 181) {
+      budget(owned(arena.special, binding.owner).data.text.size(), 1);
+      continue;
+    }
     const auto &p = primitive(binding.owner);
     if (p.coordinates != none)
       budget(owned(arena.coordinates, p.coordinates).values.size(),
@@ -112,6 +121,12 @@ void project_inline_model(Model &model, uint32_t version,
   model.geometries.resize(store_count + projection->geometries.size());
   parallel_for(projection->geometries.size(), options.threads, [&](size_t i) {
     const auto binding = projection->geometries[i];
+    const auto type = graph.objects[binding.owner].type;
+    if (type == 103 || type == 104 || type == 105 || type == 181) {
+      model.geometries[binding.value] =
+          owned(arena.special, binding.owner).data;
+      return;
+    }
     const auto &p = primitive(binding.owner);
     Geometry g;
     g.type = p.type;

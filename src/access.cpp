@@ -1,5 +1,74 @@
 #include "internal.hpp"
 namespace nwd {
+struct ExternalReferenceIndex::Impl {
+  const ExternalReferenceTable *table;
+  std::unordered_map<std::string_view, std::vector<Id>> entries;
+  explicit Impl(const ExternalReferenceTable &source) : table(&source) {
+    detail::require(source.path_remaps.size() < none, "XRef index entry limit");
+    for (Id i = 0; i < source.path_remaps.size(); ++i)
+      entries[source.path_remaps[i].first].push_back(i);
+  }
+};
+ExternalReferenceIndex::ExternalReferenceIndex(
+    const ExternalReferenceTable &table)
+    : impl(std::make_shared<Impl>(table)) {}
+ExternalPathResolution
+ExternalReferenceIndex::resolve(const ExternalGeometry &g) const {
+  if (g.null_strings[2])
+    return {ExternalPathStatus::null_path, {}, {}};
+  ExternalPathResolution result{
+      ExternalPathStatus::original, g.source_path, {}};
+  // Native ReadEntry bypasses lookup for both null and empty input.
+  if (g.source_path.empty())
+    return result;
+  const auto found = impl->entries.find(g.source_path);
+  if (found == impl->entries.end())
+    return result;
+  result.entries = found->second;
+  if (found->second.size() != 1) {
+    result.status = ExternalPathStatus::ambiguous;
+    return result;
+  }
+  result.status = ExternalPathStatus::remapped;
+  result.path = impl->table->path_remaps[found->second.front()].second;
+  return result;
+}
+TextStyleResolution resolve_text_style(const Model &model, const Geometry &g) {
+  if (g.type != 103)
+    return {};
+  TextStyleResolution out{TextStyleStatus::unavailable};
+  const auto *f = g.text_fields.get();
+  if (!f || f->uses_shared_nodes) {
+    const int64_t index =
+        f ? f->shared_node_index
+          : (g.text_style == none ? -1 : int64_t(g.text_style));
+    if (index < 0)
+      return {TextStyleStatus::null_style};
+    out.graph = &model.shared_nodes;
+    if (uint64_t(index) >= out.graph->roots.size())
+      return out;
+    out.object = out.graph->roots[size_t(index)];
+  } else {
+    out.object = f->inline_style.object;
+    if (out.object == none)
+      return {TextStyleStatus::null_style};
+    if (f->record_graph)
+      out.graph = f->record_graph.get();
+    else if (f->inline_style.graph == none)
+      out.graph = &model.shared_nodes;
+    else if (f->inline_style.graph < model.graphs.size())
+      out.graph = &model.graphs[f->inline_style.graph];
+  }
+  if (out.object == none)
+    out.status = TextStyleStatus::null_style;
+  else if (out.graph && out.object < out.graph->objects.size())
+    out.status = out.graph->objects[out.object].type == 102
+                     ? TextStyleStatus::resolved
+                     : TextStyleStatus::wrong_type;
+  return out;
+}
+} // namespace nwd
+namespace nwd {
 const AnimationObject *animation_object(const ObjectGraph &graph, Id id) {
   detail::require(id < graph.objects.size(), "animation object outside graph");
   if (graph.objects[id].type < 150 || graph.objects[id].type > 167)

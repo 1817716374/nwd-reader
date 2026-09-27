@@ -265,7 +265,9 @@ std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file,
                                 const Chunk &chunk, const Options &options);
 struct GeometryStreamContext;
 void read_geometry(Model &, std::span<const uint8_t>, const Chunk &,
-                   const Options &, const GeometryStreamContext * = nullptr);
+                   const Options &, const GeometryStreamContext * = nullptr,
+                   uint32_t wire_version = UINT32_MAX,
+                   bool use_shared_nodes = true);
 void read_instances(Model &, std::span<const uint8_t>, uint32_t,
                     const Options &);
 void read_nwf_appearances(NwfData &, std::span<const uint8_t>, uint32_t,
@@ -306,10 +308,12 @@ void read_partition(Model &, std::span<const uint8_t>, uint32_t,
 void bind_inline_partition(Model &, const Options &);
 void project_inline_model(Model &, uint32_t, const Options &);
 void read_shared_nodes(Model &, std::span<const uint8_t>, uint32_t,
-                       const Options &);
+                       const Options &,
+                       const GeometryStreamContext * = nullptr);
 void read_metadata(Model &, std::span<const uint8_t>,
                    const std::vector<Chunk> &, uint32_t, const Options &,
-                   std::vector<bool> &);
+                   std::vector<bool> &, const GeometryStreamContext * = nullptr,
+                   std::span<const SchemaDefinition> = {});
 // Visit stored path identities without flattening or copying source records.
 // Return false for a malformed public record or a rejected identity.
 template <class F> bool saved_path_links(const SavedItems &saved, F accept) {

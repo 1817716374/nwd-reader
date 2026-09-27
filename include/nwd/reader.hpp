@@ -112,7 +112,12 @@ struct EmbeddedAssetFile {
   std::vector<uint8_t> bytes;
 };
 struct AnimationObject;
-// Raw extra records in wire22..27 partitions. Kept outside Object so modern
+struct LegacyNodeRecord {
+  Id owner = none;
+  Reference modified;                      // version0 NodeModified18; nullable
+  std::optional<Reference> group_modified; // groups only, GroupModified19
+};
+// Raw extra records in wire0..27 partitions. Kept outside Object so modern
 // metadata objects incur no per-object storage cost. Spatial objects use their
 // own type1/2 child lists, separate from a partition's logical children.
 struct LegacyPartitionRecord {
@@ -123,6 +128,11 @@ struct LegacyPartitionRecord {
   // Derived stream position immediately before the spatial root. At the
   // stream's root partition this is when native logical links become ready.
   std::optional<uint64_t> path_links_ready_offset;
+  bool shapes_present = false; // array and flag saved only in versions1..27
+  // Versions2..21 save two strings instead of the common scene header.
+  // The first also supplies Object.name. Native loading discards the second
+  // and generates a fixed class name; no Name object is serialized here.
+  std::optional<std::array<Id, 2>> legacy_names;
 };
 struct GeometryObjectArena;
 struct ObjectGraph {
@@ -134,7 +144,8 @@ struct ObjectGraph {
   std::vector<AnimationObject> animation_objects; // sparse, ordered by owner ID
   std::vector<LegacyPartitionRecord> legacy_partitions; // associate by owner ID
   std::shared_ptr<GeometryObjectArena>
-      geometry_arena; // absent in ordinary graphs
+      geometry_arena;                         // absent in ordinary graphs
+  std::vector<LegacyNodeRecord> legacy_nodes; // version0, associate by owner ID
 };
 struct Path {
   Id parent = none, object = none;
@@ -181,6 +192,7 @@ struct ExternalGeometry {
   SchemaValue properties;
   uint32_t flags = 0, flags2 = 0, geometry_kind = 0;
   std::array<float, 6> bounds{};
+  std::array<bool, 3> null_strings{}; // loader, format, saved source path
 };
 struct CoordinateQuantization {
   float saved_precision = 0;
@@ -190,10 +202,21 @@ struct CoordinateQuantization {
   std::vector<uint8_t> packed_palette; // little-endian words, MSB-first fields
   bool finite = true; // saved floats and decoded coordinates are all finite
 };
+struct TextGeometryFields {
+  uint32_t parameter_count = 0; // 8 before wire version103, otherwise12
+  bool uses_shared_nodes = false;
+  int32_t shared_node_index =
+      -1;                 // saved signed value, including invalid values
+  Reference inline_style; // graph-local raw reference, even for a wrong class
+  // Only a standalone page with inline objects owns a separate graph here.
+  // Model graph objects leave this empty, so ownership cannot form a cycle.
+  std::shared_ptr<const ObjectGraph> record_graph;
+  bool text_is_null = false; // distinguish a saved null string from empty text
+};
 struct Geometry {
   uint32_t type = 0, flags = 0;
   std::string text;
-  Id text_style = none; // index into the model's shared-node table
+  Id text_style = none; // raw shared-table index bits; inline uses text_fields
   std::array<float, 13> parameters{};
   std::vector<float> coordinates;
   std::vector<uint32_t> coordinate_indices, strip_lengths, strip_indices;
@@ -201,6 +224,11 @@ struct Geometry {
   std::shared_ptr<const ExternalGeometry>
       external; // descriptor, not an embedded mesh
   std::shared_ptr<const CoordinateQuantization> coordinate_quantization;
+  std::shared_ptr<const TextGeometryFields> text_fields;
+};
+struct GeometrySpecialObject {
+  Id owner = none;
+  Geometry data; // text103, circle104, cylinder105 or external181 descriptor
 };
 // Shared object records keep graph-local identity; no copied per-primitive
 // coordinate or attribute arrays. Owners and references index ObjectGraph.
@@ -256,6 +284,7 @@ struct GeometryObjectArena {
   std::vector<LegacyMaterialObject> legacy_materials;
   std::vector<LegacyAppearanceObject> legacy_appearances;
   std::vector<LegacyGeometryObject> legacy_geometries;
+  std::vector<GeometrySpecialObject> special;
 };
 struct Transform {
   uint32_t type = 0;
@@ -1250,6 +1279,23 @@ struct ExternalReferenceTable {
   std::string json, saved_filename;
   std::vector<std::pair<std::string, std::string>> path_remaps;
 };
+enum class ExternalPathStatus { null_path, original, remapped, ambiguous };
+struct ExternalPathResolution {
+  ExternalPathStatus status = ExternalPathStatus::original;
+  std::string_view path;
+  std::span<const Id> entries; // saved table positions, including duplicates
+};
+// Build once for a caller-selected XRef scope. Exact case-sensitive keys;
+// no basename/prefix matching or filesystem access. Keep the source table
+// alive and unchanged while the index and its returned views are used.
+class ExternalReferenceIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+
+public:
+  explicit ExternalReferenceIndex(const ExternalReferenceTable &);
+  ExternalPathResolution resolve(const ExternalGeometry &) const;
+};
 using DatabaseCell = std::variant<std::monostate, int64_t, double, std::string,
                                   std::vector<uint8_t>>;
 struct DatabaseForeignKey {
@@ -1777,6 +1823,21 @@ std::array<double, 16> project_world_matrix(const Project &, Id node,
 Geometry decode_geometry(std::span<const uint8_t> data,
                          unsigned normal_bits = 8, bool raw_coordinates = false,
                          bool raw_strips = false);
+enum class TextStyleStatus {
+  not_text,
+  null_style,
+  unavailable,
+  wrong_type,
+  resolved
+};
+struct TextStyleResolution {
+  TextStyleStatus status = TextStyleStatus::not_text;
+  const ObjectGraph *graph = nullptr;
+  Id object = none;
+};
+// A view into model/page storage. Unavailable includes an unloaded or
+// out-of-range table; raw saved identities remain in Geometry::text_fields.
+TextStyleResolution resolve_text_style(const Model &, const Geometry &);
 CurrentView decode_current_view(std::span<const uint8_t> data,
                                 uint32_t version);
 std::vector<uint32_t> triangle_indices(const Geometry &geometry);

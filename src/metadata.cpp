@@ -78,9 +78,73 @@ class GraphReader {
     return i;
   }
   Reference ref() { return {graph_id, object()}; }
+  Reference legacy_base_ref(bool nullable) {
+    const auto result = ref();
+    if (result.object == none) {
+      require(nullable, "null obsolete BaseVector entry");
+      return result;
+    }
+    for (auto node = active_node; node; node = node->previous)
+      if (node->id == result.object)
+        return result;
+    // Confirmed LcOaBase subclass registrations. Raw GL objects, names and
+    // obsolete modification records occupy the same wire table but are not
+    // Base objects. Keep unverified/new class registrations explicit.
+    switch (graph.objects[result.object].type) {
+    case 14:
+    case 15:
+    case 16:
+    case 17:
+    case 22:
+    case 25:
+    case 27:
+    case 28:
+    case 29:
+    case 31:
+    case 32:
+    case 33:
+    case 35:
+    case 36:
+    case 38:
+    case 39:
+    case 40:
+    case 41:
+    case 43:
+    case 53:
+    case 63:
+    case 64:
+    case 66:
+    case 67:
+    case 68:
+    case 70:
+    case 71:
+    case 72:
+    case 74:
+    case 76:
+    case 77:
+    case 79:
+    case 84:
+    case 86:
+    case 88:
+    case 92:
+    case 97:
+    case 98:
+    case 99:
+    case 106:
+    case 180:
+    case 184:
+      return result;
+    default:
+      throw UnsupportedLayout(
+          "unverified obsolete Base reference class " +
+          std::to_string(graph.objects[result.object].type));
+    }
+  }
   void common(Object &o) {
-    o.name = str();
-    o.class_name = object();
+    if (version >= 22) {
+      o.name = str();
+      o.class_name = object();
+    }
     o.flags = r.u32();
   }
   void doubles(Object &o, unsigned n) {
@@ -368,6 +432,9 @@ public:
     Object o;
     o.type = r.u32();
     o.stream_offset = start;
+    // Publish the saved class identity before nested fields can refer back to
+    // this object. Payload completion is still checked by the sparse arenas.
+    graph.objects[index].type = o.type;
     switch (o.type) {
     case 3: {
       auto &arena = geometry_arena();
@@ -486,7 +553,14 @@ public:
         value.inline_geometry = object();
         require(value.inline_geometry != none,
                 "null inline geometry reference");
-        (void)geometry_owner(arena.primitives, value.inline_geometry);
+        const auto type = graph.objects[value.inline_geometry].type;
+        if (type == 103 || type == 104 || type == 105 || type == 181) {
+          require(
+              geometry_owner(arena.special, value.inline_geometry).data.type ==
+                  type,
+              "geometry object has no completed payload");
+        } else
+          (void)geometry_owner(arena.primitives, value.inline_geometry);
         o.references.push_back({graph_id, value.inline_geometry});
       }
       value.user_fields_present = version >= 2;
@@ -542,6 +616,60 @@ public:
           r, o.type, static_cast<uint32_t>(n), *geometry_context,
           options.max_objects);
       arena.attributes.push_back({index, std::move(value)});
+      break;
+    }
+    case 103: {
+      auto &arena = geometry_arena();
+      const auto slot = arena.special.size();
+      arena.special.emplace_back(); // reserve owner order before nested styles
+      arena.special[slot].owner = index;
+      GeometrySpecialObject value;
+      value.owner = index;
+      auto &g = value.data;
+      g.type = o.type;
+      auto fields = read_text_parameters(r, g, version);
+      fields->uses_shared_nodes = geometry_context->use_shared_nodes;
+      if (fields->uses_shared_nodes) {
+        fields->shared_node_index = r.read<int32_t>();
+        g.text_style = static_cast<Id>(fields->shared_node_index);
+      } else {
+        fields->inline_style = ref();
+        o.references.push_back(fields->inline_style);
+      }
+      g.text_fields = std::move(fields);
+      arena.special[slot] = std::move(value);
+      break;
+    }
+    case 181: {
+      auto &arena = geometry_arena();
+      if (version >= 434 && !geometry_context->schemas)
+        throw UnsupportedLayout(
+            "external geometry requires schema stream context");
+      auto external = std::make_shared<ExternalGeometry>();
+      read_external_header(r, *external);
+      read_external_body(r, *external,
+                         geometry_context->schemas.value_or(
+                             std::span<const SchemaDefinition>{}),
+                         version);
+      const auto payload =
+          r.data.subspan(external->payload_record_offset,
+                         r.pos - external->payload_record_offset);
+      external->unparsed_payload.assign(payload.begin(), payload.end());
+      GeometrySpecialObject value;
+      value.owner = index;
+      value.data.type = o.type;
+      value.data.external = std::move(external);
+      arena.special.push_back(std::move(value));
+      break;
+    }
+    case 104:
+    case 105: {
+      auto &arena = geometry_arena();
+      GeometrySpecialObject value;
+      value.owner = index;
+      value.data.type = o.type;
+      read_analytic_fields(r, value.data);
+      arena.special.push_back(std::move(value));
       break;
     }
     case 94:
@@ -776,6 +904,21 @@ public:
       o.strings.push_back(str());
       o.strings.push_back(str());
       break;
+    case 18:
+      // Obsolete NodeModified keeps two Base object references. Native
+      // loading discards their effect; preserve the serialized identities.
+      o.references.push_back(legacy_base_ref(true));
+      o.references.push_back(legacy_base_ref(true));
+      break;
+    case 19:
+      // Two independent BaseVector payloads; null entries are invalid.
+      for (unsigned list = 0; list < 2; ++list) {
+        const auto n = count();
+        o.integers.push_back(n);
+        for (uint32_t j = 0; j < n; ++j)
+          o.references.push_back(legacy_base_ref(false));
+      }
+      break;
     case 53:
     case 25:
     case 22:
@@ -787,8 +930,6 @@ public:
         ActiveNode *previous;
         ~NodeScope() { head = previous; }
       } scope{active_node, current.previous};
-      if (o.type == 32 && version < 22)
-        throw UnsupportedLayout("partition scene header before version22");
       if (o.type == 32)
         o.integers.push_back(version >= 203 ? r.u32() : 0);
       common(o);
@@ -797,13 +938,30 @@ public:
       o.attributes.reserve(n);
       for (uint32_t j = 0; j < n; ++j)
         o.attributes.push_back(ref());
+      std::optional<LegacyNodeRecord> old_node;
+      if (version == 0) {
+        old_node.emplace();
+        old_node->owner = index;
+        old_node->modified = ref();
+        const auto modified = old_node->modified.object;
+        require(modified == none || graph.objects[modified].type == 18,
+                "version0 node modified object type");
+      }
       if (o.type != 22 &&
           !(root_partition && id == 100 && o.type == 32 && version >= 28)) {
         n = count();
         o.children.reserve(n);
         for (uint32_t j = 0; j < n; ++j)
           o.children.push_back(object());
+        if (old_node) {
+          old_node->group_modified = ref();
+          const auto modified = old_node->group_modified->object;
+          require(modified == none || graph.objects[modified].type == 19,
+                  "version0 group modified object type");
+        }
       }
+      if (old_node)
+        graph.legacy_nodes.push_back(std::move(*old_node));
       if (o.type == 32) {
         o.integers.push_back(r.u32());
         std::optional<LegacyPartitionRecord> legacy;
@@ -822,7 +980,8 @@ public:
           o.references.push_back(ref());
         doubles(o, 3);
         o.integers.push_back(r.u32());
-        if (legacy) {
+        if (legacy && version >= 1) {
+          legacy->shapes_present = true;
           n = count();
           legacy->shapes.reserve(n);
           for (uint32_t j = 0; j < n; ++j) {
@@ -833,12 +992,17 @@ public:
             legacy->shapes.push_back(shape);
           }
           legacy->flag = r.u32();
-          graph.legacy_partitions.push_back(std::move(*legacy));
         }
-        o.strings.push_back(str());
-        o.integers.push_back(r.u32());
-        o.integers.push_back(r.u32());
-        o.integers.push_back(r.u32());
+        if (version >= 2 && version < 22) {
+          legacy->legacy_names = std::array<Id, 2>{str(), str()};
+          o.name = (*legacy->legacy_names)[0];
+        }
+        if (legacy)
+          graph.legacy_partitions.push_back(std::move(*legacy));
+        o.strings.push_back(version >= 3 ? str() : none);
+        o.integers.push_back(version >= 3 ? r.u32() : 0);
+        o.integers.push_back(version >= 5 ? r.u32() : 0);
+        o.integers.push_back(version >= 5 ? r.u32() : 0);
         if (version >= 53)
           doubles(o, 6);
         o.integers.push_back(version >= 80 ? r.u32() : 0);
@@ -896,7 +1060,7 @@ public:
       break;
     case 102:
       o.strings.push_back(str());
-      doubles(o, 1);
+      o.numbers.push_back(r.read<double>());
       for (unsigned j = 0; j < 4; ++j)
         o.integers.push_back(r.u32());
       break;
@@ -1151,12 +1315,19 @@ void read_partition(Model &model, std::span<const uint8_t> part,
     bind_inline_partition(model, options);
 }
 void read_shared_nodes(Model &model, std::span<const uint8_t> bytes,
-                       uint32_t version, const Options &options) {
-  GraphReader(bytes, model.shared_nodes, none, version, options).shared();
+                       uint32_t version, const Options &options,
+                       const GeometryStreamContext *context) {
+  auto local = context ? *context : GeometryStreamContext{};
+  local.version = version;
+  local.use_shared_nodes = false; // enabled only after this table is read
+  GraphReader(bytes, model.shared_nodes, none, version, options, false, &local)
+      .shared();
 }
 void read_metadata(Model &model, std::span<const uint8_t> file,
                    const std::vector<Chunk> &chunks, uint32_t version,
-                   const Options &options, std::vector<bool> &parsed) {
+                   const Options &options, std::vector<bool> &parsed,
+                   const GeometryStreamContext *context,
+                   std::span<const SchemaDefinition> schemas) {
   if (version < 28)
     throw UnsupportedLayout("inline model requires legacy container loading");
   auto find = [&](const std::string &suffix) -> const Chunk & {
@@ -1181,11 +1352,10 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
     return data;
   };
   auto shared = raw("LcOpNwdSharedNodes");
-  read_shared_nodes(model, shared, version, options);
-  for (const auto &geometry : model.geometries)
-    if (geometry.type == 103)
-      require(geometry.text_style < model.shared_nodes.roots.size(),
-              "text style outside shared nodes");
+  auto shared_context = context ? *context : GeometryStreamContext{};
+  shared_context.paged = true; // modern model entry is anchored by Geometry
+  shared_context.schemas = schemas;
+  read_shared_nodes(model, shared, version, options, &shared_context);
   model.graphs.resize(2);
   auto part = raw("LcOpNwdPartition");
   read_partition(model, part, version, options);
