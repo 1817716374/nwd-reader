@@ -388,7 +388,7 @@ struct ValueBudget {
     remaining -= count;
   }
 };
-template <class F>
+template <bool Materialize = true, class F>
 void tokens(std::string_view text, ValueBudget &budget, F &&emit) {
   std::string token;
   bool escaped = false;
@@ -400,7 +400,8 @@ void tokens(std::string_view text, ValueBudget &budget, F &&emit) {
     } else if (!escaped && c == '\\')
       escaped = true;
     else {
-      token.push_back(c);
+      if constexpr (Materialize)
+        token.push_back(c);
       escaped = false;
     }
   }
@@ -471,7 +472,9 @@ ProteinSchemaDocument::text_defaults(Id entry,
   const auto kind = fields.kind;
   ProteinSchemaTextDefaults out;
   const bool raw = kind == "ui" || kind == "implementation";
-  if (kind == "String")
+  const bool special =
+      kind == "type" || kind == "localtype" || kind == "localname";
+  if (kind == "String" || special)
     out.value_type = 2;
   else if (kind == "DateTime")
     out.value_type = 3;
@@ -481,11 +484,16 @@ ProteinSchemaDocument::text_defaults(Id entry,
     out.value_type = 4;
   else
     return out;
-  out.flags = protein_schema_prepare_fields(
-                  fields, fields.id.value_or(std::string_view{}))
-                  .flags;
-  out.multiple = (out.flags & 4) && kind != "Uuid";
-  const bool rejected = kind == "DateTime" && out.multiple;
+  const auto effective_id = kind == "type" ? std::string_view("assettype")
+                            : special      ? kind
+                                      : fields.id.value_or(std::string_view{});
+  out.flags = protein_schema_prepare_fields(fields, effective_id).flags;
+  out.multiple = (out.flags & 4) && kind != "Uuid" && !special;
+  // Special string factories inspect the original val string, before using
+  // the split token vector. A nonempty escape-only val can assign empty text.
+  const bool rejected =
+      (kind == "DateTime" && out.multiple) ||
+      (special && fields.value.value_or(std::string_view{}).empty());
   ValueBudget budget{options.max_values};
   // Even when a factory selects only the first token, preprocessing visits
   // every input token. Retain only the selected strings, avoiding a second
@@ -507,6 +515,27 @@ ProteinSchemaDocument::text_defaults(Id entry,
   }
   out.uses_type_default = !out.multiple && out.values.empty();
   out.status = ProteinSchemaTextStatus::ready;
+  return out;
+}
+
+ProteinSchemaConstructedDefaults ProteinSchemaDocument::constructed_defaults(
+    Id entry, ProteinSchemaValueOptions options) const {
+  const auto fields = entry_fields(entry);
+  ProteinSchemaConstructedDefaults out;
+  if (fields.kind == "Binary")
+    out.kind = ProteinSchemaConstructedKind::empty_binary;
+  else if (fields.kind == "Reference")
+    out.kind = fields.type == "texture"
+                   ? ProteinSchemaConstructedKind::empty_texture_link
+                   : ProteinSchemaConstructedKind::empty_reference_array;
+  else
+    return out;
+  out.flags = protein_schema_prepare_fields(
+                  fields, fields.id.value_or(std::string_view{}))
+                  .flags;
+  ValueBudget budget{options.max_values};
+  if (fields.value)
+    tokens<false>(*fields.value, budget, [](std::string) {});
   return out;
 }
 

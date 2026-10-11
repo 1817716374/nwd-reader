@@ -484,6 +484,13 @@ struct ProteinSchemaTextDefaults {
   // all tokens, including duplicates/empty tokens. Owns the returned strings.
   std::vector<std::string> values;
 };
+enum class ProteinSchemaConstructedKind {
+  unsupported, empty_binary, empty_reference_array, empty_texture_link
+};
+struct ProteinSchemaConstructedDefaults {
+  ProteinSchemaConstructedKind kind = ProteinSchemaConstructedKind::unsupported;
+  uint32_t flags = 0; // XML-preprocessed declaration flags
+};
 // Schema XML declaration type codes (not ProteinProperty's wire discriminant):
 // binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
 // color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
@@ -547,14 +554,25 @@ public:
   // flags/IDs, merge inherited fields or register the resulting property.
   ProteinSchemaNumericDefaults numeric_defaults(Id entry,
                                                 ProteinSchemaValueOptions = {}) const;
-  // XML text assignments for String, DateTime, Uuid, URL, TextureURI, ui and
-  // implementation. DateTime rejects multiple; Uuid always selects one token.
+  // XML text assignments for String, DateTime, Uuid, URL, TextureURI, ui,
+  // implementation, type, localtype and localname. DateTime rejects multiple;
+  // Uuid and the three special string factories always select one token.
+  // type/localtype/localname reject an absent or empty original val, before
+  // unescaping. Their ID rewriting is available through defaults().effective_id.
   // UI/implementation preserve raw val as one string. No URL normalization,
   // UUID decoding or date parsing occurs in this factory phase. Ready does not
   // validate declaration flags/IDs or downstream formats and registrations.
   // All input tokens count against max_values, including ignored scalar tails.
   ProteinSchemaTextDefaults text_defaults(Id entry,
                                          ProteinSchemaValueOptions = {}) const;
+  // Binary and Reference factories leave their newly constructed data intact:
+  // empty bytes, an empty connection array, or a default texture symbol link.
+  // Reference type="texture" selects the latter (exact case). val does not
+  // supply bytes or target identities. Its tokens still count against the
+  // budget, without materializing ignored strings. This describes local XML
+  // factory defaults, not declaration validity, inherited values or graph links.
+  ProteinSchemaConstructedDefaults constructed_defaults(
+      Id entry, ProteinSchemaValueOptions = {}) const;
 };
 enum class ProteinSchemaChoiceStatus {
   accepted,
