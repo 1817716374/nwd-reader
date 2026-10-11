@@ -512,6 +512,44 @@ public:
   // constraint object, not factory acceptance or inherited property values.
   ProteinSchemaResolvedConstraint resolved_constraint(Id entry) const;
 };
+enum class ProteinSchemaChoiceStatus {
+  accepted,
+  empty_id,
+  negative_value,
+  duplicate_id,
+  duplicate_value,
+  unresolved_attributes,
+  unresolved_value,
+  unresolved_previous
+};
+struct ProteinSchemaChoiceEntry {
+  Id source = none;
+  std::optional<std::string_view> id, label, raw_value;
+  ProteinSchemaNumber value;
+  ProteinSchemaChoiceStatus status = ProteinSchemaChoiceStatus::unresolved_value;
+  Id conflict = none; // earlier accepted entry index, not an XML node ID
+};
+enum class ProteinSchemaChoiceLookupStatus { found, missing, unresolved };
+struct ProteinSchemaChoiceLookup {
+  ProteinSchemaChoiceLookupStatus status = ProteinSchemaChoiceLookupStatus::missing;
+  Id entry = none; // index into entries(), present only when found
+};
+// Builds one immutable Choice declaration table; owns a shared document copy.
+// Preserves all ChoiceValue nodes in preorder, including rejected/uncertain ones.
+// Nonempty IDs and nonnegative int32 values must both be unique; first accepted
+// entries win. Uncertain preceding entries cannot silently become absent.
+// O(n log n) construction and O(log n) allocation-free ID lookup. Independent
+// reads are thread-safe. This does not assert factory/default-value acceptance.
+class ProteinSchemaChoiceIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+public:
+  ProteinSchemaChoiceIndex(const ProteinSchemaDocument &, Id entry,
+                           ProteinSchemaValueOptions = {});
+  std::span<const ProteinSchemaChoiceEntry> entries() const noexcept;
+  bool complete() const noexcept;
+  ProteinSchemaChoiceLookup find_id(std::string_view) const;
+};
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
 // No shader-role inference or runtime conversion to JSON is performed.

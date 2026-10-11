@@ -347,6 +347,10 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `constraint_nodes(id)` 按顺序列出进入数值约束读取分支的嵌套节点；`constraint_fields(node)` 返回可选最小/最大值、步长、开闭区间和百分比标记。所有候选节点及其原始文本都保留。
 
+`ProteinSchemaChoiceIndex(document, entry)` 为一个 Choice 声明建立可复用的枚举表。`entries()` 保留所有 ChoiceValue 来源节点、ID、标签、原始数值和接受/拒绝/未决状态；非空 ID 与非负 int32 数值均要求唯一，先接受的条目保留。重复项的 `conflict` 指向较早条目的数组索引。缺少必要属性或数值解释未决时，`complete()` 返回 false，受其影响的后续条目保持未决。
+
+`find_id(id)` 返回 found、missing 或 unresolved；found 的 `entry` 是 `entries()` 下标，不是 XML 节点 ID。此前已确认的条目仍可查询，但不把未决条目当作不存在。索引持有文档的共享副本，构建复杂度为 O(n log n)，查询为 O(log n)，独立查询可并发复用。`ProteinSchemaValueOptions::max_values` 在此限制候选条目数。该索引解释枚举表，不表示属性工厂已经接受声明或默认值。
+
 `resolved_constraint(id)` 返回声明中最后一个数值约束候选的处理结果和来源节点。`absent` 表示没有候选，`ready` 提供可用区间，`discarded` 表示无效区间清除了前一个约束，`unresolved` 表示数值转换尚不能确定。最小值大于最大值，或相等且任一端不包含端点时，区间被清除；百分比约束强制使用闭区间 `[0,1]`、步长 `1`。该接口按声明顺序遍历，使用常量额外遍历空间，仅解释最终候选；它不表示属性工厂已接受默认值，也不执行继承合并。
 
 ```cpp

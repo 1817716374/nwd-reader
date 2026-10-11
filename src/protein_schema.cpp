@@ -5,6 +5,7 @@
 #include <exception>
 #include <limits>
 #include <charconv>
+#include <map>
 
 namespace nwd {
 ProteinSchemaPreparedFields
@@ -464,14 +465,13 @@ ProteinSchemaDocument::defaults(Id id,
 
 namespace {
 template <class F>
-void visit_constraint_nodes(const std::vector<ProteinSchemaXmlNode> &nodes,
-                            Id entry, std::string_view kind, F &&visit) {
+void visit_schema_descendants(std::span<const ProteinSchemaXmlNode> nodes,
+                              Id entry, F &&visit) {
   // Arena order is preorder. Climb through parents only after a subtree ends;
   // each edge is visited at most twice, with no recursive C++ stack growth.
   Id id = nodes[entry].first_child;
   while (id != none) {
-    if (nodes[id].kind == Kind::element &&
-        !(kind == "Choice" && nodes[id].name == "ChoiceValue"))
+    if (nodes[id].kind == Kind::element)
       visit(id);
     if (nodes[id].first_child != none) {
       id = nodes[id].first_child;
@@ -484,7 +484,94 @@ void visit_constraint_nodes(const std::vector<ProteinSchemaXmlNode> &nodes,
     id = nodes[id].next_sibling;
   }
 }
+template <class F>
+void visit_constraint_nodes(std::span<const ProteinSchemaXmlNode> nodes,
+                            Id entry, std::string_view kind, F &&visit) {
+  visit_schema_descendants(nodes, entry, [&](Id id) {
+    if (!(kind == "Choice" && nodes[id].name == "ChoiceValue"))
+      visit(id);
+  });
+}
 } // namespace
+
+struct ProteinSchemaChoiceIndex::Impl {
+  ProteinSchemaDocument document;
+  std::vector<ProteinSchemaChoiceEntry> entries;
+  std::map<std::string_view, Id, std::less<>> ids;
+  bool complete = true;
+  explicit Impl(const ProteinSchemaDocument &doc) : document(doc) {}
+};
+ProteinSchemaChoiceIndex::ProteinSchemaChoiceIndex(
+    const ProteinSchemaDocument &doc, Id entry,
+    ProteinSchemaValueOptions options) {
+  detail::require(doc.entry_fields(entry).kind == "Choice",
+                  "Protein Schema choice index requires a Choice declaration");
+  auto result = std::make_shared<Impl>(doc);
+  std::map<int32_t, Id> values;
+  ValueBudget budget{options.max_values};
+  using Status = ProteinSchemaChoiceStatus;
+  visit_schema_descendants(doc.nodes(), entry, [&](Id node) {
+    if (doc.nodes()[node].name != "ChoiceValue")
+      return;
+    budget.use(1);
+    ProteinSchemaChoiceEntry item;
+    item.source = node;
+    for (const auto &a : doc.nodes()[node].attributes) {
+      if (a.name == "id")
+        item.id = a.value;
+      else if (a.name == "label")
+        item.label = a.value;
+      else if (a.name == "val")
+        item.raw_value = a.value;
+    }
+    item.value =
+        number(std::string(item.raw_value.value_or(std::string_view{})), true);
+    // The native handler dereferences attribute lookup results without testing
+    // for end(). Do not invent default values for missing required attributes.
+    if (!item.id || !item.label || !item.raw_value) {
+      item.status = Status::unresolved_attributes;
+      result->complete = false;
+    } else if (item.id->empty()) {
+      item.status = Status::empty_id;
+    } else if (!item.value.value) {
+      item.status = Status::unresolved_value;
+      result->complete = false;
+    } else if (*item.value.value < 0) {
+      item.status = Status::negative_value;
+    } else if (auto it = result->ids.find(*item.id); it != result->ids.end()) {
+      item.status = Status::duplicate_id;
+      item.conflict = it->second;
+    } else if (auto it = values.find(static_cast<int32_t>(*item.value.value));
+               it != values.end()) {
+      item.status = Status::duplicate_value;
+      item.conflict = it->second;
+    } else if (!result->complete) {
+      item.status = Status::unresolved_previous;
+    } else {
+      item.status = Status::accepted;
+      const auto position = static_cast<Id>(result->entries.size());
+      result->ids.emplace(*item.id, position);
+      values.emplace(static_cast<int32_t>(*item.value.value), position);
+    }
+    result->entries.push_back(std::move(item));
+  });
+  impl = std::move(result);
+}
+std::span<const ProteinSchemaChoiceEntry>
+ProteinSchemaChoiceIndex::entries() const noexcept {
+  return impl->entries;
+}
+bool ProteinSchemaChoiceIndex::complete() const noexcept {
+  return impl->complete;
+}
+ProteinSchemaChoiceLookup
+ProteinSchemaChoiceIndex::find_id(std::string_view id) const {
+  if (auto it = impl->ids.find(id); it != impl->ids.end())
+    return {ProteinSchemaChoiceLookupStatus::found, it->second};
+  return {impl->complete ? ProteinSchemaChoiceLookupStatus::missing
+                         : ProteinSchemaChoiceLookupStatus::unresolved,
+          none};
+}
 
 std::vector<Id> ProteinSchemaDocument::constraint_nodes(Id entry) const {
   const auto fields = entry_fields(entry);
