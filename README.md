@@ -353,6 +353,10 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `ProteinSchemaChoiceIndex::defaults(options)` 将该声明的默认值 token 映射到枚举整数。单值只使用首 token；多值按原顺序保留匹配项和重复项，跳过后续未匹配 ID。返回的每个 token 保留文本、匹配状态和枚举条目下标。`ready` 时 `values` 才是完整结果；首 ID 缺失返回 `missing_first`，枚举表或映射不能确定时返回 `unresolved`，两者均不生成替代默认值。`max_values` 限制全部 token 数，包含单值模式下未使用的后续 token。该方法复用索引，可并发调用；结果仅说明 XML 默认值转换，不代替声明标志/ID 验证、继承或属性注册。
 
+`numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
+
+数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。
+
 `resolved_constraint(id)` 返回声明中最后一个数值约束候选的处理结果和来源节点。`absent` 表示没有候选，`ready` 提供可用区间，`discarded` 表示无效区间清除了前一个约束，`unresolved` 表示数值转换尚不能确定。最小值大于最大值，或相等且任一端不包含端点时，区间被清除；百分比约束强制使用闭区间 `[0,1]`、步长 `1`。该接口按声明顺序遍历，使用常量额外遍历空间，仅解释最终候选；它不表示属性工厂已接受默认值，也不执行继承合并。
 
 ```cpp

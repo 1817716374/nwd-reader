@@ -454,6 +454,22 @@ struct ProteinSchemaResolvedConstraint {
   ProteinSchemaConstraintStatus status = ProteinSchemaConstraintStatus::absent;
   std::optional<ProteinSchemaNumericRange> range; // present only when ready
 };
+enum class ProteinSchemaNumericStatus { ready, rejected, unresolved, unsupported };
+struct ProteinSchemaNumericDefaults {
+  ProteinSchemaNumericStatus status = ProteinSchemaNumericStatus::unsupported;
+  uint32_t value_type = 0, components = 0; // declaration code; 1, 3 (XYZ), 4 (RGBA)
+  bool multiple = false;
+  // Bits: 1=first value outside range, 2=fractional Integer bounds,
+  // 4=first Color outside RGB [0,255] or alpha [0,1].
+  uint32_t rejections = 0;
+  // Only Integer/Float/Distance consult a numeric constraint. An unresolved
+  // increment alone does not prevent the value projection being ready.
+  ProteinSchemaResolvedConstraint constraint;
+  // Row-major candidate components, complete/accepted only when ready.
+  // Rejected/unsupported projections have no candidates. Unresolved numeric
+  // text keeps its conversion status; it never becomes a fabricated zero.
+  std::vector<ProteinSchemaNumber> candidates;
+};
 // Schema XML declaration type codes (not ProteinProperty's wire discriminant):
 // binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
 // color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
@@ -511,6 +527,12 @@ public:
   // Unresolved numeric conversion stays explicit. This resolves the local
   // constraint object, not factory acceptance or inherited property values.
   ProteinSchemaResolvedConstraint resolved_constraint(Id entry) const;
+  // XML value factory phase for Integer, Float, Distance, Color and Vector3.
+  // Checks the first value before array conversion, preserves empty arrays,
+  // and applies Vector3's scalar rewrite. This does not validate declaration
+  // flags/IDs, merge inherited fields or register the resulting property.
+  ProteinSchemaNumericDefaults numeric_defaults(Id entry,
+                                                ProteinSchemaValueOptions = {}) const;
 };
 enum class ProteinSchemaChoiceStatus {
   accepted,

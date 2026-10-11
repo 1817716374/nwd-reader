@@ -6,6 +6,7 @@
 #include <limits>
 #include <charconv>
 #include <map>
+#include <cmath>
 
 namespace nwd {
 ProteinSchemaPreparedFields
@@ -696,6 +697,104 @@ ProteinSchemaDocument::constraint_fields(Id id) const {
     else if (a.name == "percentage")
       out.percentage = a.value == "true";
   }
+  return out;
+}
+
+ProteinSchemaNumericDefaults ProteinSchemaDocument::numeric_defaults(
+    Id entry, ProteinSchemaValueOptions options) const {
+  const auto fields = entry_fields(entry);
+  ProteinSchemaNumericDefaults out;
+  const bool integer = fields.kind == "Integer";
+  const bool real = fields.kind == "Float" || fields.kind == "Distance";
+  const bool color = fields.kind == "Color", vector = fields.kind == "Vector3";
+  if (!integer && !real && !color && !vector)
+    return out;
+  out.value_type = integer ? 6 : color ? 8 : 7;
+  out.components = color ? 4 : vector ? 3 : 1;
+  out.multiple = !vector && (fields.declaration_flags & 4);
+  out.status = ProteinSchemaNumericStatus::ready;
+  auto prepared = defaults(entry, options);
+  bool uncertain = false;
+  if (integer || real) {
+    out.constraint = resolved_constraint(entry);
+    auto bounds = out.constraint.range;
+    if (out.constraint.status == ProteinSchemaConstraintStatus::unresolved) {
+      const auto raw = constraint_fields(out.constraint.source);
+      if ((!raw.minimum || raw.minimum->value) &&
+          (!raw.maximum || raw.maximum->value)) {
+        // Only the increment is unknown. Allocation and value acceptance do
+        // not inspect it, so the known bounds still determine the value gate.
+        ProteinSchemaNumericRange known;
+        if (raw.minimum)
+          known.minimum = raw.minimum->value;
+        if (raw.maximum)
+          known.maximum = raw.maximum->value;
+        known.minimum_inclusive = raw.minimum_inclusive;
+        known.maximum_inclusive = raw.maximum_inclusive;
+        bounds = known;
+      } else
+        uncertain = true;
+    }
+    const auto first = prepared.scalar->value;
+    if (bounds) {
+      if (first) {
+        if ((bounds->minimum &&
+             (*first < *bounds->minimum ||
+              (*first == *bounds->minimum && !bounds->minimum_inclusive))) ||
+            (bounds->maximum &&
+             (*first > *bounds->maximum ||
+              (*first == *bounds->maximum && !bounds->maximum_inclusive))))
+          out.rejections |= 1;
+      } else
+        uncertain = true;
+      if (integer) {
+        const double low = bounds->minimum.value_or(0),
+                     high = bounds->maximum.value_or(0);
+        if (std::floor(low) != low || std::floor(high) != high)
+          out.rejections |= 2;
+      }
+    }
+  } else if (color && !prepared.components[0].empty()) {
+    for (size_t c = 0; c < 4; ++c) {
+      const auto first = prepared.components[c][0].value;
+      if (!first)
+        uncertain = true;
+      else if (*first < 0 || *first > (c == 3 ? 1 : 255))
+        out.rejections |= 4;
+    }
+  }
+  if (out.rejections) {
+    out.status = ProteinSchemaNumericStatus::rejected;
+    return out;
+  }
+  if (integer || real) {
+    if (!out.multiple) {
+      detail::require(options.max_values >= 1, "Protein Schema value budget");
+      out.candidates.push_back(std::move(*prepared.scalar));
+    } else {
+      out.candidates.reserve(prepared.tokens.size());
+      for (size_t i = 0; i < prepared.tokens.size(); ++i)
+        out.candidates.push_back(
+            i == 0 ? std::move(*prepared.scalar)
+                   : number(std::move(prepared.tokens[i]), integer));
+    }
+  } else {
+    const auto rows = out.multiple ? prepared.components[0].size() : 1;
+    if (color && prepared.components[0].empty() && !out.multiple)
+      detail::require(prepared.tokens.size() <= options.max_values &&
+                          options.max_values - prepared.tokens.size() >= 4,
+                      "Protein Schema value budget");
+    out.candidates.reserve(rows * out.components);
+    for (size_t i = 0; i < rows; ++i)
+      for (size_t c = 0; c < out.components; ++c)
+        out.candidates.push_back(prepared.components[c].empty()
+                                     ? default_number(c == 3 ? 1 : 0)
+                                     : std::move(prepared.components[c][i]));
+  }
+  for (const auto &candidate : out.candidates)
+    uncertain |= !candidate.value;
+  if (uncertain)
+    out.status = ProteinSchemaNumericStatus::unresolved;
   return out;
 }
 } // namespace nwd
