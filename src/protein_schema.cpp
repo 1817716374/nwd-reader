@@ -464,6 +464,52 @@ ProteinSchemaDocument::defaults(Id id,
   return out;
 }
 
+ProteinSchemaTextDefaults
+ProteinSchemaDocument::text_defaults(Id entry,
+                                     ProteinSchemaValueOptions options) const {
+  const auto fields = entry_fields(entry);
+  const auto kind = fields.kind;
+  ProteinSchemaTextDefaults out;
+  const bool raw = kind == "ui" || kind == "implementation";
+  if (kind == "String")
+    out.value_type = 2;
+  else if (kind == "DateTime")
+    out.value_type = 3;
+  else if (kind == "Uuid")
+    out.value_type = 11;
+  else if (kind == "URL" || kind == "TextureURI" || raw)
+    out.value_type = 4;
+  else
+    return out;
+  out.flags = protein_schema_prepare_fields(
+                  fields, fields.id.value_or(std::string_view{}))
+                  .flags;
+  out.multiple = (out.flags & 4) && kind != "Uuid";
+  const bool rejected = kind == "DateTime" && out.multiple;
+  ValueBudget budget{options.max_values};
+  // Even when a factory selects only the first token, preprocessing visits
+  // every input token. Retain only the selected strings, avoiding a second
+  // full-sized vector for large scalar declarations.
+  auto emit = [&](std::string value) {
+    if (!rejected && (out.multiple || out.values.empty()))
+      out.values.push_back(std::move(value));
+  };
+  if (raw) {
+    budget.use(1);
+    emit(std::string(fields.value.value_or(std::string_view{})));
+  } else if (fields.value) {
+    tokens(*fields.value, budget, emit);
+  }
+  if (rejected) {
+    out.status = ProteinSchemaTextStatus::rejected;
+    out.values.clear();
+    return out;
+  }
+  out.uses_type_default = !out.multiple && out.values.empty();
+  out.status = ProteinSchemaTextStatus::ready;
+  return out;
+}
+
 namespace {
 template <class F>
 void visit_schema_descendants(std::span<const ProteinSchemaXmlNode> nodes,

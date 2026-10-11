@@ -470,6 +470,20 @@ struct ProteinSchemaNumericDefaults {
   // text keeps its conversion status; it never becomes a fabricated zero.
   std::vector<ProteinSchemaNumber> candidates;
 };
+enum class ProteinSchemaTextStatus { ready, rejected, unsupported };
+struct ProteinSchemaTextDefaults {
+  ProteinSchemaTextStatus status = ProteinSchemaTextStatus::unsupported;
+  uint32_t value_type = 0; // factory type: String=2, DateTime=3, URL=4, Uuid=11
+  uint32_t flags = 0; // after XML declaration preprocessing
+  bool multiple = false;
+  // A scalar without a val token leaves its newly constructed value untouched.
+  // This differs from assigning an empty token; it does not assert the
+  // downstream type's constructor or registered/inherited default value.
+  bool uses_type_default = false;
+  // Explicit text assignments in factory order. Scalar: at most one. Array:
+  // all tokens, including duplicates/empty tokens. Owns the returned strings.
+  std::vector<std::string> values;
+};
 // Schema XML declaration type codes (not ProteinProperty's wire discriminant):
 // binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
 // color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
@@ -533,6 +547,14 @@ public:
   // flags/IDs, merge inherited fields or register the resulting property.
   ProteinSchemaNumericDefaults numeric_defaults(Id entry,
                                                 ProteinSchemaValueOptions = {}) const;
+  // XML text assignments for String, DateTime, Uuid, URL, TextureURI, ui and
+  // implementation. DateTime rejects multiple; Uuid always selects one token.
+  // UI/implementation preserve raw val as one string. No URL normalization,
+  // UUID decoding or date parsing occurs in this factory phase. Ready does not
+  // validate declaration flags/IDs or downstream formats and registrations.
+  // All input tokens count against max_values, including ignored scalar tails.
+  ProteinSchemaTextDefaults text_defaults(Id entry,
+                                         ProteinSchemaValueOptions = {}) const;
 };
 enum class ProteinSchemaChoiceStatus {
   accepted,

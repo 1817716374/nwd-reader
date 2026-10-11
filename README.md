@@ -353,6 +353,10 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `ProteinSchemaChoiceIndex::defaults(options)` 将该声明的默认值 token 映射到枚举整数。单值只使用首 token；多值按原顺序保留匹配项和重复项，跳过后续未匹配 ID。返回的每个 token 保留文本、匹配状态和枚举条目下标。`ready` 时 `values` 才是完整结果；首 ID 缺失返回 `missing_first`，枚举表或映射不能确定时返回 `unresolved`，两者均不生成替代默认值。`max_values` 限制全部 token 数，包含单值模式下未使用的后续 token。该方法复用索引，可并发调用；结果仅说明 XML 默认值转换，不代替声明标志/ID 验证、继承或属性注册。
 
+`text_defaults(entry, options)` 返回 String、DateTime、Uuid、URL、TextureURI、ui、implementation 的 XML 工厂文本赋值。`status` 区分 ready、rejected、unsupported；`values` 拥有返回的字符串，数组保留顺序、重复和空 token。`flags` 为 XML 预处理后的标志，`value_type` 为实际值工厂类型（ui/implementation 使用 URL 类型 4）。
+
+String/URL 根据预处理后的 multiple 取全部值或首值；TextureURI 强制数组，String 的 assettype 特例为标量。DateTime 拒绝 multiple，Uuid 工厂只取首值。ui/implementation 将整个 val 保留为一个字符串。`uses_type_default` 表示标量没有 val token，工厂保留类型构造默认值；它与明确赋一个空字符串不同，接口不推断后续类型构造和继承的最终值。该阶段不转换日期/UUID、不规范化 URL；ready 也不代替原始声明标志、ID 或注册验证。所有输入 token（包括被忽略的尾项）都受 max_values 限制。
+
 `numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
 
 数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。
