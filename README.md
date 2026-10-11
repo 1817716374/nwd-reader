@@ -341,6 +341,10 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `defaults(id)` 解释转义的多值分隔符、布尔值、Integer/Float/Distance 默认值、Color/Vector3 分量以及 Reference 的 texture 标记。颜色按最长分量数组补齐 RGB=0、A=1，向量每轴保留首值并补零；UI 和 implementation 路径不拆分。数值同时返回原始 token、消费长度和转换状态：`defaulted` 表示缺省补值，`exact` 表示完整有限十进制值，`prefix` 表示仅转换了数字前缀，`empty/invalid/out_of_range` 不提供数值。它不复现所有原产品数值转换失败、溢出或非有限数值行为。
 
+`protein_schema_value_type(name)` 返回精确大小写的声明类型编号，未知名称返回空值。`protein_schema_flag_conflicts(type, flags)` 检查原始声明标志的组合，包括多值、连接模式、只读及角色类型冲突；返回位掩码，零表示没有此类冲突。
+
+`protein_schema_prepare_fields(raw, effective_id)` 返回标签和预处理后的声明标志。它按原始 public 标志补齐空标签，再处理 TextureURI、ui、implementation、Distance、Vector3、assettype 等角色及原生长度单位名称。单位匹配区分大小写，不换算数值。该函数无内存分配；返回的标签视图借用输入字段或有效 ID。应先检查原始声明标志，再进行预处理；Base、UID、PropertyAlias 的特殊处理、ID 接受、工厂创建和继承合并是独立步骤。
+
 `constraint_nodes(id)` 按顺序列出进入数值约束读取分支的嵌套节点；`constraint_fields(node)` 返回可选最小/最大值、步长、开闭区间和百分比标记。所有候选节点都保留，调用方不应据此假定已经完成运行时约束选择或继承合并。
 
 ```cpp
@@ -349,6 +353,12 @@ nwd::ProteinSchemaDocument document(schema.data);
 for (nwd::Id id : document.entries()) {
     auto raw = document.entry_fields(id);
     auto defaults = document.defaults(id);
+    auto type = nwd::protein_schema_value_type(raw.kind);
+    if (type) {
+        auto conflicts = nwd::protein_schema_flag_conflicts(*type, raw.declaration_flags);
+        auto prepared = nwd::protein_schema_prepare_fields(raw, defaults.effective_id);
+        // conflicts 检查原始标志；prepared 提供预处理字段，不表示工厂已接受声明。
+    }
     // raw 保留保存文本；defaults 的数值须连同 status 检查。
     for (nwd::Id child : document.constraint_nodes(id)) {
         auto constraint = document.constraint_fields(child);

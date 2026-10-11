@@ -7,6 +7,76 @@
 #include <charconv>
 
 namespace nwd {
+ProteinSchemaPreparedFields
+protein_schema_prepare_fields(const ProteinSchemaEntryFields &fields,
+                              std::string_view effective_id) noexcept {
+  ProteinSchemaPreparedFields out{fields.label.value_or(std::string_view{}),
+                                  fields.declaration_flags};
+  if ((out.flags & 1) && out.label.empty())
+    out.label = effective_id;
+  const auto kind = fields.kind;
+  if (kind == "TextureURI")
+    out.flags |= 0x204;
+  else if (kind == "implementation")
+    out.flags = 0x102;
+  else if (kind == "ui")
+    out.flags = 0x82;
+  else if (kind == "Distance")
+    out.flags |= 0x400;
+  else if (kind == "Vector3")
+    out.flags &= ~4u;
+  else if ((kind == "String" && effective_id == "assettype") || kind == "type")
+    out.flags = 2;
+  static constexpr std::string_view units[]{
+      "mm",   "millimeter", "millimetre", "millimeters", "millimetres",
+      "cm",   "centimeter", "centimetre", "centimeters", "centimetres",
+      "dm",   "decimeter",  "decimetre",  "decimeters",  "decimetres",
+      "m",    "meter",      "metre",      "meters",      "metres",
+      "km",   "kilometer",  "kilometre",  "kilometers",  "kilometres",
+      "in",   "inch",       "inches",     "ft",          "foot",
+      "feet", "yd",         "yard",       "yards",       "mi",
+      "mile", "miles"};
+  const auto unit = fields.unit.value_or(std::string_view{});
+  for (auto known : units) {
+    if (unit == known) {
+      out.flags |= 0x400;
+      break;
+    }
+  }
+  return out;
+}
+
+std::optional<uint32_t>
+protein_schema_value_type(std::string_view name) noexcept {
+  static constexpr std::pair<std::string_view, uint32_t> types[] = {
+      {"Base", 2},       {"UID", 2},        {"String", 2},
+      {"type", 2},       {"localtype", 2},  {"localname", 2},
+      {"DateTime", 3},   {"Binary", 1},     {"Uuid", 11},
+      {"URL", 4},        {"TextureURI", 4}, {"Boolean", 5},
+      {"Integer", 6},    {"Float", 7},      {"Distance", 7},
+      {"Choice", 10},    {"Color", 8},      {"texture", 9},
+      {"Reference", 12}, {"ui", 2},         {"implementation", 2},
+      {"Vector3", 7}};
+  for (const auto &[key, value] : types)
+    if (name == key)
+      return value;
+  return std::nullopt;
+}
+uint32_t protein_schema_flag_conflicts(uint32_t type, uint32_t flags) noexcept {
+  uint32_t errors = flags > 0xfff ? 1 : 0;
+  if ((flags & 0xa) == 0xa)
+    errors |= 2;
+  const auto connections = flags & 0x60;
+  if (connections == 0x60 || ((type == 9 || type == 12) && !connections))
+    errors |= 32;
+  if ((flags & 4) && !(type <= 10 && ((0x5d4u >> type) & 1)))
+    errors |= 4;
+  if ((flags & 0x400) && type != 7)
+    errors |= 8;
+  if ((flags & 0x380) && type != 4)
+    errors |= 16;
+  return errors;
+}
 namespace {
 using Kind = ProteinSchemaNodeKind;
 struct Parser {

@@ -443,6 +443,30 @@ struct ProteinSchemaConstraintFields {
   ProteinSchemaNumber increment; // 1 when incrementsize is absent
   bool minimum_inclusive = true, maximum_inclusive = true, percentage = false;
 };
+// Schema XML declaration type codes (not ProteinProperty's wire discriminant):
+// binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
+// color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
+// Mapping a name does not assert a supported factory or inherited definition.
+std::optional<uint32_t> protein_schema_value_type(std::string_view) noexcept;
+// Native declaration flag validation, before type-specific flag rewriting.
+// Conflict bits: 1=flags outside 12 bits, 2=readonly + definition iterator,
+// 4=unsupported multiple values, 8=distance on non-real type,
+// 16=UI/implementation/texture-URI role on non-URL type,
+// 32=both connection modes, or a texture/reference with neither mode.
+// Zero only means no flag conflict; IDs, aliases and factories are separate.
+uint32_t protein_schema_flag_conflicts(uint32_t value_type,
+                                      uint32_t declaration_flags) noexcept;
+struct ProteinSchemaPreparedFields {
+  std::string_view label; // borrows fields.label or effective_id
+  uint32_t flags = 0;
+};
+// XML declaration preprocessing after ID/flag validation, before its factory.
+// Supply the working ID (defaults().effective_id for ordinary declarations).
+// Raw fields remain unchanged. Base/UID/PropertyAlias handlers, acceptance,
+// property values and inheritance are separate; this is not a validity check.
+// Applies type roles and the native exact-case length-unit flag, no conversion.
+ProteinSchemaPreparedFields protein_schema_prepare_fields(
+    const ProteinSchemaEntryFields &, std::string_view effective_id) noexcept;
 // On-demand XML decoding of type183 data. Owns immutable decoded strings and
 // ordered nodes; copies share storage, independent reads are thread-safe.
 // Preserves unknown declarations/attributes, duplicate IDs, choice children,
