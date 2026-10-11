@@ -534,6 +534,19 @@ struct ProteinSchemaChoiceLookup {
   ProteinSchemaChoiceLookupStatus status = ProteinSchemaChoiceLookupStatus::missing;
   Id entry = none; // index into entries(), present only when found
 };
+enum class ProteinSchemaChoiceDefaultStatus { ready, missing_first, unresolved };
+enum class ProteinSchemaChoiceTokenStatus { matched, missing, unresolved, ignored };
+struct ProteinSchemaChoiceDefaultToken {
+  std::string text;
+  ProteinSchemaChoiceTokenStatus status = ProteinSchemaChoiceTokenStatus::ignored;
+  Id entry = none; // Choice index entry, present only when matched
+};
+struct ProteinSchemaChoiceDefaults {
+  ProteinSchemaChoiceDefaultStatus status = ProteinSchemaChoiceDefaultStatus::missing_first;
+  bool multiple = false;
+  std::vector<ProteinSchemaChoiceDefaultToken> tokens;
+  std::vector<int32_t> values; // complete values only when status is ready
+};
 // Builds one immutable Choice declaration table; owns a shared document copy.
 // Preserves all ChoiceValue nodes in preorder, including rejected/uncertain ones.
 // Nonempty IDs and nonnegative int32 values must both be unique; first accepted
@@ -549,6 +562,12 @@ public:
   std::span<const ProteinSchemaChoiceEntry> entries() const noexcept;
   bool complete() const noexcept;
   ProteinSchemaChoiceLookup find_id(std::string_view) const;
+  // XML factory value projection: scalar uses the first token; arrays keep
+  // matched tokens in order, including repeats, and skip later missing IDs.
+  // A missing first ID is not replaced with a fabricated default. Raw tokens
+  // and matched entry identities remain available even when the result is
+  // unresolved. Does not validate declaration flags/IDs or register properties.
+  ProteinSchemaChoiceDefaults defaults(ProteinSchemaValueOptions = {}) const;
 };
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.

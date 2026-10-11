@@ -351,6 +351,8 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `find_id(id)` 返回 found、missing 或 unresolved；found 的 `entry` 是 `entries()` 下标，不是 XML 节点 ID。此前已确认的条目仍可查询，但不把未决条目当作不存在。索引持有文档的共享副本，构建复杂度为 O(n log n)，查询为 O(log n)，独立查询可并发复用。`ProteinSchemaValueOptions::max_values` 在此限制候选条目数。该索引解释枚举表，不表示属性工厂已经接受声明或默认值。
 
+`ProteinSchemaChoiceIndex::defaults(options)` 将该声明的默认值 token 映射到枚举整数。单值只使用首 token；多值按原顺序保留匹配项和重复项，跳过后续未匹配 ID。返回的每个 token 保留文本、匹配状态和枚举条目下标。`ready` 时 `values` 才是完整结果；首 ID 缺失返回 `missing_first`，枚举表或映射不能确定时返回 `unresolved`，两者均不生成替代默认值。`max_values` 限制全部 token 数，包含单值模式下未使用的后续 token。该方法复用索引，可并发调用；结果仅说明 XML 默认值转换，不代替声明标志/ID 验证、继承或属性注册。
+
 `resolved_constraint(id)` 返回声明中最后一个数值约束候选的处理结果和来源节点。`absent` 表示没有候选，`ready` 提供可用区间，`discarded` 表示无效区间清除了前一个约束，`unresolved` 表示数值转换尚不能确定。最小值大于最大值，或相等且任一端不包含端点时，区间被清除；百分比约束强制使用闭区间 `[0,1]`、步长 `1`。该接口按声明顺序遍历，使用常量额外遍历空间，仅解释最终候选；它不表示属性工厂已接受默认值，也不执行继承合并。
 
 ```cpp

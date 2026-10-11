@@ -496,6 +496,7 @@ void visit_constraint_nodes(std::span<const ProteinSchemaXmlNode> nodes,
 
 struct ProteinSchemaChoiceIndex::Impl {
   ProteinSchemaDocument document;
+  Id declaration = none;
   std::vector<ProteinSchemaChoiceEntry> entries;
   std::map<std::string_view, Id, std::less<>> ids;
   bool complete = true;
@@ -507,6 +508,7 @@ ProteinSchemaChoiceIndex::ProteinSchemaChoiceIndex(
   detail::require(doc.entry_fields(entry).kind == "Choice",
                   "Protein Schema choice index requires a Choice declaration");
   auto result = std::make_shared<Impl>(doc);
+  result->declaration = entry;
   std::map<int32_t, Id> values;
   ValueBudget budget{options.max_values};
   using Status = ProteinSchemaChoiceStatus;
@@ -571,6 +573,49 @@ ProteinSchemaChoiceIndex::find_id(std::string_view id) const {
   return {impl->complete ? ProteinSchemaChoiceLookupStatus::missing
                          : ProteinSchemaChoiceLookupStatus::unresolved,
           none};
+}
+
+ProteinSchemaChoiceDefaults
+ProteinSchemaChoiceIndex::defaults(ProteinSchemaValueOptions options) const {
+  using Status = ProteinSchemaChoiceDefaultStatus;
+  using TokenStatus = ProteinSchemaChoiceTokenStatus;
+  ProteinSchemaChoiceDefaults out;
+  const auto fields = impl->document.entry_fields(impl->declaration);
+  out.multiple = (fields.declaration_flags & 4) != 0;
+  ValueBudget budget{options.max_values};
+  if (fields.value)
+    tokens(*fields.value, budget, [&](std::string text) {
+      out.tokens.push_back({std::move(text), TokenStatus::ignored, none});
+    });
+  if (out.tokens.empty())
+    return out;
+  out.status = impl->complete ? Status::ready : Status::unresolved;
+  const size_t count = out.multiple ? out.tokens.size() : 1;
+  for (size_t i = 0; i < count; ++i) {
+    auto &token = out.tokens[i];
+    const auto found = find_id(token.text);
+    if (found.status == ProteinSchemaChoiceLookupStatus::found) {
+      token.status = TokenStatus::matched;
+      token.entry = found.entry;
+      if (out.status == Status::ready)
+        out.values.push_back(
+            static_cast<int32_t>(*impl->entries[found.entry].value.value));
+    } else if (found.status == ProteinSchemaChoiceLookupStatus::missing) {
+      token.status = TokenStatus::missing;
+      if (i == 0) {
+        out.status = Status::missing_first;
+        break;
+      }
+    } else {
+      token.status = TokenStatus::unresolved;
+      out.status = Status::unresolved;
+      if (i == 0)
+        break;
+    }
+  }
+  if (out.status != Status::ready)
+    out.values.clear();
+  return out;
 }
 
 std::vector<Id> ProteinSchemaDocument::constraint_nodes(Id entry) const {
