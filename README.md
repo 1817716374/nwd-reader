@@ -335,7 +335,30 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `ProteinGraphIndex(graph, graph_id)` 可复用于同图资产：`connections(owner)` 保留属性位置、保存连接 ordinal、目标及启用标记，`native_ordinal` 区分跳过 NULL 后的位置；`uris(owner)` 返回属性内的字符串和嵌入文件身份。`reachable(root)` 每个可到达对象只返回一次，`enabled_path` 表示至少存在一条全部连接启用的路径；禁用路径的记录仍保留。它不执行着色器求值。
 
-`protein_asset_fields(graph, owner, wire_version, graph_id)` 返回库 ID、定义 ID、可选 Schema/GUID、缩略图 URI、分类、关键词、界面名称、默认预览 ID和描述。`protein_schema_fields()` 返回 Schema 标识、资产类型、原始 data 和父引用。列表和 Schema 数据借用原图，调用方应保持图存活且不变。`optional` 区分未保存与保存为空，`Id == none` 保留保存的 NULL；不生成文件中缺失的 GUID，也不展开或猜测 Schema 内部语义。
+`protein_asset_fields(graph, owner, wire_version, graph_id)` 返回库 ID、定义 ID、可选 Schema/GUID、缩略图 URI、分类、关键词、界面名称、默认预览 ID和描述。`protein_schema_fields()` 返回 Schema 标识、资产类型、原始 data 和父引用。列表和 Schema 数据借用原图，调用方应保持图存活且不变。`optional` 区分未保存与保存为空，`Id == none` 保留保存的 NULL；不生成文件中缺失的 GUID，内部 XML 可以通过 `ProteinSchemaDocument` 按需读取。
+
+`ProteinSchemaDocument(data, options)` 读取 Schema XML，拥有不可变的 UTF-8 字符串和有序节点。`entries()` 返回顶层声明，`entry_fields(id)` 返回名称、标签、单位、原始默认值、别名和声明标志；`nodes()` 保留未知属性、重复 ID、子节点及原始字节偏移。复制 document 共享存储，可并发查询；返回的字符串视图须在 document 存活时使用。
+
+`defaults(id)` 解释转义的多值分隔符、布尔值、Integer/Float/Distance 默认值、Color/Vector3 分量以及 Reference 的 texture 标记。颜色按最长分量数组补齐 RGB=0、A=1，向量每轴保留首值并补零；UI 和 implementation 路径不拆分。数值同时返回原始 token、消费长度和转换状态：`defaulted` 表示缺省补值，`exact` 表示完整有限十进制值，`prefix` 表示仅转换了数字前缀，`empty/invalid/out_of_range` 不提供数值。它不复现所有原产品数值转换失败、溢出或非有限数值行为。
+
+`constraint_nodes(id)` 按顺序列出进入数值约束读取分支的嵌套节点；`constraint_fields(node)` 返回可选最小/最大值、步长、开闭区间和百分比标记。所有候选节点都保留，调用方不应据此假定已经完成运行时约束选择或继承合并。
+
+```cpp
+auto schema = nwd::protein_schema_fields(graph, schema_id, graph_id);
+nwd::ProteinSchemaDocument document(schema.data);
+for (nwd::Id id : document.entries()) {
+    auto raw = document.entry_fields(id);
+    auto defaults = document.defaults(id);
+    // raw 保留保存文本；defaults 的数值须连同 status 检查。
+    for (nwd::Id child : document.constraint_nodes(id)) {
+        auto constraint = document.constraint_fields(child);
+        // document.nodes()[child] 保留约束来源与全部原始属性。
+    }
+}
+```
+
+XML 读取限制输入长度、节点数、属性数、深度及解码文本总量；默认值解释另有限制值数量的 `ProteinSchemaValueOptions`。支持 UTF-8/UTF-16 和普通 XML 实体，DTD 明确不支持。Schema 的 Base/父引用、库定义查找、继承覆盖、UUID/URL/Choice 的完整业务转换和资源角色仍有未实现部分；不会自动把所有 URL 解释成纹理，也不会生成运行时材质。
+
 
 `SavedItem.material_asset` 指向所属 `SavedItems.objects`，保存版本 443 前为旧资产 182，443 起为 JSON 资产 185。重复、NULL 和跨块的对象身份保持独立；保存材质的存在不等于它已应用到某个实例。
 
@@ -524,3 +547,5 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 ## 第三方组件
 
 使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产，使用 SQLite 在内存中读取嵌入数据库，复用 tiny-AES-c 与 Blowfish 实现读取格式内的编码载荷。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+Schema XML 使用固定版本 Expat 2.8.5，静态链接并隔离符号；源码及许可证随库提供，构建无需联网。

@@ -392,6 +392,86 @@ ProteinAssetFields protein_asset_fields(const ObjectGraph &, Id owner,
                                         uint32_t wire_version, Id graph_id = 0);
 ProteinSchemaFields protein_schema_fields(const ObjectGraph &, Id owner,
                                           Id graph_id = 0);
+enum class ProteinSchemaNodeKind { element, text, comment, instruction };
+struct ProteinSchemaXmlAttribute {
+  std::string name, value;
+};
+struct ProteinSchemaXmlNode {
+  ProteinSchemaNodeKind kind = ProteinSchemaNodeKind::element;
+  Id parent = none, first_child = none, next_sibling = none;
+  uint64_t byte_offset = 0; // original XML byte offset, including BOM
+  std::string name, value; // decoded UTF-8; text/PI/comment use value
+  std::vector<ProteinSchemaXmlAttribute> attributes; // original order
+};
+struct ProteinSchemaXmlOptions {
+  uint64_t max_bytes = 16ull << 20, max_text_bytes = 64ull << 20;
+  uint32_t max_nodes = 1000000, max_attributes = 1000000, max_depth = 256;
+};
+struct ProteinSchemaEntryFields {
+  std::string_view kind;
+  std::optional<std::string_view> id, value, type, label, unit, alias, file;
+  std::array<std::optional<std::string_view>, 4> rgba;
+  std::array<std::optional<std::string_view>, 3> xyz;
+  // Schema declaration flags, not ProteinProperty::flags or active values.
+  // public=1, readonly=2, multiple values=4, definition iterator data=8,
+  // local=16, single/multiple connections=32/64, metadata=2048.
+  uint32_t declaration_flags = 1;
+};
+enum class ProteinSchemaNumberStatus {
+  defaulted, exact, prefix, empty, invalid, out_of_range
+};
+struct ProteinSchemaNumber {
+  std::string text; // unescaped token, or unsplit constraint attribute
+  std::optional<double> value;
+  ProteinSchemaNumberStatus status = ProteinSchemaNumberStatus::defaulted;
+  uint64_t consumed = 0; // bytes through decimal prefix, including leading space
+};
+struct ProteinSchemaValueOptions {
+  uint32_t max_values = 1000000; // total tokens + normalized components per call
+};
+struct ProteinSchemaDefaults {
+  std::string_view effective_id; // borrows document, except fixed "assettype"
+  std::vector<std::string> tokens; // val split on unescaped ',' or '|'
+  std::optional<ProteinSchemaNumber> scalar; // Float/Distance or int32 Integer
+  std::optional<bool> boolean_value, texture_reference;
+  // Color: RGBA, equal lengths with 0/0/0/1 padding. Vector3: XYZ, length 1.
+  // valX/Y/Z alias valR/G/B; X/Y/Z win if both aliases are present.
+  std::array<std::vector<ProteinSchemaNumber>, 4> components;
+};
+struct ProteinSchemaConstraintFields {
+  std::optional<ProteinSchemaNumber> minimum, maximum;
+  ProteinSchemaNumber increment; // 1 when incrementsize is absent
+  bool minimum_inclusive = true, maximum_inclusive = true, percentage = false;
+};
+// On-demand XML decoding of type183 data. Owns immutable decoded strings and
+// ordered nodes; copies share storage, independent reads are thread-safe.
+// Preserves unknown declarations/attributes, duplicate IDs, choice children,
+// text, comments and processing instructions. A valid AssetSchema root is
+// required. DTDs are explicitly unsupported; no external resources are read.
+// XML names and values are case-sensitive. Raw fields are never normalized.
+// Optional default/constraint accessors interpret finite decimal values without
+// locale or shared mutable state; status distinguishes missing defaults, numeric
+// prefixes and unresolved numeric input (empty/invalid/out_of_range => no value).
+// This does not emulate every MSVC stream failure/overflow edge, resolve inherited
+// defaults or library identities, apply constraints, or create runtime materials.
+class ProteinSchemaDocument {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+
+public:
+  explicit ProteinSchemaDocument(std::span<const uint8_t>,
+                                  ProteinSchemaXmlOptions = {});
+  std::span<const ProteinSchemaXmlNode> nodes() const;
+  Id root() const;
+  std::span<const Id> entries() const; // immediate element children of root
+  ProteinSchemaEntryFields entry_fields(Id) const;
+  ProteinSchemaDefaults defaults(Id, ProteinSchemaValueOptions = {}) const;
+  // Nested elements visited by the native numeric-constraint reader, in source
+  // order. ChoiceValue descendants of a Choice declaration use another reader.
+  // Keep all candidates: this is not a resolved runtime constraint selection.
+  std::vector<Id> constraint_nodes(Id entry) const;
+  ProteinSchemaConstraintFields constraint_fields(Id node) const;
+};
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
 // No shader-role inference or runtime conversion to JSON is performed.

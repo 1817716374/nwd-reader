@@ -1,0 +1,14 @@
+#pragma once
+#include "nwd_expat_prefix.h"
+#define BYTEORDER @NWD_XML_BYTEORDER@
+#define XML_CONTEXT_BYTES 1024
+#define XML_GE 1
+#define XML_NS 1
+#define XML_ATTR_INFO 1
+#define XML_STATIC 1
+#ifndef _WIN32
+#define XML_DEV_URANDOM 1
+#endif
+#if defined(_MSC_VER)
+#define __func__ __FUNCTION__
+#endif
