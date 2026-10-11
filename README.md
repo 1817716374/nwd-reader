@@ -345,7 +345,9 @@ NWF 缓存插件及选项保留在引用记录中。`CacheOption.value` 的字�
 
 `protein_schema_prepare_fields(raw, effective_id)` 返回标签和预处理后的声明标志。它按原始 public 标志补齐空标签，再处理 TextureURI、ui、implementation、Distance、Vector3、assettype 等角色及原生长度单位名称。单位匹配区分大小写，不换算数值。该函数无内存分配；返回的标签视图借用输入字段或有效 ID。应先检查原始声明标志，再进行预处理；Base、UID、PropertyAlias 的特殊处理、ID 接受、工厂创建和继承合并是独立步骤。
 
-`constraint_nodes(id)` 按顺序列出进入数值约束读取分支的嵌套节点；`constraint_fields(node)` 返回可选最小/最大值、步长、开闭区间和百分比标记。所有候选节点都保留，调用方不应据此假定已经完成运行时约束选择或继承合并。
+`constraint_nodes(id)` 按顺序列出进入数值约束读取分支的嵌套节点；`constraint_fields(node)` 返回可选最小/最大值、步长、开闭区间和百分比标记。所有候选节点及其原始文本都保留。
+
+`resolved_constraint(id)` 返回声明中最后一个数值约束候选的处理结果和来源节点。`absent` 表示没有候选，`ready` 提供可用区间，`discarded` 表示无效区间清除了前一个约束，`unresolved` 表示数值转换尚不能确定。最小值大于最大值，或相等且任一端不包含端点时，区间被清除；百分比约束强制使用闭区间 `[0,1]`、步长 `1`。该接口按声明顺序遍历，使用常量额外遍历空间，仅解释最终候选；它不表示属性工厂已接受默认值，也不执行继承合并。
 
 ```cpp
 auto schema = nwd::protein_schema_fields(graph, schema_id, graph_id);
@@ -360,6 +362,8 @@ for (nwd::Id id : document.entries()) {
         // conflicts 检查原始标志；prepared 提供预处理字段，不表示工厂已接受声明。
     }
     // raw 保留保存文本；defaults 的数值须连同 status 检查。
+    auto constraint = document.resolved_constraint(id);
+    // 仅 ready 状态提供 range；source 可回查原始 XML 节点。
     for (nwd::Id child : document.constraint_nodes(id)) {
         auto constraint = document.constraint_fields(child);
         // document.nodes()[child] 保留约束来源与全部原始属性。

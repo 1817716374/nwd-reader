@@ -443,6 +443,17 @@ struct ProteinSchemaConstraintFields {
   ProteinSchemaNumber increment; // 1 when incrementsize is absent
   bool minimum_inclusive = true, maximum_inclusive = true, percentage = false;
 };
+enum class ProteinSchemaConstraintStatus { absent, ready, discarded, unresolved };
+struct ProteinSchemaNumericRange {
+  std::optional<double> minimum, maximum;
+  double increment = 1;
+  bool minimum_inclusive = true, maximum_inclusive = true, percentage = false;
+};
+struct ProteinSchemaResolvedConstraint {
+  Id source = none; // last numeric-constraint candidate in this declaration
+  ProteinSchemaConstraintStatus status = ProteinSchemaConstraintStatus::absent;
+  std::optional<ProteinSchemaNumericRange> range; // present only when ready
+};
 // Schema XML declaration type codes (not ProteinProperty's wire discriminant):
 // binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
 // color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
@@ -495,6 +506,11 @@ public:
   // Keep all candidates: this is not a resolved runtime constraint selection.
   std::vector<Id> constraint_nodes(Id entry) const;
   ProteinSchemaConstraintFields constraint_fields(Id node) const;
+  // Selects the last candidate, including a rejected candidate that clears a
+  // preceding range. Percentage forces inclusive [0,1] with increment 1.
+  // Unresolved numeric conversion stays explicit. This resolves the local
+  // constraint object, not factory acceptance or inherited property values.
+  ProteinSchemaResolvedConstraint resolved_constraint(Id entry) const;
 };
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.

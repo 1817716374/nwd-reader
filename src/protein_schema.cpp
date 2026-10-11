@@ -462,17 +462,17 @@ ProteinSchemaDocument::defaults(Id id,
   return out;
 }
 
-std::vector<Id> ProteinSchemaDocument::constraint_nodes(Id entry) const {
-  const auto fields = entry_fields(entry);
-  std::vector<Id> out;
-  const auto &nodes = impl->nodes;
+namespace {
+template <class F>
+void visit_constraint_nodes(const std::vector<ProteinSchemaXmlNode> &nodes,
+                            Id entry, std::string_view kind, F &&visit) {
   // Arena order is preorder. Climb through parents only after a subtree ends;
   // each edge is visited at most twice, with no recursive C++ stack growth.
   Id id = nodes[entry].first_child;
   while (id != none) {
     if (nodes[id].kind == Kind::element &&
-        !(fields.kind == "Choice" && nodes[id].name == "ChoiceValue"))
-      out.push_back(id);
+        !(kind == "Choice" && nodes[id].name == "ChoiceValue"))
+      visit(id);
     if (nodes[id].first_child != none) {
       id = nodes[id].first_child;
       continue;
@@ -483,6 +483,55 @@ std::vector<Id> ProteinSchemaDocument::constraint_nodes(Id entry) const {
       break;
     id = nodes[id].next_sibling;
   }
+}
+} // namespace
+
+std::vector<Id> ProteinSchemaDocument::constraint_nodes(Id entry) const {
+  const auto fields = entry_fields(entry);
+  std::vector<Id> out;
+  visit_constraint_nodes(impl->nodes, entry, fields.kind,
+                         [&](Id id) { out.push_back(id); });
+  return out;
+}
+
+ProteinSchemaResolvedConstraint
+ProteinSchemaDocument::resolved_constraint(Id entry) const {
+  const auto fields = entry_fields(entry);
+  ProteinSchemaResolvedConstraint out;
+  visit_constraint_nodes(impl->nodes, entry, fields.kind,
+                         [&](Id id) { out.source = id; });
+  if (out.source == none)
+    return out;
+  const auto raw = constraint_fields(out.source);
+  using Status = ProteinSchemaConstraintStatus;
+  if (raw.percentage) {
+    out.status = Status::ready;
+    out.range = ProteinSchemaNumericRange{0, 1, 1, true, true, true};
+    return out;
+  }
+  if (raw.minimum && raw.maximum && raw.minimum->value && raw.maximum->value) {
+    const auto low = *raw.minimum->value, high = *raw.maximum->value;
+    if (low > high ||
+        (low == high && (!raw.minimum_inclusive || !raw.maximum_inclusive))) {
+      out.status = Status::discarded;
+      return out;
+    }
+  }
+  if ((raw.minimum && !raw.minimum->value) ||
+      (raw.maximum && !raw.maximum->value) || !raw.increment.value) {
+    out.status = Status::unresolved;
+    return out;
+  }
+  ProteinSchemaNumericRange range;
+  if (raw.minimum)
+    range.minimum = raw.minimum->value;
+  if (raw.maximum)
+    range.maximum = raw.maximum->value;
+  range.increment = *raw.increment.value;
+  range.minimum_inclusive = raw.minimum_inclusive;
+  range.maximum_inclusive = raw.maximum_inclusive;
+  out.status = Status::ready;
+  out.range = range;
   return out;
 }
 
