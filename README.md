@@ -456,6 +456,25 @@ if (applied.status == nwd::ProteinSchemaPropertyVersionStatus::unresolved) {
 
 结果提供比较诊断、控制字节修改及复制尝试/完成标记；输入和原定义索引保持不可变。如果比较或原始布局复制无法可靠完成，不猜测后续分支，也不把未决当作不兼容。较新分支不会把原生复制回调的返回值额外当成兼容门槛；库无法可靠投影的复制仍明确报告 `copy_unresolved`。此接口不查找属性、不升级 URI、不创建或传播属性，也不模拟产品分配器或异常展开。比较预算耗尽仍抛出 `Error`。
 
+`protein_schema_compare_base_properties(&target, &source, options)` 提供 BaseSchema 的目标优先比较：检查声明类型、控制字节及屏蔽位 8 后的 flags，再按具体类比较 const 值。它跳过属性范围约束，但 Choice 自身的表仍参与比较，且保留有方向性的前缀规则。不能用普通属性比较或只比较选中值替代它。
+
+`protein_schema_reconcile_existing_property(source, target, context, options)` 组合已有属性的处理顺序。SchemaVersion 留给最终版本写入；随后先比较目标与源父属性，相等时直接复制当前源属性；否则再处理 BaseSchema、URI 或普通版本分支。父级覆盖先于这些分支，因此它也可能更新 BaseSchema 或 URI。URI 未发生父级覆盖时仍返回 `uri_branch_required`，完整 URI 更新和全定义登记尚未实现。
+
+```cpp
+nwd::ProteinSchemaExistingPropertyContext context;
+context.source_parent_property = parent_property; // nullptr means known absent
+context.source_version = source_version;
+context.target_version = target_version;
+auto reconciled = nwd::protein_schema_reconcile_existing_property(
+    source, target, context);
+auto current = reconciled.target;
+auto route = reconciled.route;
+```
+
+父级查找不能确定时应设置 `parent_lookup_complete = false`；查找或父比较未决会停止推断。版本为可选值，只在普通分支需要时读取，缺失不会自动当成 1。结果保留父比较、BaseSchema 比较、普通版本结果、复制诊断和已知目标状态；父比较失败时可继续分派，未决时不能冒充“不相等”。比较预算累计覆盖父比较和后续分支，耗尽抛 `Error`。输入保持不可变，成功复制继续共享缓存数据和扁平字段来源。
+
+该入口要求调用方已经完成实际名称查找和旧上下文的源元数据修复；它不解析父级作用域、不查别名、不创建或传播属性，也不执行最终 SchemaVersion 写入、命名空间接管或产品分配器/异常处理。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

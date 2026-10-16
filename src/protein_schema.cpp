@@ -1623,7 +1623,8 @@ struct SchemaComparison {
         std::min(x.defaults.values.size(), y.defaults.values.size()));
   }
   Comparison state_values(const ProteinSchemaPropertyState &a,
-                          const ProteinSchemaPropertyState &b) {
+                          const ProteinSchemaPropertyState &b,
+                          bool choice_checked = true) {
     const auto at = a.binding(), bt = b.binding();
     if (!at || !bt)
       return uncertain(CompareIssue::unknown_layout);
@@ -1633,6 +1634,14 @@ struct SchemaComparison {
       return compared(false);
     if (at->type_name != bt->type_name)
       return compared(false);
+    if (!choice_checked && (at->type_name == "ChoiceValue" ||
+                            at->type_name == "ChoiceListValue")) {
+      if (!a.choice_table() || !b.choice_table())
+        return compared(false);
+      const auto result = choice_table(*a.choice_table(), *b.choice_table());
+      if (result.status != CompareStatus::equal)
+        return result;
+    }
     SchemaStatePayload x(a), y(b);
     if (x.issue != CompareIssue::none)
       return uncertain(x.issue);
@@ -2860,16 +2869,17 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
     result->choice = source.impl->choice;
   return {Issue::none, ProteinSchemaPropertyState(std::move(result))};
 }
-ProteinSchemaComparisonResult protein_schema_compare_property_states(
-    const ProteinSchemaPropertyState *a, const ProteinSchemaPropertyState *b,
-    uint32_t skip_type, ProteinSchemaComparisonOptions options) {
+namespace {
+Comparison schema_compare_property_states(const ProteinSchemaPropertyState *a,
+                                          const ProteinSchemaPropertyState *b,
+                                          uint32_t skip_type,
+                                          SchemaComparison &compare) {
   if (!a || !b || a->target().value_type != b->target().value_type)
     return compared(false);
   if (a->target().value_type == skip_type)
     return compared(true);
   if (!a->data() || !b->data())
     return uncertain(CompareIssue::missing_value);
-  SchemaComparison compare{options};
   if (a->target().value_type == 6 || a->target().value_type == 7) {
     if (a->constraint_presence() ==
             ProteinSchemaReferencePresence::unresolved ||
@@ -2891,10 +2901,11 @@ ProteinSchemaComparisonResult protein_schema_compare_property_states(
   }
   return compare.state_values(*a, *b);
 }
-ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
-    const ProteinSchemaPropertyState &source,
-    const ProteinSchemaPropertyState &target, uint32_t source_version,
-    uint32_t target_version, ProteinSchemaComparisonOptions options) {
+ProteinSchemaPropertyVersionResult
+schema_apply_ordinary_version(const ProteinSchemaPropertyState &source,
+                              const ProteinSchemaPropertyState &target,
+                              uint32_t source_version, uint32_t target_version,
+                              SchemaComparison &compare) {
   using Status = ProteinSchemaPropertyVersionStatus;
   using Issue = ProteinSchemaPropertyVersionIssue;
   ProteinSchemaPropertyVersionResult result{target};
@@ -2956,8 +2967,8 @@ ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
       result.control_written = true;
     }
   }
-  result.comparison = protein_schema_compare_property_states(
-      &source, &result.target, 4, options);
+  result.comparison =
+      schema_compare_property_states(&source, &result.target, 4, compare);
   if (result.comparison->status == ProteinSchemaComparisonStatus::unresolved) {
     result.issue = Issue::comparison_unresolved;
     return result;
@@ -2981,6 +2992,137 @@ ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
   result.target = std::move(*copied.state);
   result.copied = true;
   result.status = Status::compatible;
+  return result;
+}
+
+Comparison
+schema_compare_base_properties(const ProteinSchemaPropertyState *target,
+                               const ProteinSchemaPropertyState *source,
+                               SchemaComparison &compare) {
+  if (!target || !source ||
+      target->target().value_type != source->target().value_type)
+    return compared(false);
+  if (!target->control_byte() || !source->control_byte())
+    return uncertain(CompareIssue::unknown_layout);
+  if (target->control_byte() != source->control_byte() ||
+      ((target->flags() ^ source->flags()) & 0xfffffff7u))
+    return compared(false);
+  if (!target->data() || !source->data())
+    return uncertain(CompareIssue::missing_value);
+  return compare.state_values(*target, *source, false);
+}
+} // namespace
+ProteinSchemaComparisonResult protein_schema_compare_property_states(
+    const ProteinSchemaPropertyState *a, const ProteinSchemaPropertyState *b,
+    uint32_t skip_type, ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_compare_property_states(a, b, skip_type, compare);
+}
+ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
+    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaPropertyState &target, uint32_t source_version,
+    uint32_t target_version, ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_apply_ordinary_version(source, target, source_version,
+                                       target_version, compare);
+}
+ProteinSchemaComparisonResult
+protein_schema_compare_base_properties(const ProteinSchemaPropertyState *target,
+                                       const ProteinSchemaPropertyState *source,
+                                       ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_compare_base_properties(target, source, compare);
+}
+ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
+    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaPropertyState &target,
+    ProteinSchemaExistingPropertyContext context,
+    ProteinSchemaComparisonOptions options) {
+  using Status = ProteinSchemaExistingPropertyStatus;
+  using Route = ProteinSchemaExistingPropertyRoute;
+  using Issue = ProteinSchemaExistingPropertyIssue;
+  ProteinSchemaExistingPropertyResult result{target};
+  if (source.target().id == "SchemaVersion") {
+    result.route = Route::schema_version_required;
+    result.issue = Issue::schema_version_required;
+    return result;
+  }
+  SchemaComparison compare{options};
+  if (!context.parent_lookup_complete) {
+    result.route = Route::parent_check;
+    result.issue = Issue::parent_lookup_unresolved;
+    return result;
+  }
+  if (context.source_parent_property) {
+    result.route = Route::parent_check;
+    result.parent_comparison = schema_compare_property_states(
+        &target, context.source_parent_property, 0, compare);
+    if (result.parent_comparison->status == CompareStatus::unresolved) {
+      result.issue = Issue::parent_comparison_unresolved;
+      return result;
+    }
+    if (result.parent_comparison->status == CompareStatus::equal) {
+      result.route = Route::parent_override;
+      result.copy_attempted = true;
+      auto copied = target.copied_from(source);
+      result.copy_issue = copied.issue;
+      if (!copied.state) {
+        result.issue = Issue::parent_copy_unresolved;
+        return result;
+      }
+      result.target = std::move(*copied.state);
+      result.copied = true;
+      result.status = Status::compatible;
+      return result;
+    }
+  }
+  if (source.target().id == "BaseSchema") {
+    result.route = Route::base_schema;
+    result.base_comparison =
+        schema_compare_base_properties(&target, &source, compare);
+    switch (result.base_comparison->status) {
+    case CompareStatus::equal:
+      result.status = Status::compatible;
+      break;
+    case CompareStatus::different:
+      result.status = Status::incompatible;
+      result.issue = Issue::base_comparison_different;
+      break;
+    case CompareStatus::unresolved:
+      result.issue = Issue::base_comparison_unresolved;
+      break;
+    }
+    return result;
+  }
+  if (target.target().value_type == 4) {
+    result.route = Route::uri_required;
+    result.issue = Issue::uri_branch_required;
+    return result;
+  }
+  result.route = Route::ordinary_version;
+  if (!context.source_version || !context.target_version) {
+    result.issue = Issue::unknown_version;
+    return result;
+  }
+  result.version =
+      schema_apply_ordinary_version(source, target, *context.source_version,
+                                    *context.target_version, compare);
+  result.target = result.version->target;
+  result.copy_issue = result.version->copy_issue;
+  result.copy_attempted = result.version->copy_attempted;
+  result.copied = result.version->copied;
+  switch (result.version->status) {
+  case ProteinSchemaPropertyVersionStatus::compatible:
+    result.status = Status::compatible;
+    break;
+  case ProteinSchemaPropertyVersionStatus::incompatible:
+    result.status = Status::incompatible;
+    result.issue = Issue::ordinary_version_incompatible;
+    break;
+  case ProteinSchemaPropertyVersionStatus::unresolved:
+    result.issue = Issue::ordinary_version_unresolved;
+    break;
+  }
   return result;
 }
 } // namespace nwd

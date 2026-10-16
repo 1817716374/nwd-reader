@@ -980,6 +980,55 @@ ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
     uint32_t source_version, uint32_t target_version,
     ProteinSchemaComparisonOptions = {});
 
+// BaseSchema's target-first predicate: type, raw control, flags except bit8,
+// then const-value dispatch. Ignores property bounds, still checks a Choice
+// value's own table after its concrete class. Null differs even from null.
+ProteinSchemaComparisonResult protein_schema_compare_base_properties(
+    const ProteinSchemaPropertyState *target, const ProteinSchemaPropertyState *source,
+    ProteinSchemaComparisonOptions = {});
+
+enum class ProteinSchemaExistingPropertyStatus { compatible, incompatible, unresolved };
+enum class ProteinSchemaExistingPropertyRoute {
+  none, parent_check, parent_override, base_schema, ordinary_version,
+  uri_required, schema_version_required
+};
+enum class ProteinSchemaExistingPropertyIssue {
+  none, schema_version_required, parent_lookup_unresolved,
+  parent_comparison_unresolved, parent_copy_unresolved, base_comparison_different,
+  base_comparison_unresolved, uri_branch_required, unknown_version,
+  ordinary_version_incompatible, ordinary_version_unresolved
+};
+struct ProteinSchemaExistingPropertyContext {
+  // Borrowed for this call. Null means known absent, not an uncertain lookup.
+  const ProteinSchemaPropertyState *source_parent_property = nullptr;
+  bool parent_lookup_complete = true;
+  // Needed only when the ordinary branch is reached. No implicit version1.
+  std::optional<uint32_t> source_version = std::nullopt, target_version = std::nullopt;
+};
+struct ProteinSchemaExistingPropertyResult {
+  ProteinSchemaPropertyState target;
+  ProteinSchemaExistingPropertyStatus status = ProteinSchemaExistingPropertyStatus::unresolved;
+  ProteinSchemaExistingPropertyRoute route = ProteinSchemaExistingPropertyRoute::none;
+  ProteinSchemaExistingPropertyIssue issue = ProteinSchemaExistingPropertyIssue::none;
+  std::optional<ProteinSchemaComparisonResult> parent_comparison = std::nullopt;
+  std::optional<ProteinSchemaComparisonResult> base_comparison = std::nullopt;
+  std::optional<ProteinSchemaPropertyVersionResult> version = std::nullopt;
+  ProteinSchemaPropertyCopyIssue copy_issue = ProteinSchemaPropertyCopyIssue::none;
+  bool copy_attempted = false, copied = false;
+};
+// Existing-property routing after source old-context metadata repair and actual
+// name lookup. Skips SchemaVersion, then compares target to source's parent.
+// Equal parent comparison copies current source to target before Base/URI/version
+// routing. Otherwise BaseSchema is target-first; URI stays explicitly unresolved;
+// ordinary properties use the version branch. Unknown parent lookup/comparison
+// stops inference. Result owns its state and retains comparison/copy diagnostics.
+// One aggregate comparison budget covers the parent and the subsequent branch.
+// No lookup, source repair, final SchemaVersion write, property creation,
+// propagation, URI update or complete namespace registration is implied.
+ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
+    const ProteinSchemaPropertyState &source, const ProteinSchemaPropertyState &target,
+    ProteinSchemaExistingPropertyContext = {}, ProteinSchemaComparisonOptions = {});
+
 enum class ProteinSchemaDefinitionLoadStatus {
   dependencies_resolved, pending_dependencies, unresolved
 };
