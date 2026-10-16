@@ -573,6 +573,34 @@ for (const auto &entry : created.properties) {
 
 调用方仍须完成 SchemaVersion 源跳过、旧上下文修复和接收定义的选择；这个方法不自动执行派生传播、完整定义兼容判断或全局接管/释放。它不依赖 Autodesk DLL，也不通过合成 XML 创建目标。
 
+`ProteinSchemaDefinitionGraph` 保存一组有独立身份的定义状态及显式父关系。每个图行代表一个作用域，名称、UID、XML 或值缓存相同不会合并。对不同定义应分别构造 `ProteinSchemaDefinitionState`；复制一个状态表示同一作用域身份，图构造器拒绝把它重复放入两行。namespace 中重复出现同一对象时，重复使用该图行 ID。
+
+```cpp
+using Node = nwd::ProteinSchemaDefinitionGraphNode;
+std::vector<Node> nodes{
+    {nwd::ProteinSchemaDefinitionState(root_definition), {nwd::none, true, 90}},
+    {nwd::ProteinSchemaDefinitionState(child_definition), {0, true, 10}}
+};
+nwd::ProteinSchemaDefinitionGraph graph(nodes);
+std::array<nwd::Id, 1> namespace_entries{1};
+auto propagated = graph.create_reflected_properties(0, namespace_entries, sources);
+graph = propagated.graph;
+```
+
+父关系的 `parent_known=false` 区分未解析父级与已知无父级。`select_receivers(target, namespace_entries, options)` 包含 target，以及能够沿父链到达 target 的枚举对象和中间祖先；中间祖先无需直接出现在 namespace 枚举中。重复枚举按图身份去重。查询复用不可变父链结果，避免物化重复祖先链；被访问的循环、缺失节点或父关系返回明确未决，未访问的循环不触发推断。
+
+`namespace_complete=false` 表示仅提供了枚举前缀。未决结果中的 `receivers` 是已知正向集合，按图行顺序列出，不是完整原生事件前缀。传播在选择未决时不修改任何定义。`max_namespace_entries` 和 `max_parent_edges` 限制枚举及优化后的独立父边读取，后者不是产品回调次数。
+
+默认 `unsigned_keys` 按调用方提供的独立 uint64 `order_key` 排序；多接收者缺键或键冲突会保持未决，不把图行号或保存文件 ID 猜成指针。示例中的键仅演示排序。可显式选择 `ProteinSchemaReceiverOrder::graph_row`，按图行顺序执行确定性的库策略。单个接收者不需要比较键。`local_target` profile 只处理目标，不读取 namespace；它对应已观察的局部 helper，不断言旧版全局登记与新版派生行为相同，也不是文件年份检测。
+
+图上的 `create_reflected_properties` 按接收定义分组调用局部批量创建，每个接收者只构建一次元数据索引，再按“源属性→接收者顺序”返回事件。数据、覆盖及字段供应者共享，新属性身份独立。结果区分选择未决、复制未决和已完成源前缀；来源复制未决时，只把此前可确定的源属性传播给全部已选定义。
+
+传播的新增属性数、缓存成本和生成文本使用跨接收者的累计预算；`max_receiver_history` 另限制为接收者构建快照时复制的旧行与新增行总数，避免少量新属性导致大量旧元数据复制。各 scope 的创建预算也继续生效。资源耗尽抛 `Error`，输入图保持不变，不模拟产品异常展开或回滚。
+
+`definition(row)` 读取当前定义，`with_definition(row, state)` 只接受同一作用域身份的不可变更新。图副本和更新保留图身份及拓扑，`same_identity()` 可检查该关系。图行 ID 只在该图的身份范围内有意义；事件的 property 是返回 scope 快照内的历史行，跨分叉快照的新行不能仅凭相同行号合并。
+
+调用方仍须提供真实的定义/namespace/父关系映射、普通缺失根属性的判断、源 SchemaVersion 跳过和上下文修复；该入口不执行完整源迭代、已有属性兼容、全局 UID/CommonSchema/assettype 门槛、别名传播或命名空间接管/释放。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

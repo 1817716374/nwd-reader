@@ -9,6 +9,8 @@
 #include <set>
 #include <cmath>
 #include <bit>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace nwd {
 namespace {
@@ -3033,6 +3035,33 @@ schema_copy_layout_issue(std::optional<ProteinSchemaRuntimeBinding> left,
     return Issue::raw_layout_required;
   return Issue::none;
 }
+ProteinSchemaPropertyCopyIssue
+schema_reflected_copy_issue(const ProteinSchemaPropertyState &source) {
+  using I = ProteinSchemaPropertyCopyIssue;
+  if (!source.data())
+    return I::missing_value;
+  const auto issue =
+      schema_copy_layout_issue(source.binding(), source.data_binding());
+  if (issue != I::none)
+    return issue;
+  return source.constraint_presence() ==
+                 ProteinSchemaReferencePresence::unresolved
+             ? I::unknown_constraint
+             : I::none;
+}
+uint64_t schema_reflected_value_cost(const ProteinSchemaPropertyState &source) {
+  auto result = schema_cached_values(*source.data());
+  const auto *choice =
+      std::get_if<ProteinSchemaDefinitionChoice>(source.data().get());
+  if (source.choice_table() &&
+      (!choice || &choice->index != source.choice_table())) {
+    const auto extra = source.choice_table()->entries().size();
+    detail::require(extra <= std::numeric_limits<uint64_t>::max() - result,
+                    "Protein Schema reflected value cost overflow");
+    result += extra;
+  }
+  return result;
+}
 } // namespace
 ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
     const ProteinSchemaPropertyState &source) const {
@@ -3582,6 +3611,7 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
 }
 struct ProteinSchemaDefinitionState::Impl {
   ProteinSchemaDefinitionIndex index, original;
+  std::shared_ptr<const uint8_t> identity = std::make_shared<const uint8_t>(0);
   std::map<Id, ProteinSchemaPropertyState> updates;
   explicit Impl(const ProteinSchemaDefinitionIndex &value)
       : index(value), original(value) {}
@@ -3592,6 +3622,10 @@ ProteinSchemaDefinitionState::ProteinSchemaDefinitionState(
 ProteinSchemaDefinitionState::ProteinSchemaDefinitionState(
     const ProteinSchemaDefinitionIndex &index)
     : impl(std::make_shared<const Impl>(index)) {}
+bool ProteinSchemaDefinitionState::same_identity(
+    const ProteinSchemaDefinitionState &other) const noexcept {
+  return impl && other.impl && impl->identity == other.impl->identity;
+}
 const ProteinSchemaDefinitionIndex &
 ProteinSchemaDefinitionState::definition() const noexcept {
   return impl->index;
@@ -3710,14 +3744,7 @@ ProteinSchemaDefinitionState::create_reflected_properties(
   };
   for (size_t i = 0; i < sources.size(); ++i) {
     const auto &source = sources[i];
-    result.issue =
-        source.data()
-            ? schema_copy_layout_issue(source.binding(), source.data_binding())
-            : Issue::missing_value;
-    if (result.issue == Issue::none &&
-        source.constraint_presence() ==
-            ProteinSchemaReferencePresence::unresolved)
-      result.issue = Issue::unknown_constraint;
+    result.issue = schema_reflected_copy_issue(source);
     if (result.issue != Issue::none)
       break;
     if (!metadata)
@@ -3726,16 +3753,8 @@ ProteinSchemaDefinitionState::create_reflected_properties(
                     "Protein Schema reflected value limit");
     const auto remaining =
         limits.max_cached_values - metadata->local->cached_values;
-    charge(metadata->extra_cached_values, schema_cached_values(*source.data()),
+    charge(metadata->extra_cached_values, schema_reflected_value_cost(source),
            remaining, "Protein Schema reflected value limit");
-    // A retained Choice field can have a different origin from the payload.
-    const auto *data_choice =
-        std::get_if<ProteinSchemaDefinitionChoice>(source.data().get());
-    if (source.choice_table() &&
-        (!data_choice || &data_choice->index != source.choice_table()))
-      charge(metadata->extra_cached_values,
-             source.choice_table()->entries().size(), remaining,
-             "Protein Schema reflected Choice limit");
     charge(metadata->generated_text_bytes, source.target().id.size(),
            options.max_generated_text_bytes,
            "Protein Schema reflected name limit");
@@ -3776,6 +3795,238 @@ ProteinSchemaDefinitionState::create_reflected_properties(
     state->updates.emplace(entry.property, *copy.state);
   }
   result.state = ProteinSchemaDefinitionState(std::move(state));
+  return result;
+}
+struct ProteinSchemaDefinitionGraph::Impl {
+  struct Topology {
+    std::vector<ProteinSchemaDefinitionGraphNode> nodes;
+  };
+  std::shared_ptr<const Topology> topology;
+  std::map<Id, ProteinSchemaDefinitionState> updates;
+  explicit Impl(std::shared_ptr<const Topology> value)
+      : topology(std::move(value)) {}
+};
+ProteinSchemaDefinitionGraph::ProteinSchemaDefinitionGraph(
+    std::shared_ptr<const Impl> value)
+    : impl(std::move(value)) {}
+ProteinSchemaDefinitionGraph::ProteinSchemaDefinitionGraph(
+    std::span<const ProteinSchemaDefinitionGraphNode> nodes, uint32_t limit) {
+  detail::require(nodes.size() <= limit && nodes.size() < uint64_t(none),
+                  "Protein Schema definition graph node limit");
+  std::unordered_set<const uint8_t *> identities;
+  for (const auto &node : nodes)
+    detail::require(
+        node.state.impl &&
+            identities.insert(node.state.impl->identity.get()).second,
+        "Protein Schema graph requires one row per scope identity");
+  auto topology = std::make_shared<Impl::Topology>();
+  topology->nodes.assign(nodes.begin(), nodes.end());
+  impl = std::make_shared<const Impl>(std::move(topology));
+}
+bool ProteinSchemaDefinitionGraph::same_identity(
+    const ProteinSchemaDefinitionGraph &other) const noexcept {
+  return impl && other.impl && impl->topology == other.impl->topology;
+}
+size_t ProteinSchemaDefinitionGraph::node_count() const noexcept {
+  return impl->topology->nodes.size();
+}
+ProteinSchemaDefinitionRelation
+ProteinSchemaDefinitionGraph::relation(Id node) const {
+  detail::require(node < node_count(), "Protein Schema graph row out of range");
+  return impl->topology->nodes[node].relation;
+}
+const ProteinSchemaDefinitionState &
+ProteinSchemaDefinitionGraph::definition(Id node) const {
+  detail::require(node < node_count(), "Protein Schema graph row out of range");
+  if (const auto i = impl->updates.find(node); i != impl->updates.end())
+    return i->second;
+  return impl->topology->nodes[node].state;
+}
+ProteinSchemaDefinitionGraph ProteinSchemaDefinitionGraph::with_definition(
+    Id node, const ProteinSchemaDefinitionState &state) const {
+  const auto &current = definition(node);
+  detail::require(current.same_identity(state),
+                  "Protein Schema graph scope identity mismatch");
+  if (current.impl == state.impl)
+    return *this;
+  auto result = std::make_shared<Impl>(*impl);
+  result->updates.insert_or_assign(node, state);
+  return ProteinSchemaDefinitionGraph(std::move(result));
+}
+ProteinSchemaReceiverSelection ProteinSchemaDefinitionGraph::select_receivers(
+    Id target, std::span<const Id> entries,
+    ProteinSchemaReceiverOptions options) const {
+  using I = ProteinSchemaReceiverIssue;
+  ProteinSchemaReceiverSelection result;
+  if (target >= node_count()) {
+    result.issue = I::invalid_target;
+    result.issue_node = target;
+    return result;
+  }
+  if (options.profile == ProteinSchemaReceiverProfile::local_target) {
+    result.receivers.push_back(target);
+    return result;
+  }
+  detail::require(entries.size() <= options.max_namespace_entries,
+                  "Protein Schema namespace enumeration limit");
+  // Immutable parent suffixes can be reused without materializing duplicate
+  // chains or following an orphan cycle forever. Marks:
+  // reaches/detached/active.
+  std::unordered_map<Id, uint8_t> marks{{target, 1}};
+  std::unordered_set<Id> selected{target};
+  std::vector<Id> path;
+  for (size_t ordinal = 0; ordinal < entries.size(); ++ordinal) {
+    auto current = entries[ordinal];
+    path.clear();
+    bool reaches = false;
+    while (current != none) {
+      if (current >= node_count()) {
+        result.issue = I::missing_node;
+        result.issue_node = current;
+        break;
+      }
+      if (const auto i = marks.find(current); i != marks.end()) {
+        if (i->second == 3) {
+          result.issue = I::parent_cycle;
+          result.issue_node = current;
+        } else
+          reaches = i->second == 1;
+        break;
+      }
+      marks.emplace(current, 3);
+      path.push_back(current);
+      const auto edge = relation(current);
+      if (!edge.parent_known) {
+        result.issue = I::unknown_parent;
+        result.issue_node = current;
+        break;
+      }
+      detail::require(result.parent_edges < options.max_parent_edges,
+                      "Protein Schema parent edge limit");
+      ++result.parent_edges;
+      current = edge.parent;
+    }
+    if (result.issue != I::none) {
+      result.namespace_ordinal = static_cast<Id>(ordinal);
+      break;
+    }
+    for (const auto node : path) {
+      marks[node] = reaches ? 1 : 2;
+      if (reaches)
+        selected.insert(node);
+    }
+  }
+  result.receivers.assign(selected.begin(), selected.end());
+  std::sort(result.receivers.begin(), result.receivers.end());
+  if (result.issue != I::none)
+    return result;
+  if (!options.namespace_complete) {
+    result.issue = I::namespace_unresolved;
+    return result;
+  }
+  if (options.order == ProteinSchemaReceiverOrder::unsigned_keys &&
+      result.receivers.size() > 1) {
+    std::vector<std::pair<uint64_t, Id>> keyed;
+    keyed.reserve(result.receivers.size());
+    for (const auto node : result.receivers) {
+      const auto key = relation(node).order_key;
+      if (!key) {
+        result.issue = I::missing_order_key;
+        result.issue_node = node;
+        return result;
+      }
+      keyed.emplace_back(*key, node);
+    }
+    std::sort(keyed.begin(), keyed.end());
+    for (size_t i = 1; i < keyed.size(); ++i)
+      if (keyed[i - 1].first == keyed[i].first) {
+        result.issue = I::duplicate_order_key;
+        result.issue_node = keyed[i].second;
+        return result;
+      }
+    for (size_t i = 0; i < keyed.size(); ++i)
+      result.receivers[i] = keyed[i].second;
+  }
+  return result;
+}
+ProteinSchemaDefinitionPropagationResult
+ProteinSchemaDefinitionGraph::create_reflected_properties(
+    Id target, std::span<const Id> entries,
+    std::span<const ProteinSchemaPropertyState> sources,
+    ProteinSchemaDefinitionPropagationOptions options) const {
+  using I = ProteinSchemaPropagationIssue;
+  using C = ProteinSchemaPropertyCopyIssue;
+  ProteinSchemaDefinitionPropagationResult result{*this, {}, {}};
+  detail::require(sources.size() <=
+                      options.creation.definition.max_declarations,
+                  "Protein Schema propagation source limit");
+  if (sources.empty())
+    return result;
+  result.selection_evaluated = true;
+  result.selection = select_receivers(target, entries, options.receivers);
+  if (result.selection.issue != ProteinSchemaReceiverIssue::none) {
+    result.issue = I::selection_unresolved;
+    return result;
+  }
+  const uint64_t receivers = result.selection.receivers.size();
+  uint64_t values = 0, bytes = 0;
+  auto charge = [](uint64_t &used, uint64_t count, uint64_t limit,
+                   const char *message) {
+    detail::require(used <= limit && count <= limit - used, message);
+    used += count;
+  };
+  for (const auto &source : sources) {
+    result.copy_issue = schema_reflected_copy_issue(source);
+    if (result.copy_issue != C::none) {
+      result.issue = I::copy_unresolved;
+      break;
+    }
+    detail::require(result.next_source < options.max_new_properties / receivers,
+                    "Protein Schema propagation property limit");
+    charge(values, schema_reflected_value_cost(source),
+           options.max_new_cached_values / receivers,
+           "Protein Schema propagation value limit");
+    charge(bytes, source.target().id.size(),
+           options.max_new_text_bytes / receivers,
+           "Protein Schema propagation text limit");
+    charge(bytes, source.label().size(), options.max_new_text_bytes / receivers,
+           "Protein Schema propagation text limit");
+    ++result.next_source;
+  }
+  result.new_cached_values = values * receivers;
+  result.new_text_bytes = bytes * receivers;
+  if (!result.next_source)
+    return result;
+  for (const auto receiver : result.selection.receivers) {
+    charge(result.receiver_history,
+           definition(receiver).definition().properties().size(),
+           options.max_receiver_history,
+           "Protein Schema propagation metadata history limit");
+    charge(result.receiver_history, result.next_source,
+           options.max_receiver_history,
+           "Protein Schema propagation metadata history limit");
+  }
+  auto graph = std::make_shared<Impl>(*impl);
+  std::vector<std::vector<ProteinSchemaReflectedCreation>> batches;
+  batches.reserve(receivers);
+  for (const auto receiver : result.selection.receivers) {
+    auto batch = definition(receiver).create_reflected_properties(
+        sources.first(result.next_source), options.creation);
+    detail::require(batch.issue == C::none &&
+                        batch.next_source == result.next_source,
+                    "Protein Schema propagation copy preflight mismatch");
+    graph->updates.insert_or_assign(receiver, std::move(batch.state));
+    batches.push_back(std::move(batch.properties));
+  }
+  result.properties.reserve(result.next_source * receivers);
+  for (size_t source = 0; source < result.next_source; ++source)
+    for (size_t receiver = 0; receiver < batches.size(); ++receiver) {
+      const auto &entry = batches[receiver][source];
+      result.properties.push_back({source, result.selection.receivers[receiver],
+                                   entry.property, entry.replaced,
+                                   entry.container});
+    }
+  result.graph = ProteinSchemaDefinitionGraph(std::move(graph));
   return result;
 }
 ProteinSchemaComparisonResult protein_schema_compare_property_states(

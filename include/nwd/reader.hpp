@@ -1077,8 +1077,12 @@ class ProteinSchemaDefinitionState {
   struct Impl;
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaDefinitionState(std::shared_ptr<const Impl>);
+  friend class ProteinSchemaDefinitionGraph;
 public:
   explicit ProteinSchemaDefinitionState(const ProteinSchemaDefinitionIndex &);
+  // Copies and immutable updates preserve this scope identity. A fresh state
+  // constructor creates a distinct scope even if its XML/cache is shared.
+  bool same_identity(const ProteinSchemaDefinitionState &) const noexcept;
   // Metadata snapshot including locally generated rows; property() supplies
   // current fields. Existing rows keep their original identity after creation.
   const ProteinSchemaDefinitionIndex &definition() const noexcept;
@@ -1128,6 +1132,100 @@ struct ProteinSchemaReflectedCreationResult {
   // exhaustion throws Error; this API does not emulate product exception unwind.
   size_t next_source = 0;
   ProteinSchemaPropertyCopyIssue issue = ProteinSchemaPropertyCopyIssue::none;
+};
+
+struct ProteinSchemaDefinitionRelation {
+  Id parent = none;
+  bool parent_known = true; // known none differs from an unresolved parent
+  std::optional<uint64_t> order_key = std::nullopt;
+};
+struct ProteinSchemaDefinitionGraphNode {
+  ProteinSchemaDefinitionState state;
+  ProteinSchemaDefinitionRelation relation;
+};
+// Observed helper algorithms, not saved-file-year detection or a claim about
+// the older global registrar. local_target does not enumerate a namespace.
+enum class ProteinSchemaReceiverProfile { namespace_ancestors, local_target };
+enum class ProteinSchemaReceiverOrder { unsigned_keys, graph_row };
+struct ProteinSchemaReceiverOptions {
+  ProteinSchemaReceiverProfile profile = ProteinSchemaReceiverProfile::namespace_ancestors;
+  ProteinSchemaReceiverOrder order = ProteinSchemaReceiverOrder::unsigned_keys;
+  bool namespace_complete = true;
+  uint32_t max_namespace_entries = 1000000;
+  uint64_t max_parent_edges = 1000000; // optimized unique edge reads, not DLL calls
+};
+enum class ProteinSchemaReceiverIssue {
+  none, invalid_target, missing_node, unknown_parent, parent_cycle,
+  namespace_unresolved, missing_order_key, duplicate_order_key
+};
+struct ProteinSchemaReceiverSelection {
+  // Complete ordered selection only when issue==none. Otherwise these are
+  // positively known receivers in graph-row order, not a native event prefix.
+  std::vector<Id> receivers;
+  ProteinSchemaReceiverIssue issue = ProteinSchemaReceiverIssue::none;
+  Id issue_node = none, namespace_ordinal = none;
+  uint64_t parent_edges = 0;
+};
+struct ProteinSchemaDefinitionPropagationOptions {
+  ProteinSchemaReceiverOptions receivers;
+  ProteinSchemaReflectedCreationOptions creation; // limits per receiver scope
+  // Shared incremental limits for this propagation, in addition to scope limits.
+  uint64_t max_new_properties = 1000000, max_new_cached_values = 1000000;
+  uint64_t max_new_text_bytes = 64ull << 20;
+  uint64_t max_receiver_history = 1000000; // copied old + new rows over receivers
+};
+struct ProteinSchemaDefinitionPropagationResult;
+// One row per scope identity; repeated enumeration uses the same graph-local Id.
+// Equal UID/XML/name/cache never merges scopes. Topology is immutable and current
+// definitions use sparse updates. Row IDs are meaningful only in this graph's
+// identity lineage, never global NWD IDs or guessed native pointer addresses.
+class ProteinSchemaDefinitionGraph {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaDefinitionGraph(std::shared_ptr<const Impl>);
+public:
+  explicit ProteinSchemaDefinitionGraph(
+      std::span<const ProteinSchemaDefinitionGraphNode>, uint32_t max_nodes = 1000000);
+  bool same_identity(const ProteinSchemaDefinitionGraph &) const noexcept;
+  size_t node_count() const noexcept;
+  ProteinSchemaDefinitionRelation relation(Id) const;
+  const ProteinSchemaDefinitionState &definition(Id) const;
+  ProteinSchemaDefinitionGraph with_definition(Id, const ProteinSchemaDefinitionState &) const;
+  // Includes target plus chains of enumerated descendants, including unenumerated
+  // intermediate ancestors. Memoizes immutable parent walks; unrelated cycles
+  // are not traversed. Null enumeration entries use none. Missing information
+  // stays unresolved. unsigned_keys requires distinct supplied keys for multi-
+  // receiver order; graph_row is an explicit deterministic library policy.
+  ProteinSchemaReceiverSelection select_receivers(
+      Id target, std::span<const Id> namespace_entries,
+      ProteinSchemaReceiverOptions = {}) const;
+  // Explicit reflected propagation over this fixed topology. Caller handles
+  // ordinary missing-root lookup, SchemaVersion skip/source repair and complete
+  // registrar gates. Groups sources per receiver so each metadata index is built
+  // once, then returns source-major/receiver-order events. Known source prefixes
+  // survive unresolved copies; uncertain selection applies nothing. Error budgets
+  // leave input unchanged and do not emulate product exception unwind.
+  ProteinSchemaDefinitionPropagationResult create_reflected_properties(
+      Id target, std::span<const Id> namespace_entries,
+      std::span<const ProteinSchemaPropertyState>,
+      ProteinSchemaDefinitionPropagationOptions = {}) const;
+};
+struct ProteinSchemaPropagatedProperty {
+  size_t source_ordinal = 0;
+  Id receiver = none, property = none, replaced = none;
+  ProteinSchemaPropertyContainer container = ProteinSchemaPropertyContainer::ordinary;
+};
+enum class ProteinSchemaPropagationIssue { none, selection_unresolved, copy_unresolved };
+struct ProteinSchemaDefinitionPropagationResult {
+  ProteinSchemaDefinitionGraph graph;
+  ProteinSchemaReceiverSelection selection;
+  std::vector<ProteinSchemaPropagatedProperty> properties;
+  ProteinSchemaPropagationIssue issue = ProteinSchemaPropagationIssue::none;
+  ProteinSchemaPropertyCopyIssue copy_issue = ProteinSchemaPropertyCopyIssue::none;
+  bool selection_evaluated = false;
+  size_t next_source = 0;
+  uint64_t new_cached_values = 0, new_text_bytes = 0;
+  uint64_t receiver_history = 0;
 };
 
 // Native property compatibility over current state fields. Checks target type
