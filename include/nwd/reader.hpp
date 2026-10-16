@@ -485,8 +485,9 @@ struct ProteinSchemaTextDefaults {
   uint32_t flags = 0; // after XML declaration preprocessing
   bool multiple = false;
   // A scalar without a val token leaves its newly constructed value untouched.
-  // This differs from assigning an empty token; it does not assert the
-  // downstream type's constructor or registered/inherited default value.
+  // Supported scalar text factories construct an empty internal string.
+  // This marker distinguishes keeping that value from assigning an empty
+  // token; values below still describe explicit factory assignments only.
   bool uses_type_default = false;
   // Explicit text assignments in factory order. Scalar: at most one. Array:
   // all tokens, including duplicates/empty tokens. Owns the returned strings.

@@ -395,9 +395,11 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+String、DateTime、Uuid、URL 的单值省略 `val` 时，底层内部字符串构造为空。投影保留 `uses_type_default=true` 和空 `values`；显式 `val=""` 则产生一个空字符串赋值 token。两者在兼容比较中按实际空值处理，调用方仍可区分赋值来源。多值 String/URL/TextureURI 省略 `val` 为空数组，显式空值为含一个空字符串的数组。此规则不生成时间戳或16字节 UUID。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
-比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字、单位提供器或未确定的构造默认值会保留未决状态。它们不定义模型对象身份或资源目标相同。
+比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。
 
 比较只访问不可变缓存，不重新解释 XML，不分配比较工作区，可由多个线程并发调用。`ProteinSchemaComparisonOptions` 限制访问的值/条目数与文本字节数，超过限额抛出 `Error`。`ProteinSchemaResolvedConstraint.fields` 缓存最后一个约束候选的原始转换结果，便于检查未决数值和保留未启用端点的字段。
 

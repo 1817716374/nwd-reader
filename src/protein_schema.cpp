@@ -1426,10 +1426,8 @@ struct SchemaComparison {
       if (!valid(*x) || !valid(y))
         return uncertain(CompareIssue::inconsistent_shape);
       if (x->uses_type_default || y.uses_type_default) {
-        // Scalar String's empty construction is verified separately. Other
-        // concrete string classes retain an explicit unassigned default.
-        if (x->value_type != 2)
-          return uncertain(CompareIssue::unassigned_type_default);
+        // All supported scalar text factories construct their member(2) with
+        // the same empty internal-string constructor before optional tokens.
         return text(x->uses_type_default ? std::string_view{} : x->values[0],
                     y.uses_type_default ? std::string_view{} : y.values[0], 0);
       }
