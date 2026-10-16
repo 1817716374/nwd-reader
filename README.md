@@ -361,6 +361,10 @@ type/localtype/localname 要求原始 val 非空，然后只取首 token；type 
 
 `constructed_defaults(entry, options)` 返回 Binary 与 Reference 在 XML 工厂阶段保留的类型构造默认值。`kind` 区分 `empty_binary`、`empty_reference_array`、`empty_texture_link` 和 `unsupported`；`flags` 返回预处理后的声明标志。普通 Reference 是空的 AssetSymbolLink 连接数组，精确指定 type="texture" 的 Reference 是单个空链接。Binary 是空字节缓冲。这些工厂没有从 val 赋入二进制内容或引用目标，因此接口不会将 val 解码为 Base64 或伪造目标身份。忽略的 val 仍按转义分隔规则计入 max_values，但不分配 token 字符串。结果仅描述局部工厂默认值，完整声明验证、继承和后续连接解析须分别处理。
 
+`identity_assignment(entry, current_value, options)` 读取 UID/Base 的局部赋值规则。`kind` 区分 uid、base_schema、unsupported；`status` 区分 ready、invalid_value、redefined、unsupported。两个声明都要求恰好一个 token：UID 要求原始 val 非空，Base 要求解转义后的 token 非空。检查值合法性后，再检查调用方提供的当前值；当前值非空时返回 redefined。返回字符串由结果持有，ready 的 UID 可能为空字符串。ready 的 Base 对应 BaseSchema 字符串属性，flags 为 8；UID 设置定义元数据，flags 为 0。
+
+调用方按自己的定义作用域和接受顺序提供当前 UID 或 BaseSchema 值。该接口不修改文档或调用方状态；它返回本次局部赋值结果，完整定义接受、别名/继承、Base 的 file 加载和最终注册仍需另外处理。输入 token 都计入 max_values，只保留首项文本，拒绝多值时也检查尾项预算。
+
 `numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
 
 数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。

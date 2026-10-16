@@ -491,6 +491,18 @@ struct ProteinSchemaConstructedDefaults {
   ProteinSchemaConstructedKind kind = ProteinSchemaConstructedKind::unsupported;
   uint32_t flags = 0; // XML-preprocessed declaration flags
 };
+enum class ProteinSchemaIdentityKind { unsupported, uid, base_schema };
+enum class ProteinSchemaIdentityStatus {
+  unsupported, ready, invalid_value, redefined
+};
+struct ProteinSchemaIdentityAssignment {
+  ProteinSchemaIdentityKind kind = ProteinSchemaIdentityKind::unsupported;
+  ProteinSchemaIdentityStatus status = ProteinSchemaIdentityStatus::unsupported;
+  std::string value; // owns the assigned token; ready UID can assign empty text
+  // A ready Base assigns a String property with ID BaseSchema and flags8.
+  // UID assigns definition metadata, not a property, and leaves flags zero.
+  uint32_t flags = 0;
+};
 // Schema XML declaration type codes (not ProteinProperty's wire discriminant):
 // binary=1, string=2, datetime=3, URL=4, boolean=5, int32=6, real=7,
 // color=8, texture=9, choice=10, UUID=11, reference=12. Exact case required.
@@ -573,6 +585,15 @@ public:
   // factory defaults, not declaration validity, inherited values or graph links.
   ProteinSchemaConstructedDefaults constructed_defaults(
       Id entry, ProteinSchemaValueOptions = {}) const;
+  // Local UID/Base assignment gate against the caller's current value. Both
+  // require exactly one token. UID tests the original val for nonemptiness;
+  // Base tests the decoded token. Invalid value precedes redefinition checks.
+  // A nonempty current_value rejects redefinition. Does not update state,
+  // resolve aliases/inheritance, load Base's file or register a definition.
+  // All input tokens count against max_values; only the first is materialized.
+  ProteinSchemaIdentityAssignment identity_assignment(
+      Id entry, std::string_view current_value = {},
+      ProteinSchemaValueOptions = {}) const;
 };
 enum class ProteinSchemaChoiceStatus {
   accepted,

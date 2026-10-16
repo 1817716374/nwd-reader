@@ -388,20 +388,24 @@ struct ValueBudget {
     remaining -= count;
   }
 };
-template <bool Materialize = true, class F>
+template <bool Materialize = true, bool FirstOnly = false, class F>
 void tokens(std::string_view text, ValueBudget &budget, F &&emit) {
   std::string token;
   bool escaped = false;
+  [[maybe_unused]] bool first = true;
   for (char c : text) {
     if (!escaped && (c == ',' || c == '|')) {
       budget.use(1);
       emit(std::move(token));
       token.clear();
+      first = false;
     } else if (!escaped && c == '\\')
       escaped = true;
     else {
-      if constexpr (Materialize)
-        token.push_back(c);
+      if constexpr (Materialize) {
+        if (!FirstOnly || first)
+          token.push_back(c);
+      }
       escaped = false;
     }
   }
@@ -536,6 +540,42 @@ ProteinSchemaConstructedDefaults ProteinSchemaDocument::constructed_defaults(
   ValueBudget budget{options.max_values};
   if (fields.value)
     tokens<false>(*fields.value, budget, [](std::string) {});
+  return out;
+}
+
+ProteinSchemaIdentityAssignment ProteinSchemaDocument::identity_assignment(
+    Id entry, std::string_view current_value,
+    ProteinSchemaValueOptions options) const {
+  const auto fields = entry_fields(entry);
+  ProteinSchemaIdentityAssignment out;
+  if (fields.kind == "UID")
+    out.kind = ProteinSchemaIdentityKind::uid;
+  else if (fields.kind == "Base")
+    out.kind = ProteinSchemaIdentityKind::base_schema;
+  else
+    return out;
+  ValueBudget budget{options.max_values};
+  uint64_t count = 0;
+  std::string value;
+  if (fields.value)
+    tokens<true, true>(*fields.value, budget, [&](std::string token) {
+      if (!count++)
+        value = std::move(token);
+    });
+  if (count != 1 || (out.kind == ProteinSchemaIdentityKind::uid
+                         ? fields.value.value_or(std::string_view{}).empty()
+                         : value.empty())) {
+    out.status = ProteinSchemaIdentityStatus::invalid_value;
+    return out;
+  }
+  if (!current_value.empty()) {
+    out.status = ProteinSchemaIdentityStatus::redefined;
+    return out;
+  }
+  out.status = ProteinSchemaIdentityStatus::ready;
+  out.value = std::move(value);
+  if (out.kind == ProteinSchemaIdentityKind::base_schema)
+    out.flags = 8;
   return out;
 }
 
