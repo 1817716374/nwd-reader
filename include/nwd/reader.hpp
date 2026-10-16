@@ -459,6 +459,11 @@ struct ProteinSchemaNumericDefaults {
   ProteinSchemaNumericStatus status = ProteinSchemaNumericStatus::unsupported;
   uint32_t value_type = 0, components = 0; // declaration code; 1, 3 (XYZ), 4 (RGBA)
   bool multiple = false;
+  // Only scalar Float/Distance consumes a nonempty unit. No conversion is
+  // applied. unit_code is the native code for a known length name. Other names
+  // need the unresolved unit-provider lookup; they do not become code zero.
+  std::string unit;
+  std::optional<uint32_t> unit_code;
   // Bits: 1=first value outside range, 2=fractional Integer bounds,
   // 4=first Color outside RGB [0,255] or alpha [0,1].
   uint32_t rejections = 0;
@@ -726,6 +731,14 @@ struct ProteinSchemaDefinitionChoice {
 using ProteinSchemaDefinitionValue = std::variant<
     bool, ProteinSchemaTextDefaults, ProteinSchemaNumericDefaults,
     ProteinSchemaConstructedDefaults, ProteinSchemaDefinitionChoice>;
+struct ProteinSchemaRuntimeBinding {
+  std::string_view type_name, data_type; // static registered names; no DLL needed
+};
+// Identifies the concrete factory layout of a cached projection, independently
+// of later inherited flags. Does not assert acceptance, a resolved value, unit
+// conversion or link resolution. Unknown/unsupported layouts return nullopt.
+std::optional<ProteinSchemaRuntimeBinding> protein_schema_runtime_binding(
+    const ProteinSchemaDefinitionValue &) noexcept;
 enum class ProteinSchemaPropertyOrigin { xml_declaration, load_default, load_rewrite };
 struct ProteinSchemaDefinitionProperty {
   const ProteinSchemaDocument *document = nullptr;

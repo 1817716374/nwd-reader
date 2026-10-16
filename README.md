@@ -395,6 +395,10 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+`protein_schema_runtime_binding(*property.value)` 返回缓存值工厂的具体注册类型名和数据类型名。例如 IntegerValue/int、StringList/run.string_array、GeneralUnitsValue/units_value；未知布局返回空。此查询不分配内存，不依赖产品 DLL，并以缓存值的实际形态为依据，继承后属性 flags 的变化不会重塑该值。它不执行全局登记，也不替代候选值的接受/转换状态检查。
+
+Float/Distance 单值的非空 `unit` 保留在 `ProteinSchemaNumericDefaults.unit` 中；`unit_code` 返回已知长度名称的原始单位代码，不换算数值。37 个已知名称按大小写精确匹配。其它名称保留原文，代码为空，仍需单位提供器解析。多值 Float/Distance、Integer、Color、Vector3 工厂不将声明单位写入值。无单位的 Distance 仍使用 ScalarValue；不能仅凭距离标志判断具体值类型。
+
 `definition.iteration(options)` 返回实际属性的历史索引序列，保留跨容器同名项，排除已替换历史和别名。`ProteinSchemaIterationOptions` 可选择正向/反向、仅 public 属性及 `reader_2017` / `reader_2026` 算法。默认使用后者；算法选择不等于自动判断文件保存年份。
 
 三容器按名称合并，同名时保留当前游标所在容器，public 筛选在推进原始合并序列后执行。反向遍历有独立的同名顺序，不能直接反转正向结果。旧算法按有符号字节比较 UTF-8 名称，新算法按无符号字节比较，因此非 ASCII 名称可能有不同次序。迭代复用已缓存属性和值，返回值只包含索引；原有 `container()` 仍提供各容器的固定字典序视图。

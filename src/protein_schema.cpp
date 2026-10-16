@@ -10,6 +10,28 @@
 #include <cmath>
 
 namespace nwd {
+namespace {
+std::optional<uint32_t> schema_length_unit(std::string_view name) noexcept {
+  static constexpr std::pair<std::string_view, uint32_t> units[]{
+      {"mm", 0x200e},          {"millimeter", 0x200e},  {"millimetre", 0x200e},
+      {"millimeters", 0x200e}, {"millimetres", 0x200e}, {"cm", 0x200d},
+      {"centimeter", 0x200d},  {"centimetre", 0x200d},  {"centimeters", 0x200d},
+      {"centimetres", 0x200d}, {"dm", 0x200c},          {"decimeter", 0x200c},
+      {"decimetre", 0x200c},   {"decimeters", 0x200c},  {"decimetres", 0x200c},
+      {"m", 0x2001},           {"meter", 0x2001},       {"metre", 0x2001},
+      {"meters", 0x2001},      {"metres", 0x2001},      {"km", 0x2009},
+      {"kilometer", 0x2009},   {"kilometre", 0x2009},   {"kilometers", 0x2009},
+      {"kilometres", 0x2009},  {"in", 0x2016},          {"inch", 0x2016},
+      {"inches", 0x2016},      {"ft", 0x2017},          {"foot", 0x2017},
+      {"feet", 0x2017},        {"yd", 0x201d},          {"yard", 0x201d},
+      {"yards", 0x201d},       {"mi", 0x2021},          {"mile", 0x2021},
+      {"miles", 0x2021}};
+  for (const auto &[key, code] : units)
+    if (name == key)
+      return code;
+  return std::nullopt;
+}
+} // namespace
 ProteinSchemaPreparedFields
 protein_schema_prepare_fields(const ProteinSchemaEntryFields &fields,
                               std::string_view effective_id) noexcept {
@@ -30,22 +52,9 @@ protein_schema_prepare_fields(const ProteinSchemaEntryFields &fields,
     out.flags &= ~4u;
   else if ((kind == "String" && effective_id == "assettype") || kind == "type")
     out.flags = 2;
-  static constexpr std::string_view units[]{
-      "mm",   "millimeter", "millimetre", "millimeters", "millimetres",
-      "cm",   "centimeter", "centimetre", "centimeters", "centimetres",
-      "dm",   "decimeter",  "decimetre",  "decimeters",  "decimetres",
-      "m",    "meter",      "metre",      "meters",      "metres",
-      "km",   "kilometer",  "kilometre",  "kilometers",  "kilometres",
-      "in",   "inch",       "inches",     "ft",          "foot",
-      "feet", "yd",         "yard",       "yards",       "mi",
-      "mile", "miles"};
   const auto unit = fields.unit.value_or(std::string_view{});
-  for (auto known : units) {
-    if (unit == known) {
-      out.flags |= 0x400;
-      break;
-    }
-  }
+  if (schema_length_unit(unit))
+    out.flags |= 0x400;
   return out;
 }
 
@@ -828,6 +837,10 @@ ProteinSchemaNumericDefaults ProteinSchemaDocument::numeric_defaults(
   out.value_type = integer ? 6 : color ? 8 : 7;
   out.components = color ? 4 : vector ? 3 : 1;
   out.multiple = !vector && (fields.declaration_flags & 4);
+  if (real && !out.multiple && fields.unit && !fields.unit->empty()) {
+    out.unit = *fields.unit;
+    out.unit_code = schema_length_unit(out.unit);
+  }
   out.status = ProteinSchemaNumericStatus::ready;
   auto prepared = defaults(entry, options);
   bool uncertain = false;
@@ -1166,6 +1179,87 @@ uint64_t schema_cached_values(const ProteinSchemaDefinitionValue &value) {
       value);
 }
 } // namespace
+
+std::optional<ProteinSchemaRuntimeBinding> protein_schema_runtime_binding(
+    const ProteinSchemaDefinitionValue &value) noexcept {
+  if (value.valueless_by_exception())
+    return std::nullopt;
+  using Binding = std::optional<ProteinSchemaRuntimeBinding>;
+  return std::visit(
+      [](const auto &v) -> Binding {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>) {
+          return ProteinSchemaRuntimeBinding{"BooleanValue", "bool"};
+        } else if constexpr (std::is_same_v<T, ProteinSchemaTextDefaults>) {
+          switch (v.value_type) {
+          case 2:
+            return v.multiple
+                       ? ProteinSchemaRuntimeBinding{"StringList",
+                                                     "run.string_array"}
+                       : ProteinSchemaRuntimeBinding{"StringValue", "string"};
+          case 3:
+            if (!v.multiple)
+              return ProteinSchemaRuntimeBinding{"DateTimeValue", "string"};
+            break;
+          case 4:
+            if (!v.multiple)
+              return ProteinSchemaRuntimeBinding{"UriValue", "string"};
+            return ProteinSchemaRuntimeBinding{
+                v.flags & 0x200 ? "TextureURIValue" : "UriList",
+                "run.string_array"};
+          case 11:
+            if (!v.multiple)
+              return ProteinSchemaRuntimeBinding{"UuidValue", "string"};
+            break;
+          }
+        } else if constexpr (std::is_same_v<T, ProteinSchemaNumericDefaults>) {
+          if (v.value_type == 6 && v.components == 1)
+            return v.multiple
+                       ? ProteinSchemaRuntimeBinding{"IntegerList",
+                                                     "run.int_array"}
+                       : ProteinSchemaRuntimeBinding{"IntegerValue", "int"};
+          if (v.value_type == 8 && v.components == 4)
+            return v.multiple
+                       ? ProteinSchemaRuntimeBinding{"Color4List",
+                                                     "run.color4_array"}
+                       : ProteinSchemaRuntimeBinding{"Color4Value", "color4"};
+          if (v.value_type == 7) {
+            if (v.components == 3 && !v.multiple)
+              return ProteinSchemaRuntimeBinding{"Vector3Value", "vector3"};
+            if (v.components == 1) {
+              if (v.multiple)
+                return ProteinSchemaRuntimeBinding{"ScalarList",
+                                                   "run.double_array"};
+              return v.unit.empty()
+                         ? ProteinSchemaRuntimeBinding{"ScalarValue", "double"}
+                         : ProteinSchemaRuntimeBinding{"GeneralUnitsValue",
+                                                       "units_value"};
+            }
+          }
+        } else if constexpr (std::is_same_v<T,
+                                            ProteinSchemaConstructedDefaults>) {
+          switch (v.kind) {
+          case ProteinSchemaConstructedKind::empty_binary:
+            return ProteinSchemaRuntimeBinding{"BinaryValue", "byte_buffer"};
+          case ProteinSchemaConstructedKind::empty_reference_array:
+            return ProteinSchemaRuntimeBinding{"ReferenceValue",
+                                               "protein.AssetConnection"};
+          case ProteinSchemaConstructedKind::empty_texture_link:
+            return ProteinSchemaRuntimeBinding{"TextureValue",
+                                               "protein.AssetSymbolLink"};
+          default:
+            break;
+          }
+        } else if constexpr (std::is_same_v<T, ProteinSchemaDefinitionChoice>) {
+          return v.defaults.multiple
+                     ? ProteinSchemaRuntimeBinding{"ChoiceListValue",
+                                                   "run.int_array"}
+                     : ProteinSchemaRuntimeBinding{"ChoiceValue", "int"};
+        }
+        return std::nullopt;
+      },
+      value);
+}
 
 struct ProteinSchemaDefinitionIndex::Impl {
   struct Local {
