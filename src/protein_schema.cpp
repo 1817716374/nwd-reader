@@ -1627,6 +1627,10 @@ struct SchemaComparison {
     const auto at = a.binding(), bt = b.binding();
     if (!at || !bt)
       return uncertain(CompareIssue::unknown_layout);
+    if (!a.control_byte() || !b.control_byte())
+      return uncertain(CompareIssue::unknown_layout);
+    if (a.control_byte() != b.control_byte())
+      return compared(false);
     if (at->type_name != bt->type_name)
       return compared(false);
     SchemaStatePayload x(a), y(b);
@@ -2690,13 +2694,19 @@ struct ProteinSchemaPropertyState::Impl {
     }
   };
   using Owner = std::shared_ptr<const Seed>;
-  Owner identity, data, flags, label, constraint, choice;
+  Owner identity, data, flags, label, constraint, choice, control;
+  std::optional<uint8_t> control_byte;
   ProteinSchemaReferencePresence constraint_presence =
       ProteinSchemaReferencePresence::absent;
   Impl(const ProteinSchemaDefinitionIndex &index, Id row) {
     detail::require(row < index.properties().size(),
                     "Protein Schema property state row out of range");
     identity = data = flags = label = std::make_shared<const Seed>(index, row);
+    if (identity->get().value &&
+        protein_schema_runtime_binding(*identity->get().value)) {
+      control = identity;
+      control_byte = 1;
+    }
     if (const auto &value = data->get().value) {
       if (const auto *numeric =
               std::get_if<ProteinSchemaNumericDefaults>(value.get())) {
@@ -2738,6 +2748,21 @@ ProteinSchemaPropertyState::data() const noexcept {
 std::optional<ProteinSchemaRuntimeBinding>
 ProteinSchemaPropertyState::data_binding() const noexcept {
   return data() ? protein_schema_runtime_binding(*data()) : std::nullopt;
+}
+std::optional<uint8_t>
+ProteinSchemaPropertyState::control_byte() const noexcept {
+  return impl->control_byte;
+}
+ProteinSchemaPropertyState
+ProteinSchemaPropertyState::with_control_byte(uint8_t value) const {
+  detail::require(impl->control_byte.has_value(),
+                  "Unknown Protein Schema control byte layout");
+  if (impl->control_byte == value && !impl->control)
+    return *this;
+  auto result = std::make_shared<Impl>(*impl);
+  result->control_byte = value;
+  result->control.reset();
+  return ProteinSchemaPropertyState(std::move(result));
 }
 uint32_t ProteinSchemaPropertyState::flags() const noexcept {
   return impl->flags->get().flags;
@@ -2784,6 +2809,9 @@ ProteinSchemaPropertyState::supplier(ProteinSchemaPropertyField field) const {
     break;
   case ProteinSchemaPropertyField::choice:
     owner = &impl->choice;
+    break;
+  case ProteinSchemaPropertyField::control:
+    owner = &impl->control;
     break;
   default:
     detail::require(false, "Invalid Protein Schema property state field");

@@ -873,7 +873,7 @@ public:
 };
 
 enum class ProteinSchemaPropertyField {
-  identity, data, flags, label, constraint, choice
+  identity, data, flags, label, constraint, choice, control
 };
 struct ProteinSchemaPropertyFieldSource {
   const ProteinSchemaDefinitionIndex *definition = nullptr;
@@ -909,6 +909,15 @@ public:
   // data_binding() for actual data, binding() for the fixed target class.
   const std::shared_ptr<const ProteinSchemaDefinitionValue> &data() const noexcept;
   std::optional<ProteinSchemaRuntimeBinding> data_binding() const noexcept;
+  // Opaque PropertyBase runtime control byte; all 21 known factory classes
+  // initialize it to 1, including lists. It is not the array flag. Its full
+  // semantic name is unresolved; this is not a file offset or a data conversion.
+  std::optional<uint8_t> control_byte() const noexcept;
+  // Mirrors the observed raw-byte setter without changing class, data or
+  // metadata. Requires a known control layout; throws Error otherwise. Explicit
+  // mutations have no indexed-row supplier. 2..255 retain raw instruction
+  // inputs, not a claim that they are valid native C++ bool arguments.
+  ProteinSchemaPropertyState with_control_byte(uint8_t) const;
   uint32_t flags() const noexcept;
   std::string_view label() const noexcept;
   ProteinSchemaReferencePresence constraint_presence() const noexcept;
@@ -929,7 +938,8 @@ struct ProteinSchemaPropertyCopyResult {
 };
 
 // Native property compatibility over current state fields. Checks target type
-// and skip_type, current bounds/Choice, fixed concrete class, then actual data.
+// and skip_type, current bounds/Choice, raw control byte, fixed concrete class,
+// then actual data. The control gate also applies to Reference/Texture.
 // Arrays dispatch the left actual element comparator and use the right actual
 // stride. Stable int32/double/color4 layouts are read lazily as little endian
 // POD bytes; unsafe reads and mixed string ABI layouts stay unresolved. Does
