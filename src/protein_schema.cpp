@@ -1968,6 +1968,9 @@ struct ProteinSchemaDefinitionIndex::Impl {
   };
   std::vector<std::shared_ptr<const GeneratedNames>> generated_names;
   uint64_t generated_text_bytes = 0;
+  Id insert_version(uint32_t, const ProteinSchemaDefinitionOptions &);
+  Id insert_reflected(const ProteinSchemaPropertyState &,
+                      const ProteinSchemaReflectedCreationOptions &);
 
   const ProteinSchemaDocument &document() const {
     return local->aliases.document();
@@ -3636,9 +3639,8 @@ protein_schema_set_integer(const ProteinSchemaPropertyState &state,
   return schema_set_integer(state, bits, ordinal, compare);
 }
 ProteinSchemaVersionRead
-protein_schema_read_version(const ProteinSchemaPropertyState *property,
-                            bool complete,
-                            ProteinSchemaComparisonOptions options) {
+schema_read_version(const ProteinSchemaPropertyState *property, bool complete,
+                    SchemaComparison &compare) {
   using I = ProteinSchemaVersionAccessIssue;
   ProteinSchemaVersionRead result;
   if (!complete) {
@@ -3650,15 +3652,16 @@ protein_schema_read_version(const ProteinSchemaPropertyState *property,
     result.defaulted = true;
     return result;
   }
-  result.integer = protein_schema_get_integer(*property, 0, options);
+  result.integer = schema_get_integer(*property, 0, compare);
   result.value = result.integer->bits;
   if (!result.value)
     result.issue = I::integer_unresolved;
   return result;
 }
-ProteinSchemaVersionFinalResult protein_schema_finalize_version(
-    const ProteinSchemaPropertyState *property, uint32_t sv, uint32_t tv,
-    bool compatible, bool complete, ProteinSchemaComparisonOptions options) {
+ProteinSchemaVersionFinalResult
+schema_finalize_version(const ProteinSchemaPropertyState *property, uint32_t sv,
+                        uint32_t tv, bool compatible, bool complete,
+                        SchemaComparison &compare) {
   using S = ProteinSchemaVersionFinalStatus;
   using I = ProteinSchemaVersionAccessIssue;
   ProteinSchemaVersionFinalResult result;
@@ -3678,7 +3681,7 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
     return result;
   }
   result.write_requested = true;
-  result.integer = protein_schema_set_integer(*property, sv, 0, options);
+  result.integer = schema_set_integer(*property, sv, 0, compare);
   result.target = result.integer->target;
   result.written = result.integer->written;
   if (result.integer->status == ProteinSchemaIntegerStatus::unresolved)
@@ -3686,6 +3689,79 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
   else
     result.status = S::finished;
   return result;
+}
+ProteinSchemaVersionRead
+protein_schema_read_version(const ProteinSchemaPropertyState *property,
+                            bool complete,
+                            ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_read_version(property, complete, compare);
+}
+ProteinSchemaVersionFinalResult protein_schema_finalize_version(
+    const ProteinSchemaPropertyState *property, uint32_t sv, uint32_t tv,
+    bool compatible, bool complete, ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_finalize_version(property, sv, tv, compatible, complete,
+                                 compare);
+}
+Id ProteinSchemaDefinitionIndex::Impl::insert_version(
+    uint32_t sv, const ProteinSchemaDefinitionOptions &limits) {
+  detail::require(local->cached_values < limits.max_cached_values &&
+                      extra_cached_values <
+                          limits.max_cached_values - local->cached_values,
+                  "Protein Schema cached value limit");
+  ProteinSchemaNumericDefaults number;
+  number.status = ProteinSchemaNumericStatus::ready;
+  number.value_type = 6;
+  number.components = 1;
+  const auto signed_value =
+      sv <= 0x7fffffff ? int64_t(sv) : int64_t(sv) - (int64_t{1} << 32);
+  number.candidates.push_back(default_number(double(signed_value)));
+  ProteinSchemaDefinitionProperty generated;
+  generated.document = generated.flags_document = &document();
+  generated.origin = ProteinSchemaPropertyOrigin::registration_create;
+  generated.id = "SchemaVersion";
+  generated.value_type = 6;
+  generated.flags = 2;
+  generated.value =
+      std::make_shared<const ProteinSchemaDefinitionValue>(std::move(number));
+  const auto row = insert(std::move(generated), limits);
+  ++extra_cached_values;
+  return row;
+}
+Id ProteinSchemaDefinitionIndex::Impl::insert_reflected(
+    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaReflectedCreationOptions &options) {
+  const auto &limits = options.definition;
+  auto charge = [](uint64_t &used, uint64_t count, uint64_t limit,
+                   const char *message) {
+    detail::require(used <= limit && count <= limit - used, message);
+    used += count;
+  };
+  detail::require(local->cached_values <= limits.max_cached_values,
+                  "Protein Schema reflected value limit");
+  charge(extra_cached_values, schema_reflected_value_cost(source),
+         limits.max_cached_values - local->cached_values,
+         "Protein Schema reflected value limit");
+  charge(generated_text_bytes, source.target().id.size(),
+         options.max_generated_text_bytes,
+         "Protein Schema reflected name limit");
+  charge(generated_text_bytes, source.label().size(),
+         options.max_generated_text_bytes,
+         "Protein Schema reflected name limit");
+  auto names = std::make_shared<const GeneratedNames>(GeneratedNames{
+      std::string(source.target().id), std::string(source.label())});
+  ProteinSchemaDefinitionProperty generated;
+  generated.document = generated.flags_document = &document();
+  generated.origin = ProteinSchemaPropertyOrigin::registration_create;
+  generated.id = names->id;
+  generated.label = names->label;
+  generated.value_type = source.target().value_type;
+  generated.flags = source.flags();
+  generated.constructed_binding = source.binding();
+  const auto row = insert(std::move(generated), limits);
+  generated_names.push_back(std::move(names));
+  return row;
 }
 struct ProteinSchemaDefinitionState::Impl {
   ProteinSchemaDefinitionIndex index, original;
@@ -3801,32 +3877,9 @@ ProteinSchemaScopedVersionResult ProteinSchemaDefinitionState::finalize_version(
   }
   if (result.step.status != ProteinSchemaVersionFinalStatus::creation_required)
     return result;
-  // Generated local metadata owns no borrowed XML identity. Scalar payload
-  // construction reuses the same normalized representation as load defaults.
-  detail::require(
-      impl->index.impl->local->cached_values < limits.max_cached_values &&
-          impl->index.impl->extra_cached_values <
-              limits.max_cached_values - impl->index.impl->local->cached_values,
-      "Protein Schema cached value limit");
-  ProteinSchemaNumericDefaults number;
-  number.status = ProteinSchemaNumericStatus::ready;
-  number.value_type = 6;
-  number.components = 1;
-  const auto signed_value =
-      sv <= 0x7fffffff ? int64_t(sv) : int64_t(sv) - (int64_t{1} << 32);
-  number.candidates.push_back(default_number(double(signed_value)));
-  ProteinSchemaDefinitionProperty generated;
-  generated.document = generated.flags_document = &impl->index.document();
-  generated.origin = ProteinSchemaPropertyOrigin::registration_create;
-  generated.id = "SchemaVersion";
-  generated.value_type = 6;
-  generated.flags = 2;
-  generated.value =
-      std::make_shared<const ProteinSchemaDefinitionValue>(std::move(number));
   auto metadata =
       std::make_shared<ProteinSchemaDefinitionIndex::Impl>(*impl->index.impl);
-  result.property = metadata->insert(std::move(generated), limits);
-  ++metadata->extra_cached_values;
+  result.property = metadata->insert_version(sv, limits);
   metadata->finish();
   auto state = std::make_shared<Impl>(*impl);
   state->index = ProteinSchemaDefinitionIndex(std::move(metadata));
@@ -3850,11 +3903,6 @@ ProteinSchemaDefinitionState::create_reflected_properties(
   detail::require(sources.size() <= limits.max_declarations,
                   "Protein Schema reflected source limit");
   std::shared_ptr<Metadata> metadata;
-  auto charge = [](uint64_t &used, uint64_t count, uint64_t limit,
-                   const char *message) {
-    detail::require(used <= limit && count <= limit - used, message);
-    used += count;
-  };
   for (size_t i = 0; i < sources.size(); ++i) {
     const auto &source = sources[i];
     result.issue = schema_reflected_copy_issue(source);
@@ -3862,31 +3910,7 @@ ProteinSchemaDefinitionState::create_reflected_properties(
       break;
     if (!metadata)
       metadata = std::make_shared<Metadata>(*impl->index.impl);
-    detail::require(metadata->local->cached_values <= limits.max_cached_values,
-                    "Protein Schema reflected value limit");
-    const auto remaining =
-        limits.max_cached_values - metadata->local->cached_values;
-    charge(metadata->extra_cached_values, schema_reflected_value_cost(source),
-           remaining, "Protein Schema reflected value limit");
-    charge(metadata->generated_text_bytes, source.target().id.size(),
-           options.max_generated_text_bytes,
-           "Protein Schema reflected name limit");
-    charge(metadata->generated_text_bytes, source.label().size(),
-           options.max_generated_text_bytes,
-           "Protein Schema reflected name limit");
-    auto names = std::make_shared<const Metadata::GeneratedNames>(
-        Metadata::GeneratedNames{std::string(source.target().id),
-                                 std::string(source.label())});
-    ProteinSchemaDefinitionProperty generated;
-    generated.document = generated.flags_document = &impl->index.document();
-    generated.origin = ProteinSchemaPropertyOrigin::registration_create;
-    generated.id = names->id;
-    generated.label = names->label;
-    generated.value_type = source.target().value_type;
-    generated.flags = source.flags();
-    generated.constructed_binding = source.binding();
-    const auto row = metadata->insert(std::move(generated), limits);
-    metadata->generated_names.push_back(std::move(names));
+    const auto row = metadata->insert_reflected(source, options);
     const auto &property = metadata->properties[row];
     result.properties.push_back(
         {i, row, property.replaced, property.container});
@@ -4247,11 +4271,12 @@ protein_schema_apply_uri(const ProteinSchemaPropertyState &source,
   SchemaComparison compare{options};
   return schema_apply_uri(source, target, context, compare);
 }
-ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
+template <class ResolveVersions>
+ProteinSchemaExistingPropertyResult schema_reconcile_existing_property(
     const ProteinSchemaPropertyState &input_source,
     const ProteinSchemaPropertyState &target,
-    ProteinSchemaExistingPropertyContext context,
-    ProteinSchemaComparisonOptions options) {
+    ProteinSchemaExistingPropertyContext context, SchemaComparison &compare,
+    ResolveVersions resolve_versions) {
   using Status = ProteinSchemaExistingPropertyStatus;
   using Route = ProteinSchemaExistingPropertyRoute;
   using Issue = ProteinSchemaExistingPropertyIssue;
@@ -4282,7 +4307,6 @@ ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
         raw.presence == ProteinSchemaReferencePresence::present ? raw.word_d0
                                                                 : std::nullopt;
   }
-  SchemaComparison compare{options};
   if (!context.parent_lookup_complete) {
     result.route = Route::parent_check;
     result.issue = Issue::parent_lookup_unresolved;
@@ -4348,6 +4372,7 @@ ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
     return result;
   }
   result.route = Route::ordinary_version;
+  resolve_versions(context);
   if (!context.source_version || !context.target_version) {
     result.issue = Issue::unknown_version;
     return result;
@@ -4373,4 +4398,432 @@ ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
   }
   return result;
 }
+ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
+    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaPropertyState &target,
+    ProteinSchemaExistingPropertyContext context,
+    ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_reconcile_existing_property(source, target, context, compare,
+                                            [](auto &) {});
+}
+// Private builders never escape while mutable. Seeds address rows through their
+// owning index, so append/reallocation does not turn a row ID into an address.
+struct ProteinSchemaReconciliationAccess {
+  using Scope = ProteinSchemaDefinitionState;
+  using Metadata = ProteinSchemaDefinitionIndex::Impl;
+  static bool same_property_snapshot(const ProteinSchemaPropertyState &a,
+                                     const ProteinSchemaPropertyState &b) {
+    return a.impl == b.impl;
+  }
+  static void charge(uint64_t &used, uint64_t amount, uint64_t limit,
+                     const char *message) {
+    detail::require(used <= limit && amount <= limit - used, message);
+    used += amount;
+  }
+  struct Builder {
+    Scope input;
+    std::shared_ptr<Scope::Impl> state;
+    std::shared_ptr<Metadata> metadata;
+    ProteinSchemaReconciliationResult &out;
+    const ProteinSchemaReconciliationOptions &options;
+    size_t reflected = 0;
+    bool order_dirty = false;
+    Builder(const Scope &s, ProteinSchemaReconciliationResult &r,
+            const ProteinSchemaReconciliationOptions &o)
+        : input(s), out(r), options(o) {}
+    Scope current() const { return state ? Scope(state) : input; }
+    Scope::Impl &edit() {
+      if (!state) {
+        charge(out.state_history, input.impl->updates.size(),
+               options.max_state_history,
+               "Protein Schema reconciliation state history limit");
+        state = std::make_shared<Scope::Impl>(*input.impl);
+      }
+      return *state;
+    }
+    Metadata &edit_metadata() {
+      if (!metadata) {
+        charge(out.metadata_history, input.definition().properties().size(),
+               options.max_metadata_history,
+               "Protein Schema reconciliation metadata history limit");
+        metadata = std::make_shared<Metadata>(*input.impl->index.impl);
+        edit().index = ProteinSchemaDefinitionIndex(metadata);
+      }
+      return *metadata;
+    }
+    void update(Id row, const ProteinSchemaPropertyState &value) {
+      auto &s = edit();
+      if (!s.updates.contains(row))
+        charge(out.state_history, 1, options.max_state_history,
+               "Protein Schema reconciliation state history limit");
+      s.updates.insert_or_assign(row, value);
+    }
+    void growth(uint64_t values, uint64_t bytes) {
+      charge(out.new_properties, 1, options.propagation.max_new_properties,
+             "Protein Schema reconciliation new property limit");
+      charge(out.new_cached_values, values,
+             options.propagation.max_new_cached_values,
+             "Protein Schema reconciliation new value limit");
+      charge(out.new_text_bytes, bytes, options.propagation.max_new_text_bytes,
+             "Protein Schema reconciliation new text limit");
+      charge(out.metadata_history, 1, options.max_metadata_history,
+             "Protein Schema reconciliation metadata history limit");
+    }
+    Id reflect(const ProteinSchemaPropertyState &source) {
+      if (reflected == 0)
+        charge(out.reflected_receiver_history,
+               current().definition().properties().size(),
+               options.propagation.max_receiver_history,
+               "Protein Schema reconciliation receiver history limit");
+      charge(out.reflected_receiver_history, 1,
+             options.propagation.max_receiver_history,
+             "Protein Schema reconciliation receiver history limit");
+      detail::require(
+          reflected < options.propagation.creation.definition.max_declarations,
+          "Protein Schema reconciliation receiver declaration limit");
+      ++reflected;
+      auto &m = edit_metadata();
+      const auto name_bytes = source.target().id.size();
+      detail::require(source.label().size() <=
+                          std::numeric_limits<uint64_t>::max() - name_bytes,
+                      "Protein Schema reconciliation text size");
+      growth(schema_reflected_value_cost(source),
+             name_bytes + source.label().size());
+      const auto row = m.insert_reflected(source, options.propagation.creation);
+      order_dirty = true;
+      ProteinSchemaPropertyState created(current().definition(), row);
+      const auto copied = created.copied_from(source);
+      detail::require(copied.state.has_value(),
+                      "Protein Schema reconciliation copy preflight mismatch");
+      update(row, *copied.state);
+      return row;
+    }
+    ProteinSchemaVersionRead version(SchemaComparison &compare) const {
+      const auto scope = current();
+      const auto found = scope.find("SchemaVersion");
+      const auto value =
+          found.status == ProteinSchemaDefinitionLookupStatus::found
+              ? std::optional(scope.property(found.property))
+              : std::nullopt;
+      return schema_read_version(
+          value ? &*value : nullptr,
+          found.status != ProteinSchemaDefinitionLookupStatus::unresolved,
+          compare);
+    }
+    ProteinSchemaScopedVersionResult final_version(uint32_t sv, uint32_t tv,
+                                                   SchemaComparison &compare) {
+      ProteinSchemaScopedVersionResult result{current(), {}};
+      if (sv <= tv) {
+        result.step.status = ProteinSchemaVersionFinalStatus::unchanged;
+        return result;
+      }
+      const auto scope = current();
+      const auto found = scope.find("SchemaVersion");
+      const auto value =
+          found.status == ProteinSchemaDefinitionLookupStatus::found
+              ? std::optional(scope.property(found.property))
+              : std::nullopt;
+      result.property = found.property;
+      result.step = schema_finalize_version(
+          value ? &*value : nullptr, sv, tv, true,
+          found.status != ProteinSchemaDefinitionLookupStatus::unresolved,
+          compare);
+      if (value && result.step.written)
+        update(found.property, *result.step.target);
+      if (result.step.status ==
+          ProteinSchemaVersionFinalStatus::creation_required) {
+        auto &m = edit_metadata();
+        growth(1, 0);
+        result.property =
+            m.insert_version(sv, options.propagation.creation.definition);
+        order_dirty = true;
+        ProteinSchemaPropertyState created(current().definition(),
+                                           result.property);
+        update(result.property, created);
+        result.step.target = created;
+        result.step.status = ProteinSchemaVersionFinalStatus::finished;
+        result.step.written = true;
+        result.created = true;
+      }
+      result.state = current();
+      return result;
+    }
+    void marker() { edit().merge_marker = 1; }
+    void copy_aliases(const Builder &source) {
+      const auto source_scope = source.current();
+      const auto &from = source_scope.impl->index.impl->visible_aliases;
+      // Test the normalized sequence without copying a metadata index on no-op.
+      if (from.enumerate(options.aliases.max_enumerated_aliases).empty())
+        return;
+      auto &m = edit_metadata();
+      m.visible_aliases =
+          m.visible_aliases.copy_aliases_from(from, options.aliases);
+    }
+    void order() {
+      if (metadata && order_dirty) {
+        metadata->finish();
+        order_dirty = false;
+      }
+    }
+    Scope freeze() {
+      order();
+      return current();
+    }
+  };
+};
+
+ProteinSchemaReconciliationResult
+ProteinSchemaDefinitionGraph::reconcile_definition(
+    Id source_id, Id target_id, std::span<const Id> enumeration,
+    const ProteinSchemaReconciliationOptions &options) const {
+  using A = ProteinSchemaReconciliationAccess;
+  using B = A::Builder;
+  using Issue = ProteinSchemaReconciliationIssue;
+  using Status = ProteinSchemaReconciliationStatus;
+  using Lookup = ProteinSchemaDefinitionLookupStatus;
+  ProteinSchemaReconciliationResult out{
+      *this, Status::unresolved, Issue::none, std::nullopt, std::nullopt, {},
+      {},    std::nullopt,       std::nullopt};
+  SchemaComparison compare{options.comparison};
+  std::map<Id, std::unique_ptr<B>> scopes;
+  auto builder = [&](Id id) -> B & {
+    auto i = scopes.find(id);
+    if (i == scopes.end())
+      i = scopes.emplace(id, std::make_unique<B>(definition(id), out, options))
+              .first;
+    return *i->second;
+  };
+  auto finish = [&]() {
+    out.comparison_values = compare.values;
+    out.comparison_text_bytes = compare.bytes;
+    std::shared_ptr<Impl> graph;
+    for (auto &[id, scope] : scopes)
+      if (scope->state) {
+        if (!graph)
+          graph = std::make_shared<Impl>(*impl);
+        graph->updates.insert_or_assign(id, scope->freeze());
+      }
+    if (graph)
+      out.graph = ProteinSchemaDefinitionGraph(std::move(graph));
+    return std::move(out);
+  };
+  auto unresolved = [&](Issue issue) {
+    out.issue = issue;
+    out.status = Status::unresolved;
+    return finish();
+  };
+  if (source_id >= node_count())
+    return unresolved(Issue::invalid_source);
+  if (target_id >= node_count())
+    return unresolved(Issue::invalid_target);
+  detail::require(
+      options.profile == ProteinSchemaIterationProfile::reader_2017 ||
+          options.profile == ProteinSchemaIterationProfile::reader_2026,
+      "Protein Schema reconciliation profile");
+  auto &source = builder(source_id);
+  auto &target = builder(target_id);
+  if (source.input.definition().status() !=
+          ProteinSchemaDefinitionStatus::ready ||
+      target.input.definition().status() !=
+          ProteinSchemaDefinitionStatus::ready)
+    return unresolved(Issue::uid_unresolved);
+  if (compare
+          .text(source.input.definition().uid(),
+                target.input.definition().uid(), 0)
+          .status != CompareStatus::equal) {
+    out.status = Status::incompatible;
+    out.issue = Issue::uid_mismatch;
+    return finish();
+  }
+  // Native reads target first, then source. These are the originals for the
+  // final gate, not a cache for subsequent ordinary-property version reads.
+  out.target_version = target.version(compare).value;
+  out.source_version = source.version(compare).value;
+  if (!out.target_version || !out.source_version)
+    return unresolved(Issue::initial_version_unresolved);
+  uint64_t source_count = 0;
+  for (auto group : {ProteinSchemaPropertyContainer::ordinary,
+                     ProteinSchemaPropertyContainer::iterator_data,
+                     ProteinSchemaPropertyContainer::readonly_data})
+    source_count += source.input.definition().container(group).size();
+  detail::require(source_count <= options.max_source_properties,
+                  "Protein Schema reconciliation source property limit");
+  const auto rows =
+      source.input.definition().iteration({options.profile, false, false});
+  const bool old =
+      options.profile == ProteinSchemaIterationProfile::reader_2017;
+  auto lookup = [&](B &scope, std::string_view name) {
+    const auto s = scope.current();
+    return old ? s.find(name) : s.find_actual(name);
+  };
+  for (size_t ordinal = 0; ordinal < rows.size(); ++ordinal) {
+    detail::require(out.created.size() <= options.max_events &&
+                        out.events.size() <
+                            options.max_events - out.created.size(),
+                    "Protein Schema reconciliation event limit");
+    const auto row = rows[ordinal];
+    auto value = source.current().property(row);
+    ProteinSchemaReconciliationEvent event;
+    event.source_property = row;
+    if (value.target().id == "SchemaVersion") {
+      event.route = ProteinSchemaReconciliationRoute::schema_version_skip;
+      out.events.push_back(std::move(event));
+      out.next_source = ordinal + 1;
+      continue;
+    }
+    const auto repair =
+        protein_schema_repair_source_flags(value, options.source_context);
+    event.source_flags_written = repair.written;
+    if (repair.written)
+      source.update(row, repair.source);
+    if (repair.issue != ProteinSchemaFlagsRepairIssue::none) {
+      out.events.push_back(std::move(event));
+      return unresolved(Issue::source_repair_unresolved);
+    }
+    value = repair.source;
+    const auto found = lookup(target, value.target().id);
+    event.target_property = found.property;
+    if (found.status == Lookup::unresolved) {
+      out.events.push_back(std::move(event));
+      return unresolved(Issue::target_lookup_unresolved);
+    }
+    if (found.status == Lookup::found) {
+      ProteinSchemaExistingPropertyContext context;
+      std::optional<ProteinSchemaPropertyState> parent_value;
+      const auto parent = relation(source_id);
+      context.parent_lookup_complete = parent.parent_known;
+      if (parent.parent_known && parent.parent != none) {
+        if (parent.parent >= node_count())
+          context.parent_lookup_complete = false;
+        else {
+          auto &p = builder(parent.parent);
+          const auto f = lookup(p, value.target().id);
+          context.parent_lookup_complete = f.status != Lookup::unresolved;
+          if (f.status == Lookup::found)
+            parent_value = p.current().property(f.property);
+        }
+      }
+      context.source_parent_property = parent_value ? &*parent_value : nullptr;
+      const auto &raw = options.source_context;
+      context.uri_context.source_context_complete =
+          raw.presence == ProteinSchemaReferencePresence::absent ||
+          (raw.presence == ProteinSchemaReferencePresence::present &&
+           raw.word_d0.has_value());
+      context.uri_context.source_context_word =
+          raw.presence == ProteinSchemaReferencePresence::present
+              ? raw.word_d0
+              : std::nullopt;
+      const auto current_target = target.current().property(found.property);
+      auto step = schema_reconcile_existing_property(
+          value, current_target, context, compare, [&](auto &c) {
+            c.target_version = target.version(compare).value;
+            c.source_version = source.version(compare).value;
+          });
+      if (!A::same_property_snapshot(current_target, step.target))
+        target.update(found.property, step.target);
+      const auto status = step.status;
+      event.existing = std::move(step);
+      out.events.push_back(std::move(event));
+      if (status == ProteinSchemaExistingPropertyStatus::unresolved)
+        return unresolved(context.parent_lookup_complete
+                              ? Issue::existing_unresolved
+                              : Issue::source_parent_unresolved);
+      out.next_source = ordinal + 1;
+      if (status == ProteinSchemaExistingPropertyStatus::incompatible) {
+        out.status = Status::incompatible;
+        return finish();
+      }
+    } else {
+      event.route = ProteinSchemaReconciliationRoute::reflected;
+      if (!out.selection) {
+        auto receiver = options.propagation.receivers;
+        receiver.profile =
+            old ? ProteinSchemaReceiverProfile::local_target
+                : ProteinSchemaReceiverProfile::namespace_ancestors;
+        out.selection = select_receivers(target_id, enumeration, receiver);
+      }
+      if (out.selection->issue != ProteinSchemaReceiverIssue::none) {
+        out.events.push_back(std::move(event));
+        return unresolved(Issue::receiver_unresolved);
+      }
+      // Native reentrant source-iterator ownership after reflected replacement
+      // is not established by normalized snapshots. Do not invent a restart or
+      // silently process the pre-insertion source rows as if nothing changed.
+      if (std::find(out.selection->receivers.begin(),
+                    out.selection->receivers.end(),
+                    source_id) != out.selection->receivers.end()) {
+        out.events.push_back(std::move(event));
+        return unresolved(Issue::source_receiver_overlap);
+      }
+      out.copy_issue = schema_reflected_copy_issue(value);
+      if (out.copy_issue != ProteinSchemaPropertyCopyIssue::none) {
+        out.events.push_back(std::move(event));
+        return unresolved(Issue::copy_unresolved);
+      }
+      for (const auto receiver : out.selection->receivers) {
+        detail::require(out.events.size() < options.max_events &&
+                            out.created.size() <
+                                options.max_events - out.events.size() - 1,
+                        "Protein Schema reconciliation creation event limit");
+        auto &scope = builder(receiver);
+        const auto generated = scope.reflect(value);
+        const auto current_scope = scope.current();
+        const auto &metadata =
+            current_scope.definition().properties()[generated];
+        out.created.push_back({ordinal, receiver, generated, metadata.replaced,
+                               metadata.container});
+        if (receiver == target_id)
+          event.target_property = generated;
+      }
+      out.events.push_back(std::move(event));
+      out.next_source = ordinal + 1;
+    }
+  }
+  out.tail.emplace(
+      ProteinSchemaMergeTailResult{source.current(), target.current(), {}});
+  auto &tail = *out.tail;
+  auto version =
+      target.final_version(*out.source_version, *out.target_version, compare);
+  tail.version = std::move(version.step);
+  tail.version_property = version.property;
+  tail.version_created = version.created;
+  auto tail_unresolved = [&](ProteinSchemaMergeTailIssue issue) {
+    tail.issue = issue;
+    tail.source = source.current();
+    tail.target = target.current();
+    return unresolved(Issue::tail_unresolved);
+  };
+  if (tail.version.status == ProteinSchemaVersionFinalStatus::unresolved)
+    return tail_unresolved(ProteinSchemaMergeTailIssue::version_unresolved);
+  target.order();
+  uint64_t target_count = 0;
+  for (auto group : {ProteinSchemaPropertyContainer::ordinary,
+                     ProteinSchemaPropertyContainer::iterator_data,
+                     ProteinSchemaPropertyContainer::readonly_data})
+    target_count += target.current().definition().container(group).size();
+  detail::require(target_count <= options.max_target_properties,
+                  "Protein Schema reconciliation target property limit");
+  for (auto row : target.current().definition().iteration(
+           {options.profile, false, false})) {
+    const auto f = lookup(source, target.current().property(row).target().id);
+    ++tail.checked_target_properties;
+    if (f.status == Lookup::unresolved)
+      return tail_unresolved(
+          ProteinSchemaMergeTailIssue::source_lookup_unresolved);
+    if (f.status != Lookup::found) {
+      tail.first_target_only = row;
+      source.marker();
+      break;
+    }
+  }
+  const auto before = target.current().alias_attempts().size();
+  target.copy_aliases(source);
+  tail.alias_attempts = target.current().alias_attempts().size() - before;
+  tail.source = source.current();
+  tail.target = target.current();
+  out.status = Status::compatible;
+  return finish();
+}
+
 } // namespace nwd

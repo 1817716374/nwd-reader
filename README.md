@@ -619,6 +619,27 @@ target_state = tail.target;
 
 批量别名传播共享来源文档、名称和属性值，仅构建一次目标索引快照。`max_aliases` 包括被拒绝的本地尝试，`max_enumerated_aliases` 包括被遮蔽的父级条目，另有可见名称数和保留作用域深度限制。无源别名时不建立新快照。这个收尾入口仍需要调用方完成普通源属性迭代、修复及兼容检查，不代替完整全局注册、namespace 接管或文件记录到 scope 的身份映射。
 
+`ProteinSchemaDefinitionGraph::reconcile_definition(source_row, target_row, namespace_rows, options)` 将局部定义合并接成有序的源属性循环。调用方提供同一图内的源/目标 scope、父关系和 namespace 枚举；UID 相等只允许进入兼容检查，不合并两个 scope 的身份。
+
+```cpp
+nwd::ProteinSchemaReconciliationOptions options;
+options.profile = nwd::ProteinSchemaIterationProfile::reader_2026;
+auto merged = graph.reconcile_definition(source_row, target_row,
+                                         namespace_rows, options);
+graph = merged.graph;
+// 检查 merged.status、merged.issue、events 与 tail。
+```
+
+入口先核对 UID 并按目标→源读取初始版本，然后按全部活动容器的原生 profile 顺序逐条处理源属性：跳过实际名 SchemaVersion、按显式上下文修复源 flags、查询当前目标、执行父级覆盖/Base/URI/普通版本分派，或创建缺失属性。普通版本分支每次重读当前源/目标版本；初始版本只用于末尾写回。任一步已确认不兼容就停止下一条源属性，保留此前完成的修改，跳过整个收尾。未决另行报告，不能作为兼容接受。
+
+`reader_2017` 的目标和源父级查询允许一层别名，缺失创建只处理当前目标；`reader_2026` 直接查询属性名，缺失创建使用已提供 namespace 中的派生接收者。选择结果按固定拓扑复用，源属性始终按顺序执行：一次创建对下一次查找立即可见，不将被已有属性操作隔开的缺失项任意分组。全部源属性兼容后执行版本写回、源端目标独有名称标记及源→目标别名收尾。
+
+内部为受影响 scope 使用私有可变索引/稀疏覆盖，结束时冻结；每个 scope 最多复制一次已有元数据和更新表。生成行共享同一最终索引与源数据，已有属性/scope/图身份保留。`comparison` 是整次调用的累计读取预算，覆盖 UID、初始/当前版本、父级和属性比较及最终整数写入；`max_metadata_history`、`max_state_history` 分别限制所有 scope 复制和新增的元数据/覆盖行。传播预算也累计使用，最终新建版本计入新增属性/值总量；事件、源/目标枚举及别名另有限制。
+
+结果的 `events` 保留已访问源行及已有分派诊断，`created` 保留按源顺序的接收事件，`next_source` 表示原始源枚举中已经完成的前缀。`graph` 始终包含已确定的当前状态，包括未决前完成的源 flags 修复、控制字节或 URI 修改。预算超限抛 `Error`，输入图保持不变；这不模拟产品异常回滚。缺失创建若会反射回正在枚举的源 scope，当前返回 `source_receiver_overlap` 未决，避免猜测重入迭代及对象释放行为；同一行的源=目标普通合并可直接处理。
+
+这个入口处理显式 runtime scope 上的局部合并。CommonSchema/全局注册门槛、namespace 接管/释放及持久文件记录到这些 scope 的映射仍需要上层解析流程提供，不能仅凭局部合并兼容就断言整个 NWD/NWC/NWF 已完整解析。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

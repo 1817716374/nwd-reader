@@ -709,6 +709,7 @@ class ProteinSchemaAliasIndex {
       Id source, std::string_view name) const;
   friend class ProteinSchemaDefinitionIndex;
   friend class ProteinSchemaDefinitionState;
+  friend struct ProteinSchemaReconciliationAccess;
 public:
   explicit ProteinSchemaAliasIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_parent = nullptr,
@@ -861,6 +862,7 @@ class ProteinSchemaDefinitionIndex {
   explicit ProteinSchemaDefinitionIndex(std::shared_ptr<const Impl>);
   friend class ProteinSchemaDefinitionLoadIndex;
   friend class ProteinSchemaDefinitionState;
+  friend struct ProteinSchemaReconciliationAccess;
 public:
   explicit ProteinSchemaDefinitionIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_alias_parent = nullptr,
@@ -936,6 +938,7 @@ class ProteinSchemaPropertyState {
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaPropertyState(std::shared_ptr<const Impl>);
   friend struct ProteinSchemaStateAccess;
+  friend struct ProteinSchemaReconciliationAccess;
 public:
   explicit ProteinSchemaPropertyState(const ProteinSchemaDefinitionIndex &, Id property);
   // Initial target row, including its original flags/container/label. Use the
@@ -1095,6 +1098,7 @@ class ProteinSchemaDefinitionState {
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaDefinitionState(std::shared_ptr<const Impl>);
   friend class ProteinSchemaDefinitionGraph;
+  friend struct ProteinSchemaReconciliationAccess;
   friend ProteinSchemaMergeTailResult protein_schema_finish_merge(
       const ProteinSchemaDefinitionState &, const ProteinSchemaDefinitionState &,
       uint32_t, uint32_t, bool, ProteinSchemaMergeTailOptions);
@@ -1235,6 +1239,8 @@ struct ProteinSchemaDefinitionPropagationOptions {
   uint64_t max_receiver_history = 1000000; // copied old + new rows over receivers
 };
 struct ProteinSchemaDefinitionPropagationResult;
+struct ProteinSchemaReconciliationOptions;
+struct ProteinSchemaReconciliationResult;
 // One row per scope identity; repeated enumeration uses the same graph-local Id.
 // Equal UID/XML/name/cache never merges scopes. Topology is immutable and current
 // definitions use sparse updates. Row IDs are meaningful only in this graph's
@@ -1269,6 +1275,12 @@ public:
       Id target, std::span<const Id> namespace_entries,
       std::span<const ProteinSchemaPropertyState>,
       ProteinSchemaDefinitionPropagationOptions = {}) const;
+  // Full local source-property loop and ordered tail on explicitly supplied
+  // scope identities/topology. Global registry/adoption and wire mapping are
+  // separate. See options/result below for unresolved boundaries and budgets.
+  ProteinSchemaReconciliationResult reconcile_definition(
+      Id source, Id target, std::span<const Id> namespace_entries,
+      const ProteinSchemaReconciliationOptions &) const;
 };
 struct ProteinSchemaPropagatedProperty {
   size_t source_ordinal = 0;
@@ -1418,6 +1430,49 @@ struct ProteinSchemaExistingPropertyResult {
 ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
     const ProteinSchemaPropertyState &source, const ProteinSchemaPropertyState &target,
     ProteinSchemaExistingPropertyContext = {}, ProteinSchemaComparisonOptions = {});
+
+struct ProteinSchemaReconciliationOptions {
+  ProteinSchemaIterationProfile profile = ProteinSchemaIterationProfile::reader_2026;
+  ProteinSchemaSourceContext source_context;
+  ProteinSchemaComparisonOptions comparison;
+  ProteinSchemaDefinitionPropagationOptions propagation;
+  ProteinSchemaAliasOptions aliases;
+  uint32_t max_source_properties = 1000000, max_target_properties = 1000000;
+  uint64_t max_events = 2000000;
+  // All cloned metadata rows + generated rows, and sparse old/new update rows,
+  // across affected scopes. Each scope is cloned/frozen at most once per call.
+  uint64_t max_metadata_history = 1000000, max_state_history = 1000000;
+};
+enum class ProteinSchemaReconciliationStatus { compatible, incompatible, unresolved };
+enum class ProteinSchemaReconciliationIssue {
+  none, invalid_source, invalid_target, uid_unresolved, uid_mismatch,
+  initial_version_unresolved, source_iteration_unresolved, source_repair_unresolved,
+  target_lookup_unresolved, source_parent_unresolved, existing_unresolved,
+  receiver_unresolved, copy_unresolved, source_receiver_overlap, tail_unresolved
+};
+enum class ProteinSchemaReconciliationRoute { schema_version_skip, existing, reflected };
+struct ProteinSchemaReconciliationEvent {
+  Id source_property = none, target_property = none;
+  ProteinSchemaReconciliationRoute route = ProteinSchemaReconciliationRoute::existing;
+  bool source_flags_written = false;
+  std::optional<ProteinSchemaExistingPropertyResult> existing;
+};
+struct ProteinSchemaReconciliationResult {
+  ProteinSchemaDefinitionGraph graph;
+  ProteinSchemaReconciliationStatus status = ProteinSchemaReconciliationStatus::unresolved;
+  ProteinSchemaReconciliationIssue issue = ProteinSchemaReconciliationIssue::none;
+  std::optional<uint32_t> source_version, target_version; // initial tail versions
+  std::vector<ProteinSchemaReconciliationEvent> events;
+  std::vector<ProteinSchemaPropagatedProperty> created;
+  std::optional<ProteinSchemaReceiverSelection> selection;
+  std::optional<ProteinSchemaMergeTailResult> tail;
+  ProteinSchemaPropertyCopyIssue copy_issue = ProteinSchemaPropertyCopyIssue::none;
+  size_t next_source = 0; // completed prefix in the original source iteration
+  uint64_t comparison_values = 0, comparison_text_bytes = 0;
+  uint64_t metadata_history = 0, state_history = 0;
+  uint64_t reflected_receiver_history = 0;
+  uint64_t new_properties = 0, new_cached_values = 0, new_text_bytes = 0;
+};
 
 enum class ProteinSchemaDefinitionLoadStatus {
   dependencies_resolved, pending_dependencies, unresolved
