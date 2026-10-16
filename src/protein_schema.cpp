@@ -760,7 +760,9 @@ ProteinSchemaDocument::resolved_constraint(Id entry) const {
                          [&](Id id) { out.source = id; });
   if (out.source == none)
     return out;
-  const auto raw = constraint_fields(out.source);
+  out.fields = std::make_shared<const ProteinSchemaConstraintFields>(
+      constraint_fields(out.source));
+  const auto &raw = *out.fields;
   using Status = ProteinSchemaConstraintStatus;
   if (raw.percentage) {
     out.status = Status::ready;
@@ -848,7 +850,7 @@ ProteinSchemaNumericDefaults ProteinSchemaDocument::numeric_defaults(
     out.constraint = resolved_constraint(entry);
     auto bounds = out.constraint.range;
     if (out.constraint.status == ProteinSchemaConstraintStatus::unresolved) {
-      const auto raw = constraint_fields(out.constraint.source);
+      const auto &raw = *out.constraint.fields;
       if ((!raw.minimum || raw.minimum->value) &&
           (!raw.maximum || raw.maximum->value)) {
         // Only the increment is unknown. Allocation and value acceptance do
@@ -1129,8 +1131,7 @@ void schema_ignored_values(const ProteinSchemaEntryFields &fields,
 }
 // Numeric projection uncertainty can concern a later array value while factory
 // existence is known. Only an uncertain first-value/constraint gate stops XML.
-bool schema_numeric_gate_known(const ProteinSchemaDocument &doc,
-                               const ProteinSchemaEntryFields &fields,
+bool schema_numeric_gate_known(const ProteinSchemaEntryFields &fields,
                                const ProteinSchemaNumericDefaults &value) {
   if (value.status != ProteinSchemaNumericStatus::unresolved)
     return true;
@@ -1145,7 +1146,7 @@ bool schema_numeric_gate_known(const ProteinSchemaDocument &doc,
   }
   bool has_range = value.constraint.range.has_value();
   if (value.constraint.status == ProteinSchemaConstraintStatus::unresolved) {
-    const auto raw = doc.constraint_fields(value.constraint.source);
+    const auto &raw = *value.constraint.fields;
     if ((raw.minimum && !raw.minimum->value) ||
         (raw.maximum && !raw.maximum->value))
       return false;
@@ -1259,6 +1260,322 @@ std::optional<ProteinSchemaRuntimeBinding> protein_schema_runtime_binding(
         return std::nullopt;
       },
       value);
+}
+
+namespace {
+using Comparison = ProteinSchemaComparisonResult;
+using CompareStatus = ProteinSchemaComparisonStatus;
+using CompareIssue = ProteinSchemaComparisonIssue;
+Comparison compared(bool equal, uint64_t ordinal = 0) {
+  return {equal ? CompareStatus::equal : CompareStatus::different,
+          CompareIssue::none, ordinal};
+}
+Comparison uncertain(CompareIssue issue, uint64_t ordinal = 0) {
+  return {CompareStatus::unresolved, issue, ordinal};
+}
+struct SchemaComparison {
+  ProteinSchemaComparisonOptions limits;
+  uint64_t values = 0, bytes = 0;
+  void value() {
+    detail::require(values < limits.max_values,
+                    "Protein Schema comparison value limit");
+    ++values;
+  }
+  void text_bytes(size_t count) {
+    detail::require(count <= limits.max_text_bytes - bytes,
+                    "Protein Schema comparison text limit");
+    bytes += count;
+  }
+  Comparison text(std::string_view a, std::string_view b, uint64_t ordinal) {
+    value();
+    text_bytes(a.size());
+    text_bytes(b.size());
+    return compared(a == b, ordinal);
+  }
+  Comparison choice_table(const ProteinSchemaChoiceIndex &a,
+                          const ProteinSchemaChoiceIndex &b) {
+    // XML creates a fresh ADSKChoiceList whose header string is empty in both
+    // generations. Declaration id/label are not that header. Only accepted
+    // entries belong to its vector; unknown entries stop the known prefix.
+    const auto left = a.entries(), right = b.entries();
+    size_t li = 0, ri = 0;
+    auto next = [&](auto rows, size_t &i,
+                    bool &unknown) -> const ProteinSchemaChoiceEntry * {
+      while (i < rows.size()) {
+        value();
+        const auto &entry = rows[i++];
+        using S = ProteinSchemaChoiceStatus;
+        switch (entry.status) {
+        case S::accepted:
+          return &entry;
+        case S::unresolved_attributes:
+        case S::unresolved_value:
+        case S::unresolved_previous:
+          unknown = true;
+          return nullptr;
+        default:
+          break;
+        }
+      }
+      return nullptr;
+    };
+    for (uint64_t ordinal = 0;; ++ordinal) {
+      bool unknown = false;
+      const auto *l = next(left, li, unknown);
+      if (unknown)
+        return uncertain(CompareIssue::incomplete_choice, ordinal);
+      if (!l)
+        return compared(true);
+      const auto *r = next(right, ri, unknown);
+      if (unknown)
+        return uncertain(CompareIssue::incomplete_choice, ordinal);
+      if (!r)
+        return uncertain(CompareIssue::short_choice_table, ordinal);
+      auto result = text(*l->id, *r->id, ordinal);
+      if (result.status != CompareStatus::equal)
+        return result;
+      value();
+      if (*l->value.value != *r->value.value)
+        return compared(false, ordinal);
+      result = text(*l->label, *r->label, ordinal);
+      if (result.status != CompareStatus::equal)
+        return result;
+    }
+  }
+  Comparison numeric(const ProteinSchemaNumericDefaults &a,
+                     const ProteinSchemaNumericDefaults &b) {
+    using S = ProteinSchemaNumericStatus;
+    if (a.status == S::rejected || b.status == S::rejected ||
+        a.status == S::unsupported || b.status == S::unsupported)
+      return uncertain(CompareIssue::unavailable_projection);
+    const auto dim = a.components;
+    if (!dim || dim != b.components || a.multiple != b.multiple ||
+        a.candidates.size() % dim || b.candidates.size() % dim ||
+        (!a.multiple &&
+         (a.candidates.size() != dim || b.candidates.size() != dim)))
+      return uncertain(CompareIssue::inconsistent_shape);
+    const auto ac = a.candidates.size() / dim, bc = b.candidates.size() / dim;
+    for (size_t i = 0; i < std::min(ac, bc); ++i) {
+      for (uint32_t c = 0; c < dim; ++c) {
+        value();
+        const auto x = a.candidates[i * dim + c].value,
+                   y = b.candidates[i * dim + c].value;
+        if (!x || !y)
+          return uncertain(CompareIssue::unknown_number, i);
+        if (a.value_type == 6) {
+          auto valid = [](double n) {
+            return std::isfinite(n) &&
+                   n >= std::numeric_limits<int32_t>::min() &&
+                   n <= std::numeric_limits<int32_t>::max() &&
+                   n == std::trunc(n);
+          };
+          if (!valid(*x) || !valid(*y))
+            return uncertain(CompareIssue::inconsistent_shape, i);
+          if (*x != *y)
+            return compared(false, i);
+        } else if (a.value_type == 8) {
+          const double difference = *x - *y;
+          // Both directional color less() searches stop at this same NaN
+          // component. Later components of this color are not inspected.
+          if (std::isnan(difference))
+            break;
+          if (difference != 0)
+            return compared(false, i);
+        } else if (dim == 1 && !a.unit.empty()) {
+          const double difference = *x - *y;
+          if (difference < 0 || difference > 0)
+            return compared(false, i);
+          if (!a.unit_code || !b.unit_code)
+            return uncertain(CompareIssue::unknown_unit, i);
+          if (*a.unit_code != *b.unit_code)
+            return compared(false, i);
+        } else if (*x < *y || *x > *y) {
+          return compared(false, i);
+        }
+      }
+    }
+    return compared(ac == bc, std::min(ac, bc));
+  }
+  Comparison compare_values(const ProteinSchemaDefinitionValue &a,
+                            const ProteinSchemaDefinitionValue &b,
+                            bool choice_checked = false) {
+    const auto at = protein_schema_runtime_binding(a),
+               bt = protein_schema_runtime_binding(b);
+    if (!at || !bt)
+      return uncertain(CompareIssue::unknown_layout);
+    if (at->type_name != bt->type_name)
+      return compared(false);
+    if (a.index() != b.index())
+      return uncertain(CompareIssue::inconsistent_shape);
+    if (const auto *x = std::get_if<bool>(&a)) {
+      value();
+      return compared(*x == std::get<bool>(b));
+    }
+    if (const auto *x = std::get_if<ProteinSchemaNumericDefaults>(&a))
+      return numeric(*x, std::get<ProteinSchemaNumericDefaults>(b));
+    if (const auto *x = std::get_if<ProteinSchemaTextDefaults>(&a)) {
+      const auto &y = std::get<ProteinSchemaTextDefaults>(b);
+      if (x->status != ProteinSchemaTextStatus::ready ||
+          y.status != ProteinSchemaTextStatus::ready)
+        return uncertain(CompareIssue::unavailable_projection);
+      auto valid = [](const auto &v) {
+        return v.multiple ? !v.uses_type_default
+                          : (v.uses_type_default ? v.values.empty()
+                                                 : v.values.size() == 1);
+      };
+      if (!valid(*x) || !valid(y))
+        return uncertain(CompareIssue::inconsistent_shape);
+      if (x->uses_type_default || y.uses_type_default) {
+        // Scalar String's empty construction is verified separately. Other
+        // concrete string classes retain an explicit unassigned default.
+        if (x->value_type != 2)
+          return uncertain(CompareIssue::unassigned_type_default);
+        return text(x->uses_type_default ? std::string_view{} : x->values[0],
+                    y.uses_type_default ? std::string_view{} : y.values[0], 0);
+      }
+      for (size_t i = 0; i < std::min(x->values.size(), y.values.size()); ++i) {
+        auto result = text(x->values[i], y.values[i], i);
+        if (result.status != CompareStatus::equal)
+          return result;
+      }
+      return compared(x->values.size() == y.values.size(),
+                      std::min(x->values.size(), y.values.size()));
+    }
+    if (std::holds_alternative<ProteinSchemaConstructedDefaults>(a)) {
+      value();
+      return compared(
+          true); // binary empty; Reference/Texture custom class check
+    }
+    const auto &x = std::get<ProteinSchemaDefinitionChoice>(a),
+               &y = std::get<ProteinSchemaDefinitionChoice>(b);
+    if (!choice_checked) {
+      auto result = choice_table(x.index, y.index);
+      if (result.status != CompareStatus::equal)
+        return result;
+    }
+    if (x.defaults.status != ProteinSchemaChoiceDefaultStatus::ready ||
+        y.defaults.status != ProteinSchemaChoiceDefaultStatus::ready)
+      return uncertain(CompareIssue::unavailable_projection);
+    if (!x.defaults.multiple &&
+        (x.defaults.values.size() != 1 || y.defaults.values.size() != 1))
+      return uncertain(CompareIssue::inconsistent_shape);
+    for (size_t i = 0;
+         i < std::min(x.defaults.values.size(), y.defaults.values.size());
+         ++i) {
+      value();
+      if (x.defaults.values[i] != y.defaults.values[i])
+        return compared(false, i);
+    }
+    return compared(
+        x.defaults.values.size() == y.defaults.values.size(),
+        std::min(x.defaults.values.size(), y.defaults.values.size()));
+  }
+  struct Range {
+    bool known = true, present = false;
+    std::optional<double> low = 0, high = 0, increment = 1;
+    std::array<bool, 5> flags{false, true, false, true, false};
+  };
+  static Range range(const ProteinSchemaResolvedConstraint &v) {
+    Range r;
+    using S = ProteinSchemaConstraintStatus;
+    if (v.status == S::absent || v.status == S::discarded)
+      return r;
+    r.present = true;
+    if (v.status == S::ready && v.range) {
+      const auto &f = *v.range;
+      r.low = f.minimum.value_or(0);
+      r.high = f.maximum.value_or(0);
+      r.increment = f.increment;
+      r.flags = {f.minimum.has_value(), f.minimum_inclusive,
+                 f.maximum.has_value(), f.maximum_inclusive, f.percentage};
+    } else if (v.status == S::unresolved && v.fields) {
+      const auto &f = *v.fields;
+      // Two unknown/partly unknown bounds can still discard the object.
+      if (f.minimum && f.maximum && (!f.minimum->value || !f.maximum->value))
+        r.known = false;
+      r.low = f.minimum ? f.minimum->value : std::optional<double>(0);
+      r.high = f.maximum ? f.maximum->value : std::optional<double>(0);
+      r.increment = f.increment.value;
+      r.flags = {f.minimum.has_value(), f.minimum_inclusive,
+                 f.maximum.has_value(), f.maximum_inclusive, f.percentage};
+    } else
+      r.known = false;
+    return r;
+  }
+  Comparison bounds(const ProteinSchemaResolvedConstraint &a,
+                    const ProteinSchemaResolvedConstraint &b) {
+    const auto x = range(a), y = range(b);
+    if (!x.known || !y.known)
+      return uncertain(CompareIssue::unknown_constraint);
+    if (!x.present)
+      return y.present ? uncertain(CompareIssue::null_left_constraint)
+                       : compared(true);
+    if (!y.present)
+      return compared(false);
+    value();
+    if (x.flags[0] != y.flags[0])
+      return compared(false);
+    for (const auto &[l, r] :
+         {std::pair{x.low, y.low}, std::pair{x.high, y.high},
+          std::pair{x.increment, y.increment}}) {
+      value();
+      if (!l || !r)
+        return uncertain(CompareIssue::unknown_constraint);
+      if (!(*l == *r))
+        return compared(false); // bounds reject NaN, unlike scalar values
+    }
+    for (size_t i = 1; i < 5; ++i) {
+      value();
+      if (x.flags[i] != y.flags[i])
+        return compared(false);
+    }
+    return compared(true);
+  }
+};
+} // namespace
+
+ProteinSchemaComparisonResult
+protein_schema_compare_values(const ProteinSchemaDefinitionValue &a,
+                              const ProteinSchemaDefinitionValue &b,
+                              ProteinSchemaComparisonOptions options) {
+  return SchemaComparison{options}.compare_values(a, b);
+}
+ProteinSchemaComparisonResult
+protein_schema_compare_choice_tables(const ProteinSchemaChoiceIndex &a,
+                                     const ProteinSchemaChoiceIndex &b,
+                                     ProteinSchemaComparisonOptions options) {
+  return SchemaComparison{options}.choice_table(a, b);
+}
+ProteinSchemaComparisonResult
+protein_schema_compare_properties(const ProteinSchemaDefinitionProperty *a,
+                                  const ProteinSchemaDefinitionProperty *b,
+                                  uint32_t skip_type,
+                                  ProteinSchemaComparisonOptions options) {
+  if (!a || !b || a->value_type != b->value_type)
+    return compared(false);
+  if (a->value_type == skip_type)
+    return compared(true);
+  if (!a->value || !b->value)
+    return uncertain(CompareIssue::missing_value);
+  SchemaComparison compare{options};
+  if (a->value_type == 6 || a->value_type == 7) {
+    const auto *x = std::get_if<ProteinSchemaNumericDefaults>(a->value.get());
+    const auto *y = std::get_if<ProteinSchemaNumericDefaults>(b->value.get());
+    if (!x || !y)
+      return uncertain(CompareIssue::unknown_layout);
+    const auto result = compare.bounds(x->constraint, y->constraint);
+    if (result.status != CompareStatus::equal)
+      return result;
+  } else if (a->value_type == 10) {
+    const auto *x = std::get_if<ProteinSchemaDefinitionChoice>(a->value.get());
+    const auto *y = std::get_if<ProteinSchemaDefinitionChoice>(b->value.get());
+    if (!x || !y)
+      return uncertain(CompareIssue::unknown_layout);
+    const auto result = compare.choice_table(x->index, y->index);
+    if (result.status != CompareStatus::equal)
+      return result;
+  }
+  return compare.compare_values(*a->value, *b->value, a->value_type == 10);
 }
 
 struct ProteinSchemaDefinitionIndex::Impl {
@@ -1471,7 +1788,7 @@ struct ProteinSchemaDefinitionIndex::Impl {
             kind == "Color" || kind == "Vector3") {
           auto value = owned.numeric_defaults(source, options.values);
           accepted = value.status != ProteinSchemaNumericStatus::rejected;
-          known = schema_numeric_gate_known(owned, fields, value);
+          known = schema_numeric_gate_known(fields, value);
           type = value.value_type;
           row.candidate = cache(std::move(value));
         } else if (kind == "Choice") {

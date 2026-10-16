@@ -453,6 +453,9 @@ struct ProteinSchemaResolvedConstraint {
   Id source = none; // last numeric-constraint candidate in this declaration
   ProteinSchemaConstraintStatus status = ProteinSchemaConstraintStatus::absent;
   std::optional<ProteinSchemaNumericRange> range; // present only when ready
+  // Cached final candidate fields, including unresolved conversions. Empty
+  // only when absent; preserves inactive-bound storage and comparison flags.
+  std::shared_ptr<const ProteinSchemaConstraintFields> fields;
 };
 enum class ProteinSchemaNumericStatus { ready, rejected, unresolved, unsupported };
 struct ProteinSchemaNumericDefaults {
@@ -753,6 +756,42 @@ struct ProteinSchemaDefinitionProperty {
   Id flags_source = none; // most recent flags supplier; value origin stays above
   std::shared_ptr<const ProteinSchemaDefinitionValue> value;
 };
+enum class ProteinSchemaComparisonStatus { equal, different, unresolved };
+enum class ProteinSchemaComparisonIssue {
+  none, missing_value, unknown_layout, unavailable_projection, unknown_number,
+  unknown_unit, unassigned_type_default, incomplete_choice,
+  short_choice_table, inconsistent_shape, unknown_constraint,
+  null_left_constraint
+};
+struct ProteinSchemaComparisonResult {
+  ProteinSchemaComparisonStatus status = ProteinSchemaComparisonStatus::unresolved;
+  ProteinSchemaComparisonIssue issue = ProteinSchemaComparisonIssue::none;
+  uint64_t ordinal = 0; // value element or accepted Choice-table ordinal
+};
+struct ProteinSchemaComparisonOptions {
+  uint64_t max_values = 1000000, max_text_bytes = 64ull << 20;
+};
+// Native compatibility predicates over immutable cached factory projections.
+// equal is a native zero/true result, not a deduplication or identity relation:
+// scalar NaN can compare equal and Reference/Texture compare concrete classes.
+// Choice table comparison is directional. Unsafe/unknown inputs are explicit;
+// budget exhaustion throws Error. No parsing, IO or product DLL execution.
+ProteinSchemaComparisonResult protein_schema_compare_values(
+    const ProteinSchemaDefinitionValue &, const ProteinSchemaDefinitionValue &,
+    ProteinSchemaComparisonOptions = {});
+// Directional comparison of XML-created Choice tables (empty native header
+// string), before selected values. Known rejected entries are skipped; uncertain
+// prefixes and a short right table remain explicit unresolved states.
+ProteinSchemaComparisonResult protein_schema_compare_choice_tables(
+    const ProteinSchemaChoiceIndex &, const ProteinSchemaChoiceIndex &,
+    ProteinSchemaComparisonOptions = {});
+// A null property differs even from null. Checks type, then skip_type (which
+// bypasses all remaining checks), type6/7 bounds or type10 Choice table, then
+// the concrete values. Does not compare flags, labels, IDs or aliases, perform
+// version/URI upgrades, copy anything or register definitions.
+ProteinSchemaComparisonResult protein_schema_compare_properties(
+    const ProteinSchemaDefinitionProperty *, const ProteinSchemaDefinitionProperty *,
+    uint32_t skip_type = 0, ProteinSchemaComparisonOptions = {});
 struct ProteinSchemaDefinitionDeclaration {
   Id source = none;
   std::string_view effective_id;

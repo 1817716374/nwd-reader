@@ -395,6 +395,12 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+`protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
+
+比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字、单位提供器或未确定的构造默认值会保留未决状态。它们不定义模型对象身份或资源目标相同。
+
+比较只访问不可变缓存，不重新解释 XML，不分配比较工作区，可由多个线程并发调用。`ProteinSchemaComparisonOptions` 限制访问的值/条目数与文本字节数，超过限额抛出 `Error`。`ProteinSchemaResolvedConstraint.fields` 缓存最后一个约束候选的原始转换结果，便于检查未决数值和保留未启用端点的字段。
+
 `protein_schema_runtime_binding(*property.value)` 返回缓存值工厂的具体注册类型名和数据类型名。例如 IntegerValue/int、StringList/run.string_array、GeneralUnitsValue/units_value；未知布局返回空。此查询不分配内存，不依赖产品 DLL，并以缓存值的实际形态为依据，继承后属性 flags 的变化不会重塑该值。它不执行全局登记，也不替代候选值的接受/转换状态检查。
 
 Float/Distance 单值的非空 `unit` 保留在 `ProteinSchemaNumericDefaults.unit` 中；`unit_code` 返回已知长度名称的原始单位代码，不换算数值。37 个已知名称按大小写精确匹配。其它名称保留原文，代码为空，仍需单位提供器解析。多值 Float/Distance、Integer、Color、Vector3 工厂不将声明单位写入值。无单位的 Distance 仍使用 ScalarValue；不能仅凭距离标志判断具体值类型。
