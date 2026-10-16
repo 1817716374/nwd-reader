@@ -2891,4 +2891,96 @@ ProteinSchemaComparisonResult protein_schema_compare_property_states(
   }
   return compare.state_values(*a, *b);
 }
+ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
+    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaPropertyState &target, uint32_t source_version,
+    uint32_t target_version, ProteinSchemaComparisonOptions options) {
+  using Status = ProteinSchemaPropertyVersionStatus;
+  using Issue = ProteinSchemaPropertyVersionIssue;
+  ProteinSchemaPropertyVersionResult result{target};
+  if (source.target().id == "SchemaVersion" ||
+      source.target().id == "BaseSchema" || target.target().value_type == 4) {
+    result.issue = Issue::special_branch_required;
+    return result;
+  }
+  if (source_version != target_version) {
+    if (source.target().value_type != target.target().value_type) {
+      result.status = Status::incompatible;
+      result.issue = Issue::type_mismatch;
+      return result;
+    }
+    if (source.flags() != target.flags()) {
+      result.status = Status::incompatible;
+      result.issue = Issue::flags_mismatch;
+      return result;
+    }
+    if (target.target().value_type == 7) {
+      const auto unit = [](const ProteinSchemaPropertyState &state)
+          -> std::optional<uint32_t> {
+        const auto binding = state.binding();
+        if (!binding)
+          return std::nullopt;
+        if (binding->type_name == "ScalarValue" ||
+            binding->type_name == "ScalarList" ||
+            binding->type_name == "Vector3Value")
+          return 0;
+        if (binding->type_name == "GeneralUnitsValue" && state.data())
+          if (const auto *value =
+                  std::get_if<ProteinSchemaNumericDefaults>(state.data().get()))
+            return value->unit_code;
+        return std::nullopt;
+      };
+      const auto a = unit(source), b = unit(target);
+      if (!a || !b) {
+        result.issue = source.binding() && target.binding()
+                           ? Issue::unknown_unit
+                           : Issue::unknown_layout;
+        return result;
+      }
+      if (a != b) {
+        result.status = Status::incompatible;
+        result.issue = Issue::unit_mismatch;
+        return result;
+      }
+    }
+    if (source_version < target_version) {
+      result.status = Status::compatible;
+      return result;
+    }
+    if (!source.control_byte() || !target.control_byte()) {
+      result.issue = Issue::unknown_layout;
+      return result;
+    }
+    if (source.control_byte() != target.control_byte()) {
+      result.target = target.with_control_byte(*source.control_byte());
+      result.control_written = true;
+    }
+  }
+  result.comparison = protein_schema_compare_property_states(
+      &source, &result.target, 4, options);
+  if (result.comparison->status == ProteinSchemaComparisonStatus::unresolved) {
+    result.issue = Issue::comparison_unresolved;
+    return result;
+  }
+  if (result.comparison->status == ProteinSchemaComparisonStatus::equal) {
+    result.status = Status::compatible;
+    return result;
+  }
+  if (source_version == target_version) {
+    result.status = Status::incompatible;
+    result.issue = Issue::comparison_different;
+    return result;
+  }
+  result.copy_attempted = true;
+  auto copied = result.target.copied_from(source);
+  result.copy_issue = copied.issue;
+  if (!copied.state) {
+    result.issue = Issue::copy_unresolved;
+    return result;
+  }
+  result.target = std::move(*copied.state);
+  result.copied = true;
+  result.status = Status::compatible;
+  return result;
+}
 } // namespace nwd

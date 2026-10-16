@@ -439,6 +439,23 @@ auto origin = adjusted.supplier(nwd::ProteinSchemaPropertyField::control);
 
 这个接口保留有证据支持的原始状态行为，不转换标量或数组，也不代表完整版本登记已自动实现。非规范字节 2..255 可按原值保留，但不表示它们是有效的产品 C++ bool 参数。
 
+`protein_schema_apply_ordinary_version(source, target, source_version, target_version, options)` 处理已定位的普通属性对，版本按 `uint32_t` 比较。调用前应完成父定义覆盖判断及旧上下文的元数据修复；它不执行完整定义登记。SchemaVersion、BaseSchema 和 URI 目标返回 `special_branch_required`，需要各自的特殊分支。
+
+版本相等时只比较当前状态；版本不同先要求声明类型、完整 flags 和 type7 的原始单位代码相同。该单位检查不是分量数量检查：ScalarValue、ScalarList 和 Vector3Value 返回单位代码 0，GeneralUnitsValue 使用当前数据的代码，未知单位仍未决。源版本较旧时保留目标，不读取或比较值；较新时先同步控制字节，再比较，值不同时按既有共享复制规则更新。
+
+```cpp
+auto applied = nwd::protein_schema_apply_ordinary_version(
+    source, target, source_version, target_version);
+auto current = applied.target;
+if (applied.status == nwd::ProteinSchemaPropertyVersionStatus::unresolved) {
+    auto stage = applied.issue;
+    auto copy_issue = applied.copy_issue;
+    // current retains the known prefix, including an earlier control write.
+}
+```
+
+结果提供比较诊断、控制字节修改及复制尝试/完成标记；输入和原定义索引保持不可变。如果比较或原始布局复制无法可靠完成，不猜测后续分支，也不把未决当作不兼容。较新分支不会把原生复制回调的返回值额外当成兼容门槛；库无法可靠投影的复制仍明确报告 `copy_unresolved`。此接口不查找属性、不升级 URI、不创建或传播属性，也不模拟产品分配器或异常展开。比较预算耗尽仍抛出 `Error`。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

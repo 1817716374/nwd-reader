@@ -948,6 +948,38 @@ ProteinSchemaComparisonResult protein_schema_compare_property_states(
     const ProteinSchemaPropertyState *, const ProteinSchemaPropertyState *,
     uint32_t skip_type = 0, ProteinSchemaComparisonOptions = {});
 
+enum class ProteinSchemaPropertyVersionStatus { compatible, incompatible, unresolved };
+enum class ProteinSchemaPropertyVersionIssue {
+  none, special_branch_required, type_mismatch, flags_mismatch, unit_mismatch,
+  unknown_unit, unknown_layout, comparison_different, comparison_unresolved,
+  copy_unresolved
+};
+struct ProteinSchemaPropertyVersionResult {
+  // Known target state, including a control write before an unresolved step.
+  // Inputs remain immutable; no guessed data copy is applied.
+  ProteinSchemaPropertyState target;
+  ProteinSchemaPropertyVersionStatus status = ProteinSchemaPropertyVersionStatus::unresolved;
+  ProteinSchemaPropertyVersionIssue issue = ProteinSchemaPropertyVersionIssue::none;
+  std::optional<ProteinSchemaComparisonResult> comparison = std::nullopt;
+  ProteinSchemaPropertyCopyIssue copy_issue = ProteinSchemaPropertyCopyIssue::none;
+  bool control_written = false, copy_attempted = false, copied = false;
+};
+// The ordinary existing-property version branch, after parent-override handling
+// and context-specific source metadata repair. Explicit uint32 versions are
+// supplied by the caller; this does not resolve definitions or read versions.
+// Equal versions compare current states; different versions require type,
+// full flags and (type7) raw unit-code equality, not component-count equality.
+// An older source then preserves the target without comparing its data. A newer
+// source syncs the raw control byte, compares and copies only if different.
+// Special SchemaVersion/BaseSchema names and a URI target require their own
+// branches and return unresolved. No lookup, URI upgrade, creation, propagation,
+// namespace registration or product allocation/exception emulation is implied.
+// Comparison budgets throw Error; unresolved results retain the known prefix.
+ProteinSchemaPropertyVersionResult protein_schema_apply_ordinary_version(
+    const ProteinSchemaPropertyState &source, const ProteinSchemaPropertyState &target,
+    uint32_t source_version, uint32_t target_version,
+    ProteinSchemaComparisonOptions = {});
+
 enum class ProteinSchemaDefinitionLoadStatus {
   dependencies_resolved, pending_dependencies, unresolved
 };
