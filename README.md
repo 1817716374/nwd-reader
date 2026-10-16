@@ -397,7 +397,7 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 
 String、DateTime、Uuid、URL 的单值省略 `val` 时，底层内部字符串构造为空。投影保留 `uses_type_default=true` 和空 `values`；显式 `val=""` 则产生一个空字符串赋值 token。两者在兼容比较中按实际空值处理，调用方仍可区分赋值来源。多值 String/URL/TextureURI 省略 `val` 为空数组，显式空值为含一个空字符串的数组。此规则不生成时间戳或16字节 UUID。
 
-`ProteinSchemaPropertyState(index, property)` 提供可独立保留的属性状态，适合在导入或定义处理时组合数据。`target()` 保留初始目标属性的 ID、具体类和定义来源；`flags()`、`label()`、`constraint()`、`choice_table()` 返回当前元数据。`data()` 共享数据的原始不可变缓存投影；URI 逐项更新后的有效文本应通过 `text_value()` 读取，不能仅凭 `data()` 指针相同判断值相同。`binding()` 与 `data_binding()` 分别描述目标类和当前数据类型。数组复制携带源元素类型，例如 IntegerList 目标可以保存从 StringList 复制的数据，调用方应按 `data_binding()` 读取。
+`ProteinSchemaPropertyState(index, property)` 提供可独立保留的属性状态，适合在导入或定义处理时组合数据。`target()` 保留初始目标属性的 ID、具体类和定义来源；`flags()`、`label()`、`constraint()`、`choice_table()` 返回当前元数据。`data()` 共享数据的原始不可变缓存投影；URI 更新后的文本通过 `text_value()` 读取，POD 修改后的原始字节通过 `pod_bits()` 读取；不能仅凭 `data()` 指针相同判断值相同。`binding()` 与 `data_binding()` 分别描述目标类和当前数据类型。数组复制携带源元素类型，例如 IntegerList 目标可以保存从 StringList 复制的数据，调用方应按 `data_binding()` 读取。
 
 ```cpp
 nwd::ProteinSchemaPropertyState target(targetDefinition, targetProperty);
@@ -473,7 +473,7 @@ auto route = reconciled.route;
 
 父级查找不能确定时应设置 `parent_lookup_complete = false`；查找或父比较未决会停止推断。版本为可选值，只在普通分支需要时读取，缺失不会自动当成 1。结果保留父比较、BaseSchema 比较、URI/普通版本结果、复制诊断和已知目标状态；父比较失败时可继续分派，未决时不能冒充“不相等”。比较预算累计覆盖父比较和后续分支，耗尽抛 `Error`。输入保持不可变，成功复制继续共享缓存数据和扁平字段来源。
 
-该入口要求调用方已经完成实际名称查找和旧上下文的源元数据修复；它不解析父级作用域、不查别名、不创建或传播属性，也不执行最终 SchemaVersion 写入、命名空间接管或产品分配器/异常处理。
+该入口要求调用方已经完成实际名称查找；源修复可预先完成，也可通过 `context.source_context` 显式提供上下文来组合执行。它不解析父级作用域、不查别名、不创建或传播属性，也不执行最终 SchemaVersion 写入、命名空间接管或产品分配器/异常处理。
 
 `protein_schema_apply_uri(source, target, context, options)` 处理已有 URI 属性的逐项更新。两边声明类型必须为 URI，原始控制字节及值数量相同；不同 URI 具体类可以匹配，例如单值 URL 与含一个元素的 TextureURI。只有目标不是相对路径、源是相对路径时，才写入对应项；其它不相等组合仍可兼容。空文本不是相对路径，首字符 `/` 或 `\`、或含冒号的文本也不是相对路径。该接口不规范化路径、不拼接目录、不检查文件存在。
 
@@ -501,6 +501,32 @@ URI getter/比较/写入使用首次 NUL 前的 C-string 字节。可见前缀�
 `text_value_count()` 区分不可用/非文本数据与空数组；`text_value(i)` 返回当前值及其原始供应行、ordinal 和可选前缀长度。值和来源视图借用状态寿命。URI 修改以稀疏记录共享原始字符串，批量合并覆盖，不保留旧状态链。`has_text_overrides()` 为真时，`supplier(data)` 没有单一来源，应逐项查询；`data()` 仍是底层原始缓存投影。后续状态比较和 `copied_from()` 均使用或携带有效文本。输入及索引不可变，可并发只读使用。
 
 值/文本预算累计覆盖父比较和 URI 处理，耗尽抛出 `Error`。该逻辑不执行产品所有者通知，也不补齐全定义创建、派生传播和最终 SchemaVersion 写入。
+
+`with_flags(value)` 返回显式写入原始 PropertyBase flags 的不可变状态。它保留类、数据、控制字节和已有 URI/POD 覆盖，不按 flags 重塑数组；显式 flags 没有原 XML 行供应者，普通复制继续携带其当前值。原始声明及文档保持不变。
+
+`protein_schema_repair_source_flags(source, rawContext)` 处理普通源属性的旧上下文修复。`ProteinSchemaSourceContext` 用 absent/present/unresolved 区分上下文存在性，`word_d0`、`word_d8` 分别保留两个原始 64 位单元；它们不是文件年份或 SchemaVersion。仅在精确等于 `(0x100000003, 3)` 时清除当前 flags 的 0x800 位。没有该位或上下文已知不匹配时不改值；确实需要但缺少信息时返回未决，不猜测。
+
+已有属性入口的 `context.source_context` 为可选值：省略时沿用调用方已完成修复的契约；提供时，在 SchemaVersion 提前跳过之后、父级/Base/URI/普通版本比较之前修复 source，并用同一上下文的 d0 为 URI 提供信息。结果中的 `source`、`source_repair` 保留当前源状态和修改诊断。此时独立的 `uri_context` 由该原始上下文取代。
+
+`protein_schema_get_integer(state, ordinal, options)` 和 `protein_schema_set_integer(state, bits, ordinal, options)` 用于 IntegerValue、IntegerList、ChoiceValue、ChoiceListValue 的整数接口。`bits` 保留 int32 的全部位，包括负数位型；接口类别按固定目标类检查，数据按实际布局读取。Array 携带 double/color4 元素时，整数接口读写其前四字节，其余字节、动态类型及数量保留，不能作数值转换。非 POD 字符串 ABI 返回未决。越界读取返回带诊断的 0，越界写入拒绝且不扩容；Choice 写入还要求当前表中存在该数值。
+
+```cpp
+auto write = nwd::protein_schema_set_integer(property, 3u, 0);
+if (write.written) {
+    auto current = write.target;
+    auto lowWord = current.pod_bits(0, 4);
+    auto patches = current.pod_patches();
+    auto original = current.backing_supplier();
+}
+```
+
+`pod_bits(offset, bytes)` 按小端读取当前 int32/double/color4 存储，每次 1..8 字节，返回位型或明确的未知/越界原因。offset 是逻辑值存储内偏移，不是文件偏移。`pod_patches()` 枚举显式四字节修改，`backing_supplier()` 指向原始缓存来源；修改字节不冒充源 XML 数据。POD 覆盖按偏移扁平保存、共享复制，不保留历史状态链，不复制整个数组。状态比较读取当前字节，完整复制能携带或清除覆盖；原缓存中的转换诊断仍保留。
+
+`protein_schema_read_version(property, lookup_complete, options)` 接收调用方按实际名称定位的 SchemaVersion 属性。已知不存在时默认 1，查找不确定或错误/未知整数接口则保持未决；空整数数组返回带诊断的 0，不能误当成默认 1。输入的声明名称必须精确匹配 SchemaVersion，不使用别名代替。
+
+`protein_schema_finalize_version(property, source_version, target_version, compatible, lookup_complete, options)` 只在此前兼容且源版本按 uint32 大于目标版本时执行最终步骤。已有属性请求 ordinal0 写入；结果区分 `write_requested` 与 `written`。Choice 不匹配或空 Array 拒写时，局部步骤可为 `finished` 且 `written=false`，不会额外撤销已有兼容判断。`finished` 只描述这个步骤，不代表完整定义登记成功。
+
+目标缺失时，结果为 `creation_required`，携带精确的 SchemaVersion 名称、flags2、空标签及原始32位值；它没有创建属性。实际创建、容器身份、接管和派生传播仍须由作用域登记层实现。查找、整数值或 Choice 表未知时返回明确未决；资源预算耗尽抛 `Error`。这些逻辑不执行产品所有者通知、分配器或异常策略。
 
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 

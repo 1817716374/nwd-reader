@@ -1292,10 +1292,12 @@ struct SchemaStatePayload {
   const ProteinSchemaNumericDefaults *numeric = nullptr;
   const ProteinSchemaTextDefaults *strings = nullptr;
   const ProteinSchemaPropertyState *text_state = nullptr;
+  const ProteinSchemaPropertyState *current = nullptr;
   const ProteinSchemaDefinitionChoice *choice = nullptr;
   const bool *boolean = nullptr;
   CompareIssue issue = CompareIssue::none;
   explicit SchemaStatePayload(const ProteinSchemaPropertyState &state) {
+    current = &state;
     const auto binding = state.data_binding();
     if (!binding || !state.data()) {
       issue = CompareIssue::unknown_layout;
@@ -1372,23 +1374,53 @@ struct SchemaStatePayload {
       count = 1;
     else
       issue = CompareIssue::unknown_layout;
+    // A full explicit int32 write can establish a scalar value whose old
+    // factory conversion was unresolved; original diagnostics remain in data().
+    const auto patches = state.pod_patches();
+    if (issue == CompareIssue::unavailable_projection && !array &&
+        kind == Kind::integer && !patches.empty() &&
+        patches.front().byte_offset == 0) {
+      count = 1;
+      issue = CompareIssue::none;
+    }
     if (issue == CompareIssue::none &&
         ((!array && count != 1) ||
          (stride && count > std::numeric_limits<size_t>::max() / stride)))
       issue = CompareIssue::inconsistent_shape;
   }
-  std::optional<double> number(size_t component) const {
+  std::optional<double> backing_number(size_t component) const {
     if (numeric && component < numeric->candidates.size())
       return numeric->candidates[component].value;
     if (choice && component < choice->defaults.values.size())
       return choice->defaults.values[component];
     return std::nullopt;
   }
+  std::optional<double> number(size_t component) const {
+    if (!current->pod_patches().empty() &&
+        (kind == Kind::integer || kind == Kind::real || kind == Kind::color)) {
+      const auto width = kind == Kind::integer ? 4u : 8u;
+      if (component > std::numeric_limits<size_t>::max() / width)
+        return std::nullopt;
+      const auto read = current->pod_bits(component * width, width);
+      if (!read.bits)
+        return std::nullopt;
+      return kind == Kind::integer
+                 ? double(std::bit_cast<int32_t>(uint32_t(*read.bits)))
+                 : std::bit_cast<double>(*read.bits);
+    }
+    return backing_number(component);
+  }
   std::string_view string(size_t ordinal) const {
     return text_state->text_value(ordinal)->value;
   }
   std::optional<uint64_t> bits(size_t offset, size_t bytes,
                                CompareIssue &failure) const {
+    const auto read = current->pod_bits(offset, uint32_t(bytes));
+    failure = read.issue;
+    return read.bits;
+  }
+  std::optional<uint64_t> backing_bits(size_t offset, size_t bytes,
+                                       CompareIssue &failure) const {
     if (offset > count * stride || bytes > count * stride - offset) {
       failure = CompareIssue::unsafe_raw_access;
       return std::nullopt;
@@ -1401,7 +1433,7 @@ struct SchemaStatePayload {
     uint64_t result = 0;
     for (size_t done = 0; done < bytes;) {
       const auto position = offset + done;
-      const auto value = number(position / word_size);
+      const auto value = backing_number(position / word_size);
       if (!value) {
         failure = CompareIssue::unknown_number;
         return std::nullopt;
@@ -1650,7 +1682,8 @@ struct SchemaComparison {
       return uncertain(y.issue);
     if (x.array != y.array)
       return uncertain(CompareIssue::inconsistent_shape);
-    if (x.numeric && y.numeric &&
+    if (x.numeric && y.numeric && a.pod_patches().empty() &&
+        b.pod_patches().empty() &&
         a.data_binding()->data_type == b.data_binding()->data_type)
       return numeric(*x.numeric, *y.numeric);
     using K = SchemaStatePayload::Kind;
@@ -2711,6 +2744,8 @@ struct ProteinSchemaPropertyState::Impl {
   };
   using TextOverrides = std::vector<TextOverride>;
   std::shared_ptr<const TextOverrides> text_overrides;
+  std::shared_ptr<const std::vector<ProteinSchemaPodPatch>> pod_patches;
+  std::optional<uint32_t> flags_override;
   Owner identity, data, flags, label, constraint, choice, control;
   std::optional<uint8_t> control_byte;
   ProteinSchemaReferencePresence constraint_presence =
@@ -2813,6 +2848,69 @@ ProteinSchemaPropertyState::text_value(size_t ordinal) const noexcept {
 bool ProteinSchemaPropertyState::has_text_overrides() const noexcept {
   return bool(impl->text_overrides);
 }
+std::span<const ProteinSchemaPodPatch>
+ProteinSchemaPropertyState::pod_patches() const noexcept {
+  return impl->pod_patches ? std::span(*impl->pod_patches)
+                           : std::span<const ProteinSchemaPodPatch>{};
+}
+ProteinSchemaPropertyFieldSource
+ProteinSchemaPropertyState::backing_supplier() const noexcept {
+  return {&impl->data->definition, impl->data->property};
+}
+ProteinSchemaPodRead
+ProteinSchemaPropertyState::pod_bits(size_t offset, uint32_t bytes) const {
+  if (!bytes || bytes > 8)
+    return {std::nullopt, CompareIssue::unsafe_raw_access};
+  const SchemaStatePayload payload(*this);
+  if (payload.issue != CompareIssue::none)
+    return {std::nullopt, payload.issue};
+  if (offset > payload.count * payload.stride ||
+      bytes > payload.count * payload.stride - offset)
+    return {std::nullopt, CompareIssue::unsafe_raw_access};
+  using K = SchemaStatePayload::Kind;
+  if (payload.kind != K::integer && payload.kind != K::real &&
+      payload.kind != K::color)
+    return {std::nullopt, CompareIssue::raw_layout_required};
+  const auto patches = pod_patches();
+  if (patches.empty()) {
+    CompareIssue failure = CompareIssue::none;
+    const auto value = payload.backing_bits(offset, bytes, failure);
+    return {value, failure};
+  }
+  uint64_t result = 0;
+  auto patch = std::upper_bound(
+      patches.begin(), patches.end(), offset,
+      [](size_t at, const auto &p) { return at < p.byte_offset; });
+  if (patch != patches.begin() && offset - (patch - 1)->byte_offset < 4)
+    --patch;
+  for (size_t done = 0; done < bytes;) {
+    const auto at = offset + done;
+    while (patch != patches.end() && at >= patch->byte_offset &&
+           at - patch->byte_offset >= 4)
+      ++patch;
+    uint64_t word;
+    size_t take;
+    if (patch != patches.end() && patch->byte_offset <= at) {
+      const auto within = at - patch->byte_offset;
+      take = std::min<size_t>(bytes - done, 4 - within);
+      word = uint64_t(patch->bits) >> (within * 8);
+    } else {
+      take = bytes - done;
+      if (patch != patches.end())
+        take = std::min(take, patch->byte_offset - at);
+      CompareIssue failure = CompareIssue::none;
+      const auto original = payload.backing_bits(at, take, failure);
+      if (!original)
+        return {std::nullopt, failure};
+      word = *original;
+    }
+    const auto mask = take == 8 ? std::numeric_limits<uint64_t>::max()
+                                : (uint64_t{1} << (take * 8)) - 1;
+    result |= (word & mask) << (done * 8);
+    done += take;
+  }
+  return {result, CompareIssue::none};
+}
 std::optional<uint8_t>
 ProteinSchemaPropertyState::control_byte() const noexcept {
   return impl->control_byte;
@@ -2829,7 +2927,18 @@ ProteinSchemaPropertyState::with_control_byte(uint8_t value) const {
   return ProteinSchemaPropertyState(std::move(result));
 }
 uint32_t ProteinSchemaPropertyState::flags() const noexcept {
-  return impl->flags->get().flags;
+  return impl->flags_override ? *impl->flags_override
+                              : impl->flags->get().flags;
+}
+ProteinSchemaPropertyState
+ProteinSchemaPropertyState::with_flags(uint32_t value) const {
+  detail::require(impl->control_byte.has_value(),
+                  "Unknown Protein Schema flags layout");
+  if (impl->flags_override == value)
+    return *this;
+  auto result = std::make_shared<Impl>(*impl);
+  result->flags_override = value;
+  return ProteinSchemaPropertyState(std::move(result));
 }
 std::string_view ProteinSchemaPropertyState::label() const noexcept {
   return impl->label->get().label;
@@ -2860,11 +2969,13 @@ ProteinSchemaPropertyState::supplier(ProteinSchemaPropertyField field) const {
     owner = &impl->identity;
     break;
   case ProteinSchemaPropertyField::data:
-    if (impl->text_overrides)
+    if (impl->text_overrides || impl->pod_patches)
       return {};
     owner = &impl->data;
     break;
   case ProteinSchemaPropertyField::flags:
+    if (impl->flags_override)
+      return {};
     owner = &impl->flags;
     break;
   case ProteinSchemaPropertyField::label:
@@ -2910,6 +3021,8 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
     return {Issue::unknown_constraint, std::nullopt};
   if (impl->data == source.impl->data &&
       impl->text_overrides == source.impl->text_overrides &&
+      impl->pod_patches == source.impl->pod_patches &&
+      impl->flags_override == source.impl->flags_override &&
       impl->flags == source.impl->flags && impl->label == source.impl->label &&
       (!source.impl->constraint ||
        impl->constraint == source.impl->constraint) &&
@@ -2918,6 +3031,8 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
   auto result = std::make_shared<Impl>(*impl);
   result->data = source.impl->data;
   result->text_overrides = source.impl->text_overrides;
+  result->pod_patches = source.impl->pod_patches;
+  result->flags_override = source.impl->flags_override;
   result->flags = source.impl->flags;
   result->label = source.impl->label;
   if (source.impl->constraint) {
@@ -2930,6 +3045,27 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
 }
 // Internal batch writer. Sparse entries hold indexed-row owners, never states.
 struct ProteinSchemaStateAccess {
+  static ProteinSchemaPropertyState
+  pod_written(const ProteinSchemaPropertyState &target, size_t offset,
+              uint32_t bits) {
+    using Impl = ProteinSchemaPropertyState::Impl;
+    const auto old = target.pod_patches();
+    const auto at = std::lower_bound(
+        old.begin(), old.end(), offset,
+        [](const auto &patch, size_t key) { return patch.byte_offset < key; });
+    if (at != old.end() && at->byte_offset == offset && at->bits == bits)
+      return target;
+    auto rows = std::make_shared<std::vector<ProteinSchemaPodPatch>>();
+    rows->reserve(old.size() + (at == old.end() || at->byte_offset != offset));
+    rows->insert(rows->end(), old.begin(), at);
+    rows->push_back({offset, bits});
+    rows->insert(rows->end(),
+                 at != old.end() && at->byte_offset == offset ? at + 1 : at,
+                 old.end());
+    auto result = std::make_shared<Impl>(*target.impl);
+    result->pod_patches = std::move(rows);
+    return ProteinSchemaPropertyState(std::move(result));
+  }
   struct Write {
     size_t ordinal, prefix_length;
   };
@@ -3005,6 +3141,120 @@ Comparison schema_compare_property_states(const ProteinSchemaPropertyState *a,
       return result;
   }
   return compare.state_values(*a, *b);
+}
+struct SchemaIntegerLayout {
+  size_t count = 0, stride = 0;
+  bool choice = false, pod = false;
+  ProteinSchemaIntegerIssue issue = ProteinSchemaIntegerIssue::none;
+  explicit SchemaIntegerLayout(const ProteinSchemaPropertyState &state) {
+    using I = ProteinSchemaIntegerIssue;
+    const auto binding = state.binding();
+    if (!binding) {
+      issue = I::unknown_layout;
+      return;
+    }
+    const auto name = binding->type_name;
+    choice = name == "ChoiceValue" || name == "ChoiceListValue";
+    const bool scalar = name == "IntegerValue" || name == "ChoiceValue";
+    if (!scalar && name != "IntegerList" && name != "ChoiceListValue") {
+      issue = I::wrong_interface;
+      return;
+    }
+    const auto data = state.data_binding();
+    if (!data) {
+      issue = I::unknown_layout;
+      return;
+    }
+    if (scalar) {
+      count = 1;
+      stride = 4;
+      pod = data->data_type == "int";
+    } else {
+      const SchemaStatePayload payload(state);
+      if (payload.issue != CompareIssue::none || !payload.array) {
+        issue = I::unknown_layout;
+        return;
+      }
+      count = payload.count;
+      stride = payload.stride;
+      pod = payload.kind == SchemaStatePayload::Kind::integer ||
+            payload.kind == SchemaStatePayload::Kind::real ||
+            payload.kind == SchemaStatePayload::Kind::color;
+    }
+  }
+};
+ProteinSchemaIntegerRead
+schema_get_integer(const ProteinSchemaPropertyState &state, uint64_t ordinal,
+                   SchemaComparison &compare) {
+  using S = ProteinSchemaIntegerStatus;
+  using I = ProteinSchemaIntegerIssue;
+  const SchemaIntegerLayout layout(state);
+  if (layout.issue != I::none)
+    return {S::unresolved, layout.issue, std::nullopt};
+  if (ordinal >= layout.count)
+    return {S::rejected, I::ordinal_out_of_range, 0};
+  if (!layout.pod)
+    return {S::unresolved, I::raw_layout_required, std::nullopt};
+  compare.value();
+  const auto read = state.pod_bits(size_t(ordinal) * layout.stride, 4);
+  if (!read.bits)
+    return {S::unresolved, I::unknown_value, std::nullopt};
+  return {S::ready, I::none, uint32_t(*read.bits)};
+}
+ProteinSchemaIntegerWrite
+schema_set_integer(const ProteinSchemaPropertyState &state, uint32_t bits,
+                   uint64_t ordinal, SchemaComparison &compare) {
+  using S = ProteinSchemaIntegerStatus;
+  using I = ProteinSchemaIntegerIssue;
+  ProteinSchemaIntegerWrite result{state};
+  const SchemaIntegerLayout layout(state);
+  if (layout.issue != I::none) {
+    result.issue = layout.issue;
+    return result;
+  }
+  if (ordinal >= layout.count) {
+    result.status = S::rejected;
+    result.issue = I::ordinal_out_of_range;
+    return result;
+  }
+  // Choice membership precedes the actual element data access.
+  compare.value();
+  if (layout.choice) {
+    const auto *table = state.choice_table();
+    if (!table) {
+      result.issue = I::unknown_choice;
+      return result;
+    }
+    bool found = false;
+    for (const auto &entry : table->entries()) {
+      compare.value();
+      using C = ProteinSchemaChoiceStatus;
+      if (entry.status == C::unresolved_attributes ||
+          entry.status == C::unresolved_value ||
+          entry.status == C::unresolved_previous) {
+        result.issue = I::unknown_choice;
+        return result;
+      }
+      if (entry.status == C::accepted && uint32_t(*entry.value.value) == bits) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      result.status = S::rejected;
+      result.issue = I::choice_value_missing;
+      return result;
+    }
+  }
+  if (!layout.pod) {
+    result.issue = I::raw_layout_required;
+    return result;
+  }
+  result.target = ProteinSchemaStateAccess::pod_written(
+      state, size_t(ordinal) * layout.stride, bits);
+  result.status = S::ready;
+  result.written = true;
+  return result;
 }
 ProteinSchemaPropertyVersionResult
 schema_apply_ordinary_version(const ProteinSchemaPropertyState &source,
@@ -3207,6 +3457,109 @@ schema_apply_uri(const ProteinSchemaPropertyState &source,
   return result;
 }
 } // namespace
+ProteinSchemaFlagsRepairResult
+protein_schema_repair_source_flags(const ProteinSchemaPropertyState &source,
+                                   ProteinSchemaSourceContext context) {
+  using I = ProteinSchemaFlagsRepairIssue;
+  ProteinSchemaFlagsRepairResult result{source};
+  if (source.target().id == "SchemaVersion" || !(source.flags() & 0x800u) ||
+      context.presence == ProteinSchemaReferencePresence::absent)
+    return result;
+  if (context.presence != ProteinSchemaReferencePresence::present ||
+      !context.word_d0) {
+    result.issue = I::unknown_context;
+    return result;
+  }
+  if (*context.word_d0 != 0x100000003ull)
+    return result;
+  if (!context.word_d8) {
+    result.issue = I::unknown_context;
+    return result;
+  }
+  if (*context.word_d8 != 3)
+    return result;
+  if (!source.control_byte()) {
+    result.issue = I::unknown_layout;
+    return result;
+  }
+  result.source = source.with_flags(source.flags() & ~0x800u);
+  result.written = true;
+  return result;
+}
+ProteinSchemaIntegerRead
+protein_schema_get_integer(const ProteinSchemaPropertyState &state,
+                           uint64_t ordinal,
+                           ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_get_integer(state, ordinal, compare);
+}
+ProteinSchemaIntegerWrite
+protein_schema_set_integer(const ProteinSchemaPropertyState &state,
+                           uint32_t bits, uint64_t ordinal,
+                           ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_set_integer(state, bits, ordinal, compare);
+}
+ProteinSchemaVersionRead
+protein_schema_read_version(const ProteinSchemaPropertyState *property,
+                            bool complete,
+                            ProteinSchemaComparisonOptions options) {
+  using I = ProteinSchemaVersionAccessIssue;
+  ProteinSchemaVersionRead result;
+  if (!complete) {
+    result.issue = I::lookup_unresolved;
+    return result;
+  }
+  if (!property) {
+    result.value = 1;
+    result.defaulted = true;
+    return result;
+  }
+  if (property->target().id != "SchemaVersion") {
+    result.issue = I::wrong_name;
+    return result;
+  }
+  result.integer = protein_schema_get_integer(*property, 0, options);
+  result.value = result.integer->bits;
+  if (!result.value)
+    result.issue = I::integer_unresolved;
+  return result;
+}
+ProteinSchemaVersionFinalResult protein_schema_finalize_version(
+    const ProteinSchemaPropertyState *property, uint32_t sv, uint32_t tv,
+    bool compatible, bool complete, ProteinSchemaComparisonOptions options) {
+  using S = ProteinSchemaVersionFinalStatus;
+  using I = ProteinSchemaVersionAccessIssue;
+  ProteinSchemaVersionFinalResult result;
+  if (property)
+    result.target = *property;
+  if (!compatible || sv <= tv) {
+    result.status = S::unchanged;
+    return result;
+  }
+  if (!complete) {
+    result.issue = I::lookup_unresolved;
+    return result;
+  }
+  if (!property) {
+    result.creation = ProteinSchemaVersionCreation{"SchemaVersion", "", 2, sv};
+    result.status = S::creation_required;
+    return result;
+  }
+  if (property->target().id != "SchemaVersion") {
+    result.issue = I::wrong_name;
+    return result;
+  }
+  result.write_requested = true;
+  result.integer = protein_schema_set_integer(*property, sv, 0, options);
+  result.target = result.integer->target;
+  result.written = result.integer->written;
+  if (result.integer->status == ProteinSchemaIntegerStatus::unresolved)
+    result.issue = I::integer_unresolved;
+  else
+    result.status = S::finished;
+  return result;
+}
 ProteinSchemaComparisonResult protein_schema_compare_property_states(
     const ProteinSchemaPropertyState *a, const ProteinSchemaPropertyState *b,
     uint32_t skip_type, ProteinSchemaComparisonOptions options) {
@@ -3237,7 +3590,7 @@ protein_schema_apply_uri(const ProteinSchemaPropertyState &source,
   return schema_apply_uri(source, target, context, compare);
 }
 ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
-    const ProteinSchemaPropertyState &source,
+    const ProteinSchemaPropertyState &input_source,
     const ProteinSchemaPropertyState &target,
     ProteinSchemaExistingPropertyContext context,
     ProteinSchemaComparisonOptions options) {
@@ -3245,10 +3598,31 @@ ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
   using Route = ProteinSchemaExistingPropertyRoute;
   using Issue = ProteinSchemaExistingPropertyIssue;
   ProteinSchemaExistingPropertyResult result{target};
+  auto source = input_source;
+  result.source = source;
   if (source.target().id == "SchemaVersion") {
     result.route = Route::schema_version_required;
     result.issue = Issue::schema_version_required;
     return result;
+  }
+  if (context.source_context) {
+    result.source_repair =
+        protein_schema_repair_source_flags(source, *context.source_context);
+    if (result.source_repair->issue != ProteinSchemaFlagsRepairIssue::none) {
+      result.route = Route::source_repair;
+      result.issue = Issue::source_repair_unresolved;
+      return result;
+    }
+    source = result.source_repair->source;
+    result.source = source;
+    const auto &raw = *context.source_context;
+    context.uri_context.source_context_complete =
+        raw.presence == ProteinSchemaReferencePresence::absent ||
+        (raw.presence == ProteinSchemaReferencePresence::present &&
+         raw.word_d0.has_value());
+    context.uri_context.source_context_word =
+        raw.presence == ProteinSchemaReferencePresence::present ? raw.word_d0
+                                                                : std::nullopt;
   }
   SchemaComparison compare{options};
   if (!context.parent_lookup_complete) {
