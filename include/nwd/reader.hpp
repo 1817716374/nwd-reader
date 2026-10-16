@@ -756,6 +756,10 @@ struct ProteinSchemaDefinitionProperty {
   const ProteinSchemaDocument *flags_document = nullptr;
   Id flags_source = none; // most recent flags supplier; value origin stays above
   std::shared_ptr<const ProteinSchemaDefinitionValue> value;
+  // Reflected generated wrapper class, independent of its current data. Its
+  // unobserved constructor payload has value=null; use the owning scope's
+  // property(row).data()/binding() for current values and the fixed class.
+  std::optional<ProteinSchemaRuntimeBinding> constructed_binding = std::nullopt;
 };
 enum class ProteinSchemaComparisonStatus { equal, different, unresolved };
 enum class ProteinSchemaComparisonIssue {
@@ -1060,6 +1064,11 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
     ProteinSchemaComparisonOptions = {});
 
 struct ProteinSchemaScopedVersionResult;
+struct ProteinSchemaReflectedCreationResult;
+struct ProteinSchemaReflectedCreationOptions {
+  ProteinSchemaDefinitionOptions definition;
+  uint64_t max_generated_text_bytes = 64ull << 20; // retained ID/label history
+};
 // Immutable local definition state. Retains original indexed property identities
 // and shares their cached payloads; sparse updates do not copy whole arrays or
 // definitions. Container membership follows registration, not later flags writes.
@@ -1087,6 +1096,16 @@ public:
   ProteinSchemaScopedVersionResult finalize_version(
       uint32_t source_version, uint32_t target_version, bool compatible = true,
       ProteinSchemaComparisonOptions = {}, ProteinSchemaDefinitionOptions = {}) const;
+  // Explicit ordered ordinary reflection insertions, not a declaration gate.
+  // Uses each source's fixed class, current flags/data/field suppliers, target
+  // scope context and default control1. Replaces only the selected container's
+  // same-name row; aliases/other containers do not prevent creation. Unknown
+  // copy layout/presence stops at a known completed prefix, not native rejection.
+  // Metadata is built once per batch; values and flat overrides stay shared.
+  // Caller handles source repair/SchemaVersion skip and receiver propagation.
+  ProteinSchemaReflectedCreationResult create_reflected_properties(
+      std::span<const ProteinSchemaPropertyState>,
+      ProteinSchemaReflectedCreationOptions = {}) const;
 };
 struct ProteinSchemaScopedVersionResult {
   ProteinSchemaDefinitionState state;
@@ -1095,6 +1114,20 @@ struct ProteinSchemaScopedVersionResult {
   // Creation consumes step.creation and returns finished, written=true, and
   // target. integer stays absent because initialization is not a setter call.
   bool created = false;
+};
+struct ProteinSchemaReflectedCreation {
+  size_t source_ordinal = 0;
+  Id property = none, replaced = none;
+  ProteinSchemaPropertyContainer container = ProteinSchemaPropertyContainer::ordinary;
+};
+struct ProteinSchemaReflectedCreationResult {
+  ProteinSchemaDefinitionState state;
+  std::vector<ProteinSchemaReflectedCreation> properties;
+  // First unresolved source, or input size after complete application. No
+  // constructor/data value is fabricated for this unprocessed source. Resource
+  // exhaustion throws Error; this API does not emulate product exception unwind.
+  size_t next_source = 0;
+  ProteinSchemaPropertyCopyIssue issue = ProteinSchemaPropertyCopyIssue::none;
 };
 
 // Native property compatibility over current state fields. Checks target type

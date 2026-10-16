@@ -1889,6 +1889,11 @@ struct ProteinSchemaDefinitionIndex::Impl {
   Id stopped_before = none;
   uint32_t depth = 1;
   uint64_t extra_cached_values = 0;
+  struct GeneratedNames {
+    std::string id, label;
+  };
+  std::vector<std::shared_ptr<const GeneratedNames>> generated_names;
+  uint64_t generated_text_bytes = 0;
 
   const ProteinSchemaDocument &document() const {
     return local->aliases.document();
@@ -2764,8 +2769,9 @@ struct ProteinSchemaPropertyState::Impl {
     detail::require(row < index.properties().size(),
                     "Protein Schema property state row out of range");
     identity = data = flags = label = std::make_shared<const Seed>(index, row);
-    if (identity->get().value &&
-        protein_schema_runtime_binding(*identity->get().value)) {
+    if (identity->get().constructed_binding ||
+        (identity->get().value &&
+         protein_schema_runtime_binding(*identity->get().value))) {
       control = identity;
       control_byte = 1;
     }
@@ -2800,6 +2806,8 @@ ProteinSchemaPropertyState::target() const noexcept {
 }
 std::optional<ProteinSchemaRuntimeBinding>
 ProteinSchemaPropertyState::binding() const noexcept {
+  if (target().constructed_binding)
+    return target().constructed_binding;
   const auto &value = target().value;
   return value ? protein_schema_runtime_binding(*value) : std::nullopt;
 }
@@ -3007,14 +3015,13 @@ ProteinSchemaPropertyState::supplier(ProteinSchemaPropertyField field) const {
                                                    (*owner)->property}
                 : ProteinSchemaPropertyFieldSource{};
 }
-ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
-    const ProteinSchemaPropertyState &source) const {
+namespace {
+ProteinSchemaPropertyCopyIssue
+schema_copy_layout_issue(std::optional<ProteinSchemaRuntimeBinding> left,
+                         std::optional<ProteinSchemaRuntimeBinding> right) {
   using Issue = ProteinSchemaPropertyCopyIssue;
-  if (!target().value || !source.data())
-    return {Issue::missing_value, std::nullopt};
-  const auto left = binding(), right = source.data_binding();
   if (!left || !right)
-    return {Issue::unknown_layout, std::nullopt};
+    return Issue::unknown_layout;
   // All registered run.*_array projections share the native Array assignment
   // callback. Its source element Type travels with the copied storage.
   const auto array = [](std::string_view type) {
@@ -3023,7 +3030,18 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
   };
   if (left->data_type != right->data_type &&
       !(array(left->data_type) && array(right->data_type)))
-    return {Issue::raw_layout_required, std::nullopt};
+    return Issue::raw_layout_required;
+  return Issue::none;
+}
+} // namespace
+ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
+    const ProteinSchemaPropertyState &source) const {
+  using Issue = ProteinSchemaPropertyCopyIssue;
+  if ((!target().value && !target().constructed_binding) || !source.data())
+    return {Issue::missing_value, std::nullopt};
+  const auto issue = schema_copy_layout_issue(binding(), source.data_binding());
+  if (issue != Issue::none)
+    return {issue, std::nullopt};
   if (impl == source.impl)
     return {Issue::none, *this};
   if (source.constraint_presence() ==
@@ -3672,6 +3690,92 @@ ProteinSchemaScopedVersionResult ProteinSchemaDefinitionState::finalize_version(
   result.step.status = ProteinSchemaVersionFinalStatus::finished;
   result.step.written = true;
   result.created = true;
+  return result;
+}
+ProteinSchemaReflectedCreationResult
+ProteinSchemaDefinitionState::create_reflected_properties(
+    std::span<const ProteinSchemaPropertyState> sources,
+    ProteinSchemaReflectedCreationOptions options) const {
+  using Issue = ProteinSchemaPropertyCopyIssue;
+  using Metadata = ProteinSchemaDefinitionIndex::Impl;
+  ProteinSchemaReflectedCreationResult result{*this, {}};
+  const auto &limits = options.definition;
+  detail::require(sources.size() <= limits.max_declarations,
+                  "Protein Schema reflected source limit");
+  std::shared_ptr<Metadata> metadata;
+  auto charge = [](uint64_t &used, uint64_t count, uint64_t limit,
+                   const char *message) {
+    detail::require(used <= limit && count <= limit - used, message);
+    used += count;
+  };
+  for (size_t i = 0; i < sources.size(); ++i) {
+    const auto &source = sources[i];
+    result.issue =
+        source.data()
+            ? schema_copy_layout_issue(source.binding(), source.data_binding())
+            : Issue::missing_value;
+    if (result.issue == Issue::none &&
+        source.constraint_presence() ==
+            ProteinSchemaReferencePresence::unresolved)
+      result.issue = Issue::unknown_constraint;
+    if (result.issue != Issue::none)
+      break;
+    if (!metadata)
+      metadata = std::make_shared<Metadata>(*impl->index.impl);
+    detail::require(metadata->local->cached_values <= limits.max_cached_values,
+                    "Protein Schema reflected value limit");
+    const auto remaining =
+        limits.max_cached_values - metadata->local->cached_values;
+    charge(metadata->extra_cached_values, schema_cached_values(*source.data()),
+           remaining, "Protein Schema reflected value limit");
+    // A retained Choice field can have a different origin from the payload.
+    const auto *data_choice =
+        std::get_if<ProteinSchemaDefinitionChoice>(source.data().get());
+    if (source.choice_table() &&
+        (!data_choice || &data_choice->index != source.choice_table()))
+      charge(metadata->extra_cached_values,
+             source.choice_table()->entries().size(), remaining,
+             "Protein Schema reflected Choice limit");
+    charge(metadata->generated_text_bytes, source.target().id.size(),
+           options.max_generated_text_bytes,
+           "Protein Schema reflected name limit");
+    charge(metadata->generated_text_bytes, source.label().size(),
+           options.max_generated_text_bytes,
+           "Protein Schema reflected name limit");
+    auto names = std::make_shared<const Metadata::GeneratedNames>(
+        Metadata::GeneratedNames{std::string(source.target().id),
+                                 std::string(source.label())});
+    ProteinSchemaDefinitionProperty generated;
+    generated.document = generated.flags_document = &impl->index.document();
+    generated.origin = ProteinSchemaPropertyOrigin::registration_create;
+    generated.id = names->id;
+    generated.label = names->label;
+    generated.value_type = source.target().value_type;
+    generated.flags = source.flags();
+    generated.constructed_binding = source.binding();
+    const auto row = metadata->insert(std::move(generated), limits);
+    metadata->generated_names.push_back(std::move(names));
+    const auto &property = metadata->properties[row];
+    result.properties.push_back(
+        {i, row, property.replaced, property.container});
+    result.next_source = i + 1;
+  }
+  if (!metadata)
+    return result;
+  metadata->finish();
+  auto state = std::make_shared<Impl>(*impl);
+  state->index = ProteinSchemaDefinitionIndex(std::move(metadata));
+  // All created identities retain this one finalized index. No mutable builder
+  // escapes, and no source state or earlier output state is retained as a
+  // chain.
+  for (const auto &entry : result.properties) {
+    const ProteinSchemaPropertyState created(state->index, entry.property);
+    const auto copy = created.copied_from(sources[entry.source_ordinal]);
+    detail::require(copy.state.has_value(),
+                    "Protein Schema reflected copy preflight mismatch");
+    state->updates.emplace(entry.property, *copy.state);
+  }
+  result.state = ProteinSchemaDefinitionState(std::move(state));
   return result;
 }
 ProteinSchemaComparisonResult protein_schema_compare_property_states(

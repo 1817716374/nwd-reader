@@ -548,7 +548,30 @@ if (target_version.value) {
 
 作用域创建成功时，`created=true`，`step.status=finished`、`step.written=true`，`step.target` 为新属性，`step.creation` 保留初始化请求，`step.integer` 为空。已有属性拒写时仍区分 finished 与 written=false；查找或值未知时不创建。参数中的比较预算及定义历史/缓存上限耗尽抛出 `Error`。
 
-已有属性更新只复制稀疏修改表，数组和定义缓存继续共享。单次缺失版本创建复制元数据容器/历史表，成本随属性数增长，值不复制。这个 API 不执行普通属性批量创建、全定义兼容判断、产品命名空间接管或派生传播，也不替代全局 Schema 登记。
+已有属性更新只复制稀疏修改表，数组和定义缓存继续共享。单次缺失版本创建复制元数据容器/历史表，成本随属性数增长，值不复制。版本操作不执行普通属性批量创建、全定义兼容判断、产品命名空间接管或派生传播，也不替代全局 Schema 登记。
+
+`current.create_reflected_properties(sources, options)` 按输入顺序执行局部普通反射创建。它保留 source 的固定属性类，分享当前数据、POD/URI 覆盖及独立字段供应者；新属性拥有自有名称、标签和 `registration_create` 身份，`source=none`，上下文属于目标定义，控制字节初始为 1。
+
+```cpp
+std::vector<nwd::ProteinSchemaPropertyState> sources;
+sources.push_back(source_scope.property(source_row));
+auto created = current.create_reflected_properties(sources);
+current = created.state;
+for (const auto &entry : created.properties) {
+    auto property = current.property(entry.property);
+    // entry.source_ordinal, entry.container, entry.replaced retain the mapping.
+}
+```
+
+该入口直接按当前 flags 选择 ordinary/iterator/readonly 容器，0x2 优先于 0x8，不重新执行 XML 声明门槛，也不根据 flags 重塑固定类。它可以替换被选容器内的同名属性；其它容器的同名属性和所有历史行保留。别名不会阻止显式插入。已有身份不变，新行身份独立，不能按名称或数据缓存指针合并。
+
+反射创建的元数据行使用 `constructed_binding` 保存固定类，`value` 为空，明确表示没有投影未观察到的构造初值。通过 `current.property(row).binding()` 读取固定类，通过 `data_binding()`、`data()`、`text_value()`、`pod_bits()` 读取当前数据。直接从元数据行重新构造 PropertyState 只得到带固定类的未赋值投影，不会自动恢复作用域中保存的当前值。
+
+每批只构建一次元数据索引，所有新身份共享同一完成快照，数据和扁平覆盖表继续共享。`properties` 返回已完成行及同容器被替换行，`next_source` 是首个未应用输入或输入数量。复制布局或约束存在性未知时，`issue` 保留原因并返回已完成前缀；这表示本库没有应用该项，不表示产品拒绝创建。
+
+`ProteinSchemaReflectedCreationOptions::definition` 限制整批来源数、总历史及保留缓存值，独立 Choice 表也计入预算；`max_generated_text_bytes` 限制自有生成 ID/标签的累计历史字节。资源耗尽抛出 `Error`，原始输入不变。这些上限是本库资源策略，不模拟产品异常展开或回滚。
+
+调用方仍须完成 SchemaVersion 源跳过、旧上下文修复和接收定义的选择；这个方法不自动执行派生传播、完整定义兼容判断或全局接管/释放。它不依赖 Autodesk DLL，也不通过合成 XML 创建目标。
 
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
