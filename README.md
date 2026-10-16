@@ -365,6 +365,12 @@ type/localtype/localname 要求原始 val 非空，然后只取首 token；type 
 
 调用方按自己的定义作用域和接受顺序提供当前 UID 或 BaseSchema 值。该接口不修改文档或调用方状态；它返回本次局部赋值结果，完整定义接受、别名/继承、Base 的 file 加载和最终注册仍需另外处理。输入 token 都计入 max_values，只保留首项文本，拒绝多值时也检查尾项预算。
 
+`ProteinSchemaAliasIndex(document, visible_parent, options, parent_changes)` 建立不可变的 PropertyAlias 索引，并共享文档存储。`entries()` 保留本地声明的源节点、alias/id 原文、接受或拒绝原因及冲突来源；`find(name)` 返回一个目标属性 ID 和对应源文档/节点，按精确名称查询，查询不分配内存。别名名称在当前可见的父级中查重，目标 ID 仅在本地已接受别名中查重；目标属性可以尚未存在。返回视图和文档指针的寿命由索引及其副本维持。
+
+`with_parent_aliases(parent, options)` 返回绑定新父级后的快照，保留已有声明的接受结果和原始冲突来源；本地已接受名称遮蔽后绑定父级的同名别名。构造时就可见的父级参与登记查重，因此这两种加载时序有不同结果。可选的 `parent_changes` 按直接子节点的源顺序指定 `before_entry` 和父级指针，在该节点前切换可见父级；空指针表示解绑，支持 XML 中途加载 Base 的时序。`max_parent_changes` 限制该事件表长度。`max_aliases` 限制本地声明尝试数，`max_visible_aliases` 限制可见名称数，`max_scope_depth` 限制保留的父级和历史依赖深度。每次绑定复制父级可见表并加入本地已接受名称，查询为 O(log n)。
+
+别名查询只展开一层；完整属性查找应先查实际属性，再用别名目标做一次直接属性查询。该索引负责别名登记和父级可见性，普通属性接受、属性值合并、父定义选择、文件加载及最终 Schema 注册仍需分别处理。
+
 `numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
 
 数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。

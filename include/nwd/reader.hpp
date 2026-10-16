@@ -652,6 +652,59 @@ public:
   // unresolved. Does not validate declaration flags/IDs or register properties.
   ProteinSchemaChoiceDefaults defaults(ProteinSchemaValueOptions = {}) const;
 };
+enum class ProteinSchemaAliasStatus {
+  accepted, empty_name, empty_target, duplicate_name, duplicate_local_target
+};
+struct ProteinSchemaAliasBinding {
+  const ProteinSchemaDocument *document = nullptr; // borrowed from owning index
+  Id source = none; // XML PropertyAlias node in document
+  std::string_view target; // exact property ID; no recursive alias expansion
+};
+struct ProteinSchemaAliasEntry {
+  Id source = none;
+  std::optional<std::string_view> name, target;
+  ProteinSchemaAliasStatus status = ProteinSchemaAliasStatus::empty_name;
+  std::optional<ProteinSchemaAliasBinding> conflict;
+};
+struct ProteinSchemaAliasOptions {
+  uint32_t max_aliases = 1000000, max_visible_aliases = 1000000;
+  uint32_t max_scope_depth = 256; // bounds retained parent/history ownership
+  uint32_t max_parent_changes = 256; // constructor event array limit
+};
+class ProteinSchemaAliasIndex;
+struct ProteinSchemaAliasParentChange {
+  Id before_entry = none; // immediate XML child; events in strict source order
+  const ProteinSchemaAliasIndex *parent = nullptr; // nullptr detaches the parent
+};
+// Immutable PropertyAlias registration and scoped lookup, sharing documents.
+// Names must be unique across currently visible parent aliases; targets need
+// only be unique locally and need not name an existing property. Retains all
+// local attempts in source order. Alias lookup returns exactly one target;
+// property lookup must check actual properties first, then that direct target.
+// Optional parent_changes take effect before specified immediate XML entries,
+// allowing Base/file loading to change visibility during declaration input.
+// Does not accept properties, choose a parent, merge values or register schemas.
+// Copies the visible parent table at each binding; lookup is O(log visible).
+// Returned document pointers/views live as long as the index (or its copies).
+class ProteinSchemaAliasIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaAliasIndex(std::shared_ptr<const Impl>);
+public:
+  explicit ProteinSchemaAliasIndex(const ProteinSchemaDocument &,
+      const ProteinSchemaAliasIndex *visible_parent = nullptr,
+      ProteinSchemaAliasOptions = {},
+      std::span<const ProteinSchemaAliasParentChange> parent_changes = {});
+  const ProteinSchemaDocument &document() const noexcept;
+  std::span<const ProteinSchemaAliasEntry> entries() const noexcept;
+  std::optional<ProteinSchemaAliasBinding> find(std::string_view name) const;
+  // Bind/replace a parent after local registration. Existing accepted/rejected
+  // attempts keep their outcomes and provenance; they are not re-registered.
+  // Local accepted names shadow the newly visible parent. This preserves the
+  // distinction between a parent visible during XML input and a deferred one.
+  ProteinSchemaAliasIndex with_parent_aliases(const ProteinSchemaAliasIndex &,
+      ProteinSchemaAliasOptions = {}) const;
+};
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
 // No shader-role inference or runtime conversion to JSON is performed.
