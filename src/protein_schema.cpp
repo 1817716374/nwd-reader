@@ -1470,6 +1470,75 @@ std::span<const Id> ProteinSchemaDefinitionIndex::container(
                   "Protein Schema property container");
   return impl->containers[i];
 }
+std::vector<Id> ProteinSchemaDefinitionIndex::iteration(
+    ProteinSchemaIterationOptions options) const {
+  detail::require(
+      options.profile == ProteinSchemaIterationProfile::reader_2017 ||
+          options.profile == ProteinSchemaIterationProfile::reader_2026,
+      "Protein Schema iteration profile");
+  const bool old =
+      options.profile == ProteinSchemaIterationProfile::reader_2017;
+  const auto less = [&](Id a, Id b) {
+    const auto left = impl->properties[a].id, right = impl->properties[b].id;
+    if (!old)
+      return left < right;
+    const auto count = std::min(left.size(), right.size());
+    for (size_t i = 0; i < count; ++i) {
+      const auto x = static_cast<unsigned char>(left[i]);
+      const auto y = static_cast<unsigned char>(right[i]);
+      if (x != y)
+        return (x ^ 0x80u) < (y ^ 0x80u);
+    }
+    return left.size() < right.size();
+  };
+  std::array<std::vector<Id>, 3> reordered;
+  std::array<std::span<const Id>, 3> groups;
+  std::array<size_t, 3> positions{};
+  size_t total = 0;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    groups[i] = impl->containers[i];
+    // ASCII tables already have the same order in both profiles. Even mixed
+    // tables may already be ordered; allocate only when a reordering is needed.
+    if (old && !std::is_sorted(groups[i].begin(), groups[i].end(), less)) {
+      reordered[i].assign(groups[i].begin(), groups[i].end());
+      std::sort(reordered[i].begin(), reordered[i].end(), less);
+      groups[i] = reordered[i];
+    }
+    positions[i] = options.reverse ? groups[i].size() : 0;
+    total += groups[i].size();
+  }
+  const auto available = [&](size_t i) {
+    return options.reverse ? positions[i] != 0
+                           : positions[i] < groups[i].size();
+  };
+  const auto current = [&](size_t i) {
+    return groups[i][options.reverse ? positions[i] - 1 : positions[i]];
+  };
+  std::vector<Id> result;
+  result.reserve(total);
+  size_t selected = 0;
+  for (;;) {
+    // Retain the previous group on equal names. Exhausted groups are replaced
+    // by the first available group, then all candidates are compared strictly.
+    size_t next = available(selected) ? selected : groups.size();
+    for (size_t i = 0; i < groups.size(); ++i)
+      if (available(i) && (next == groups.size() ||
+                           (options.reverse ? less(current(next), current(i))
+                                            : less(current(i), current(next)))))
+        next = i;
+    if (next == groups.size())
+      break;
+    selected = next;
+    const Id id = current(selected);
+    if (!options.public_only || (impl->properties[id].flags & 1))
+      result.push_back(id);
+    if (options.reverse)
+      --positions[selected];
+    else
+      ++positions[selected];
+  }
+  return result;
+}
 ProteinSchemaDefinitionLookup
 ProteinSchemaDefinitionIndex::find(std::string_view name) const {
   auto found = impl->direct(name);

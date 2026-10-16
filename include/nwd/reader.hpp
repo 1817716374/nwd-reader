@@ -763,6 +763,14 @@ struct ProteinSchemaDefinitionOptions {
   ProteinSchemaValueOptions values;
   ProteinSchemaAliasOptions aliases;
 };
+// Algorithm profiles for observed native property iteration, not file-year
+// detection. The older profile orders name bytes as signed char; the newer
+// profile uses unsigned bytes. Equal names retain the current merge group.
+enum class ProteinSchemaIterationProfile { reader_2017, reader_2026 };
+struct ProteinSchemaIterationOptions {
+  ProteinSchemaIterationProfile profile = ProteinSchemaIterationProfile::reader_2026;
+  bool public_only = false, reverse = false;
+};
 // Immutable local XML acceptance and explicit parent-property merge. Reuses
 // the value/identity/alias readers; owns document views and shares cached values.
 // Actual property lookup scans ordinary/iterator/readonly containers, then
@@ -796,6 +804,13 @@ public:
   std::span<const ProteinSchemaDefinitionProperty> properties() const noexcept;
   // Active indexes in lexicographic ID order; not a claim of native iteration order.
   std::span<const Id> container(ProteinSchemaPropertyContainer) const;
+  // Active actual-property history indexes in native merge order. Preserves
+  // cross-container duplicates, excludes aliases and filters public flags only
+  // after advancing the unfiltered merge. Reverse iteration has its own tie
+  // order and is not simply a reversed forward result. No values are copied.
+  // For a non-ready definition, this is its accepted prefix; consult status()
+  // before treating the sequence as complete. The index owns referenced data.
+  std::vector<Id> iteration(ProteinSchemaIterationOptions = {}) const;
   ProteinSchemaDefinitionLookup find(std::string_view) const;
   // Requires known acceptance in both indexes. Shares values/origins; retains
   // child values and merges flags as parent | (child & 0x180), even if flags now

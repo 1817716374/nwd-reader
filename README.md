@@ -395,6 +395,22 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+`definition.iteration(options)` 返回实际属性的历史索引序列，保留跨容器同名项，排除已替换历史和别名。`ProteinSchemaIterationOptions` 可选择正向/反向、仅 public 属性及 `reader_2017` / `reader_2026` 算法。默认使用后者；算法选择不等于自动判断文件保存年份。
+
+三容器按名称合并，同名时保留当前游标所在容器，public 筛选在推进原始合并序列后执行。反向遍历有独立的同名顺序，不能直接反转正向结果。旧算法按有符号字节比较 UTF-8 名称，新算法按无符号字节比较，因此非 ASCII 名称可能有不同次序。迭代复用已缓存属性和值，返回值只包含索引；原有 `container()` 仍提供各容器的固定字典序视图。
+
+```cpp
+nwd::ProteinSchemaIterationOptions order;
+order.profile = nwd::ProteinSchemaIterationProfile::reader_2026;
+order.public_only = true;
+for (auto id : definition.iteration(order)) {
+    const auto& property = definition.properties()[id];
+    // property.id / flags / value / document / source 保留各自身份。
+}
+```
+
+如果定义状态不是 `ready`，序列仅覆盖当前已接受的属性前缀，调用方须检查 `definition.status()`。此接口不执行全局注册或更改已有定义。
+
 `ProteinSchemaDefinitionLoadIndex(local_definitions, options)` 在一个明确的批次作用域内组合已缓存的局部定义，执行 XML 读取后的补值及命名父依赖解析。输入顺序决定登记时点，UID 精确匹配；已就绪或等待中的同名定义均保留首次登记身份。`records()` 返回每个输入的 UID、实际读取的 Base、规范对象、父级、等待关系、循环和接受状态；根定义、重复或未处理输入的 `base` 可以为空。`input(i)` 始终保留原始局部索引，`definition(i)` 返回加载结果，重复项跟随规范对象最终合并后的快照；尚未处理的输入返回空指针。
 
 加载期只在缺失时补只读 Integer `SchemaVersion=1`，随后才进行命名父合并，因此缺少版本声明的子定义会保留自己的 1。CommonSchema 还会按需创建 AssetLibID、VersionGUID、localtype、localname，并按已知旧版本规则改写 category/keyword。`ProteinSchemaDefinitionProperty::origin` 区分 XML、加载期默认和加载期改写；生成属性的 `source` 为 `none`，改写保留原 XML 上下文及历史值。继承复用不可变值，旧版文本清空保留标量/数组形态。
