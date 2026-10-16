@@ -6,6 +6,7 @@
 #include <limits>
 #include <charconv>
 #include <map>
+#include <set>
 #include <cmath>
 
 namespace nwd {
@@ -1198,6 +1199,7 @@ struct ProteinSchemaDefinitionIndex::Impl {
   DefinitionStatus status = DefinitionStatus::ready;
   Id stopped_before = none;
   uint32_t depth = 1;
+  uint64_t extra_cached_values = 0;
 
   const ProteinSchemaDocument &document() const {
     return local->aliases.document();
@@ -1491,11 +1493,13 @@ ProteinSchemaDefinitionIndex::with_inherited_parent(
   detail::require(std::max(impl->depth, parent.impl->depth) <
                       options.max_inheritance_depth,
                   "Protein Schema inheritance depth limit");
-  detail::require(impl->properties.size() <= options.max_property_history &&
-                      impl->local->declarations.size() <=
-                          options.max_declarations &&
-                      impl->local->cached_values <= options.max_cached_values,
-                  "Protein Schema definition snapshot limit");
+  detail::require(
+      impl->properties.size() <= options.max_property_history &&
+          impl->local->declarations.size() <= options.max_declarations &&
+          impl->local->cached_values <= options.max_cached_values &&
+          impl->extra_cached_values <=
+              options.max_cached_values - impl->local->cached_values,
+      "Protein Schema definition snapshot limit");
   auto result = std::make_shared<Impl>(*impl);
   result->depth = std::max(impl->depth, parent.impl->depth) + 1;
   result->parents.push_back(parent.impl);
@@ -1525,5 +1529,443 @@ ProteinSchemaDefinitionIndex::with_inherited_parent(
     }
   result->finish();
   return ProteinSchemaDefinitionIndex(std::move(result));
+}
+struct ProteinSchemaDefinitionLoadIndex::Impl {
+  using Index = ProteinSchemaDefinitionIndex;
+  using RecordStatus = ProteinSchemaDefinitionLoadRecordStatus;
+  using Issue = ProteinSchemaDefinitionLoadIssue;
+  using EventKind = ProteinSchemaDefinitionLoadEventKind;
+  std::vector<Index> inputs;
+  std::vector<std::optional<Index>> definitions;
+  std::vector<ProteinSchemaDefinitionLoadRecord> records;
+  std::vector<ProteinSchemaDefinitionLoadEvent> events;
+  std::map<std::string_view, Id, std::less<>> ready, waiting;
+  std::vector<Id> pending;
+  std::vector<ProteinSchemaDefinitionLoadCycle> cycles;
+  std::vector<ProteinSchemaCommonRequirement> requirements;
+  ProteinSchemaDefinitionLoadStatus status =
+      ProteinSchemaDefinitionLoadStatus::dependencies_resolved;
+  ProteinSchemaDefinitionLoadOptions options;
+  uint64_t history = 0, cached = 0;
+
+  static void charge(uint64_t &used, uint64_t count, uint64_t limit,
+                     const char *message) {
+    detail::require(used <= limit && count <= limit - used, message);
+    used += count;
+  }
+  void event(EventKind kind, Id record, std::string_view name = {},
+             Id property = none, Id previous = none, Id related = none) {
+    detail::require(events.size() < options.max_events,
+                    "Protein Schema load event limit");
+    events.push_back({kind, record, property, previous, related, name});
+  }
+  void halt(Id id, Issue issue, Id property = none,
+            std::string_view name = {}) {
+    auto &r = records[id];
+    r.status = RecordStatus::unresolved;
+    r.issue = issue;
+    r.issue_property = property;
+    status = ProteinSchemaDefinitionLoadStatus::unresolved;
+    event(EventKind::unresolved, id, name, property);
+  }
+  void replace(Id id, Index next) {
+    // Inputs and current outputs are both retained. A shared input/output Impl
+    // is charged once; a distinct output history is charged in full.
+    const auto &old = definitions[id];
+    if (old && old->impl != inputs[id].impl)
+      history -= old->properties().size();
+    if (next.impl != inputs[id].impl)
+      charge(history, next.properties().size(),
+             options.max_total_property_history,
+             "Protein Schema total property history limit");
+    definitions[id] = std::move(next);
+  }
+  bool prepare(Id id) {
+    auto &r = records[id];
+    definitions[id] = inputs[id];
+    if (inputs[id].status() != DefinitionStatus::ready) {
+      halt(id, Issue::uncertain_local_definition);
+      return false;
+    }
+    std::shared_ptr<Index::Impl> changed;
+    auto mutable_state = [&]() -> Index::Impl & {
+      if (!changed) {
+        changed = std::make_shared<Index::Impl>(*inputs[id].impl);
+        replace(id, Index(changed));
+      }
+      return *changed;
+    };
+    auto finish = [&] {
+      if (changed)
+        changed->finish();
+    };
+    auto cache = [&](ProteinSchemaDefinitionValue value) {
+      auto &state = mutable_state();
+      const auto count = schema_cached_values(value);
+      detail::require(state.local->cached_values <=
+                              options.definition.max_cached_values &&
+                          state.extra_cached_values <=
+                              options.definition.max_cached_values -
+                                  state.local->cached_values,
+                      "Protein Schema cached value limit");
+      charge(state.extra_cached_values, count,
+             options.definition.max_cached_values - state.local->cached_values,
+             "Protein Schema cached value limit");
+      charge(cached, count, options.max_total_cached_values,
+             "Protein Schema total cached value limit");
+      return std::make_shared<const ProteinSchemaDefinitionValue>(
+          std::move(value));
+    };
+    auto insert = [&](ProteinSchemaDefinitionProperty property) {
+      auto &state = mutable_state();
+      charge(history, 1, options.max_total_property_history,
+             "Protein Schema total property history limit");
+      return state.insert(std::move(property), options.definition);
+    };
+    auto default_property = [&](std::string_view name, uint32_t type,
+                                uint32_t flags) {
+      const auto found = definitions[id]->find(name);
+      if (found.status == ProteinSchemaDefinitionLookupStatus::found)
+        return found.property;
+      ProteinSchemaDefinitionProperty property;
+      property.document = property.flags_document = &inputs[id].document();
+      property.origin = ProteinSchemaPropertyOrigin::load_default;
+      property.id = name;
+      property.value_type = type;
+      property.flags = flags;
+      property.label = flags & 1 ? name : std::string_view{};
+      if (type == 6) {
+        ProteinSchemaNumericDefaults value;
+        value.status = ProteinSchemaNumericStatus::ready;
+        value.value_type = 6;
+        value.components = 1;
+        value.candidates.push_back(default_number(1));
+        property.value = cache(std::move(value));
+      } else {
+        ProteinSchemaTextDefaults value;
+        value.status = ProteinSchemaTextStatus::ready;
+        value.value_type = type;
+        value.flags = flags;
+        value.values.emplace_back();
+        property.value = cache(std::move(value));
+      }
+      const auto result = insert(std::move(property));
+      event(EventKind::default_property, id, name, result);
+      return result;
+    };
+    const auto version = default_property("SchemaVersion", 6, 2);
+    if (r.uid != "CommonSchema") {
+      finish();
+      return true;
+    }
+    default_property("AssetLibID", 2, 1);
+    default_property("VersionGUID", 11, 8);
+    default_property("localtype", 2, 0x12);
+    default_property("localname", 2, 0x12);
+    const auto *number = std::get_if<ProteinSchemaNumericDefaults>(
+        definitions[id]->properties()[version].value.get());
+    if (!number || number->value_type != 6 || number->components != 1) {
+      finish();
+      halt(id, Issue::incompatible_version, version, "SchemaVersion");
+      return false;
+    }
+    if (number->multiple && number->candidates.empty()) {
+      r.common_version = 0;
+      r.version_dimension_invalid = true;
+      event(EventKind::version_invalid_dimension, id, "SchemaVersion", version);
+    } else if (number->candidates.empty() ||
+               !number->candidates.front().value) {
+      finish();
+      halt(id, Issue::uncertain_version, version, "SchemaVersion");
+      return false;
+    } else {
+      r.common_version =
+          static_cast<int32_t>(*number->candidates.front().value);
+    }
+    if (*r.common_version < 3) {
+      for (auto name :
+           {std::string_view("category"), std::string_view("keyword")}) {
+        const auto found = definitions[id]->find(name);
+        if (found.status != ProteinSchemaDefinitionLookupStatus::found) {
+          finish();
+          halt(id, Issue::missing_common_text, none, name);
+          return false;
+        }
+        auto property = definitions[id]->properties()[found.property];
+        const auto *text =
+            std::get_if<ProteinSchemaTextDefaults>(property.value.get());
+        if (!text || text->value_type != 2) {
+          finish();
+          halt(id, Issue::incompatible_common_text, found.property, name);
+          return false;
+        }
+        ProteinSchemaTextDefaults value;
+        value.status = text->status;
+        value.value_type = text->value_type;
+        value.flags = text->flags;
+        value.multiple = text->multiple;
+        value.values.emplace_back();
+        property.value = cache(std::move(value));
+        property.origin = ProteinSchemaPropertyOrigin::load_rewrite;
+        property.previous = found.property;
+        property.replaced = none;
+        const auto updated = insert(std::move(property));
+        event(EventKind::rewrite_property, id, name, updated, found.property);
+      }
+    }
+    finish();
+    return true;
+  }
+  void diagnose_pending() {
+    for (const auto &[name, id] : waiting) {
+      (void)name;
+      pending.push_back(id);
+      if (auto i = waiting.find(records[id].base); i != waiting.end())
+        records[id].waiting_on = i->second;
+    }
+    std::vector<uint8_t> color(records.size());
+    std::vector<Id> path;
+    for (Id start : pending) {
+      if (color[start])
+        continue;
+      path.clear();
+      Id current = start;
+      while (current != none && !color[current]) {
+        color[current] = 1;
+        path.push_back(current);
+        current = records[current].waiting_on;
+      }
+      if (current != none && color[current] == 1) {
+        const auto first = std::find(path.begin(), path.end(), current);
+        detail::require(first != path.end(),
+                        "Protein Schema pending cycle state");
+        ProteinSchemaDefinitionLoadCycle cycle;
+        cycle.records.assign(first, path.end());
+        const auto ordinal = static_cast<Id>(cycles.size());
+        for (Id member : cycle.records)
+          records[member].cycle = ordinal;
+        cycles.push_back(std::move(cycle));
+      }
+      for (Id member : path)
+        color[member] = 2;
+    }
+  }
+  void check_common() {
+    const auto found = ready.find("CommonSchema");
+    if (found == ready.end())
+      return;
+    const Id id = found->second;
+    const auto &state = *definitions[id]->impl;
+    static constexpr std::pair<std::string_view, uint32_t> expected[]{
+        {"BaseSchema", 8},
+        {"SchemaVersion", 2},
+        {"AssetLibID", 0},
+        {"assettype", 2},
+        {"localtype", 2},
+        {"localname", 2},
+        {"UIName", 8},
+        {"keyword", 12},
+        {"category", 12},
+        {"description", 8},
+        {"thumbnail", 12},
+        {"Hidden", 8},
+        {"VersionGUID", 8},
+        {"version", 0},
+        {"revision", 0},
+        {"UIDefinition", 2},
+        {"AdvancedUIDefinition", 2}};
+    for (const auto &[name, flags] : expected) {
+      ProteinSchemaCommonRequirement requirement;
+      requirement.record = id;
+      requirement.name = name;
+      requirement.required_flags = flags;
+      requirement.property = state.direct(name);
+      if (requirement.property != none)
+        requirement.status =
+            (state.properties[requirement.property].flags & 14) == flags
+                ? ProteinSchemaCommonRequirementStatus::matched
+                : ProteinSchemaCommonRequirementStatus::flags_mismatch;
+      requirements.push_back(requirement);
+    }
+  }
+  Impl(std::span<const Index> sources,
+       ProteinSchemaDefinitionLoadOptions limits)
+      : options(limits) {
+    detail::require(sources.size() <= options.max_sources,
+                    "Protein Schema load source limit");
+    uint64_t declarations = 0;
+    for (const auto &source : sources) {
+      detail::require(source.impl->parents.empty() && source.impl->depth == 1 &&
+                          source.impl->extra_cached_values == 0,
+                      "Protein Schema load requires local definition inputs");
+      charge(declarations, source.declarations().size(),
+             options.max_total_declarations,
+             "Protein Schema total declaration limit");
+      charge(history, source.properties().size(),
+             options.max_total_property_history,
+             "Protein Schema total property history limit");
+      charge(cached, source.impl->local->cached_values,
+             options.max_total_cached_values,
+             "Protein Schema total cached value limit");
+      detail::require(source.properties().size() <=
+                              options.definition.max_property_history &&
+                          source.declarations().size() <=
+                              options.definition.max_declarations &&
+                          source.impl->local->cached_values <=
+                              options.definition.max_cached_values &&
+                          source.impl->depth <=
+                              options.definition.max_inheritance_depth,
+                      "Protein Schema input definition limit");
+    }
+    inputs.assign(sources.begin(), sources.end());
+    records.resize(inputs.size());
+    definitions.resize(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i)
+      records[i].uid = inputs[i].uid();
+    std::map<std::string_view, std::vector<Id>, std::less<>> by_base;
+    std::map<std::string_view, Id, std::less<>> available;
+    auto promote = [&](Id id, Id parent) {
+      auto &r = records[id];
+      if (parent != none) {
+        replace(id, definitions[id]->with_inherited_parent(*definitions[parent],
+                                                           options.definition));
+        r.parent = parent;
+      }
+      r.status = RecordStatus::resolved;
+      ready.emplace(r.uid, id);
+      event(EventKind::resolved, id, r.uid, none, none, parent);
+      if (auto children = by_base.find(r.uid); children != by_base.end()) {
+        for (Id child : children->second)
+          available.emplace(records[child].uid, child);
+        by_base.erase(children);
+      }
+    };
+    auto drain = [&] {
+      while (!available.empty()) {
+        const auto id = available.begin()->second;
+        available.erase(available.begin());
+        const auto parent = ready.find(records[id].base);
+        detail::require(parent != ready.end(),
+                        "Protein Schema ready dependency state");
+        promote(id, parent->second);
+        waiting.erase(records[id].uid);
+      }
+    };
+    for (Id id = 0; id < inputs.size(); ++id) {
+      if (status == ProteinSchemaDefinitionLoadStatus::unresolved)
+        break;
+      auto &r = records[id];
+      // Even duplicate XML must have a known completed local acceptance path.
+      // Unknown native behavior is not silently bypassed by a matching UID.
+      if (inputs[id].status() != DefinitionStatus::ready) {
+        definitions[id] = inputs[id];
+        halt(id, Issue::uncertain_local_definition);
+        break;
+      }
+      const auto registered = ready.find(r.uid), queued = waiting.find(r.uid);
+      if (registered != ready.end() || queued != waiting.end()) {
+        r.status = RecordStatus::duplicate;
+        r.duplicate_was_pending = registered == ready.end();
+        r.canonical =
+            r.duplicate_was_pending ? queued->second : registered->second;
+        event(EventKind::duplicate, id, r.uid, none, none, r.canonical);
+        continue;
+      }
+      if (!prepare(id))
+        break;
+      if (r.uid == "CommonSchema") {
+        r.canonical = id;
+        promote(id, none);
+        drain();
+        continue;
+      }
+      const auto found = definitions[id]->find("BaseSchema");
+      if (found.status == ProteinSchemaDefinitionLookupStatus::found) {
+        const auto *text = std::get_if<ProteinSchemaTextDefaults>(
+            definitions[id]->properties()[found.property].value.get());
+        if (!text || text->value_type != 2 || text->multiple) {
+          halt(id, Issue::incompatible_base, found.property, "BaseSchema");
+          break;
+        }
+        if (!text->values.empty())
+          r.base = text->values.front();
+      }
+      if (r.base.empty()) {
+        r.status = RecordStatus::rejected;
+        r.issue = Issue::empty_base;
+        event(EventKind::rejected, id, "BaseSchema");
+        continue;
+      }
+      r.canonical = id;
+      if (const auto parent = ready.find(r.base); parent != ready.end()) {
+        promote(id, parent->second);
+        drain();
+      } else {
+        r.status = RecordStatus::pending;
+        waiting.emplace(r.uid, id);
+        by_base[r.base].push_back(id);
+        event(EventKind::queued, id, r.base);
+      }
+    }
+    diagnose_pending();
+    check_common();
+    if (status != ProteinSchemaDefinitionLoadStatus::unresolved &&
+        !pending.empty())
+      status = ProteinSchemaDefinitionLoadStatus::pending_dependencies;
+  }
+};
+ProteinSchemaDefinitionLoadIndex::ProteinSchemaDefinitionLoadIndex(
+    std::span<const ProteinSchemaDefinitionIndex> inputs,
+    ProteinSchemaDefinitionLoadOptions options)
+    : impl(std::make_shared<Impl>(inputs, options)) {}
+ProteinSchemaDefinitionLoadStatus
+ProteinSchemaDefinitionLoadIndex::status() const noexcept {
+  return impl->status;
+}
+std::span<const ProteinSchemaDefinitionLoadRecord>
+ProteinSchemaDefinitionLoadIndex::records() const noexcept {
+  return impl->records;
+}
+const ProteinSchemaDefinitionIndex &
+ProteinSchemaDefinitionLoadIndex::input(Id record) const {
+  detail::require(record < impl->inputs.size(),
+                  "Protein Schema load input record");
+  return impl->inputs[record];
+}
+const ProteinSchemaDefinitionIndex *
+ProteinSchemaDefinitionLoadIndex::definition(Id record) const {
+  detail::require(record < impl->records.size(),
+                  "Protein Schema load definition record");
+  if (impl->records[record].status ==
+      ProteinSchemaDefinitionLoadRecordStatus::duplicate)
+    record = impl->records[record].canonical;
+  const auto &result = impl->definitions[record];
+  return result ? &*result : nullptr;
+}
+ProteinSchemaDefinitionLoadLookup
+ProteinSchemaDefinitionLoadIndex::find_uid(std::string_view name) const {
+  if (auto i = impl->ready.find(name); i != impl->ready.end())
+    return {ProteinSchemaDefinitionLoadLookupStatus::found, i->second};
+  if (auto i = impl->waiting.find(name); i != impl->waiting.end())
+    return {ProteinSchemaDefinitionLoadLookupStatus::pending, i->second};
+  return {impl->status == ProteinSchemaDefinitionLoadStatus::unresolved
+              ? ProteinSchemaDefinitionLoadLookupStatus::unresolved
+              : ProteinSchemaDefinitionLoadLookupStatus::missing,
+          none};
+}
+std::span<const ProteinSchemaDefinitionLoadEvent>
+ProteinSchemaDefinitionLoadIndex::events() const noexcept {
+  return impl->events;
+}
+std::span<const Id> ProteinSchemaDefinitionLoadIndex::pending() const noexcept {
+  return impl->pending;
+}
+std::span<const ProteinSchemaDefinitionLoadCycle>
+ProteinSchemaDefinitionLoadIndex::cycles() const noexcept {
+  return impl->cycles;
+}
+std::span<const ProteinSchemaCommonRequirement>
+ProteinSchemaDefinitionLoadIndex::common_requirements() const noexcept {
+  return impl->requirements;
 }
 } // namespace nwd

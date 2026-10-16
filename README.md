@@ -395,6 +395,31 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+`ProteinSchemaDefinitionLoadIndex(local_definitions, options)` 在一个明确的批次作用域内组合已缓存的局部定义，执行 XML 读取后的补值及命名父依赖解析。输入顺序决定登记时点，UID 精确匹配；已就绪或等待中的同名定义均保留首次登记身份。`records()` 返回每个输入的 UID、实际读取的 Base、规范对象、父级、等待关系、循环和接受状态；根定义、重复或未处理输入的 `base` 可以为空。`input(i)` 始终保留原始局部索引，`definition(i)` 返回加载结果，重复项跟随规范对象最终合并后的快照；尚未处理的输入返回空指针。
+
+加载期只在缺失时补只读 Integer `SchemaVersion=1`，随后才进行命名父合并，因此缺少版本声明的子定义会保留自己的 1。CommonSchema 还会按需创建 AssetLibID、VersionGUID、localtype、localname，并按已知旧版本规则改写 category/keyword。`ProteinSchemaDefinitionProperty::origin` 区分 XML、加载期默认和加载期改写；生成属性的 `source` 为 `none`，改写保留原 XML 上下文及历史值。继承复用不可变值，旧版文本清空保留标量/数组形态。
+
+`events()` 保留补值、改写、登记、等待、重复、拒绝和未决事件的顺序。等待队列按 UID 顺序选择当前可就绪项，使用反向依赖避免重复扫描无关项。`pending()` 和 `cycles()` 分别返回剩余等待项和循环成员，记录的 `waiting_on` 还能区分指向已知等待项的边与当前缺失的父。
+
+`status()` 描述批内依赖是否就绪、仍有等待项或存在未决语义。已知空 Base 拒绝允许处理后续输入，因此依赖就绪不代表所有输入都接受，调用方仍须检查每条记录。局部声明接受未决、CommonSchema 版本读取未决或不兼容值接口会停止后续登记推断，保留输入和已处理前缀；与加载门槛无关的未知候选数值仍按其投影状态保留。此时未命中的 UID 查询为 `unresolved`。`common_requirements()` 对已就绪的规范 CommonSchema 返回 17 项实际名称与 `flags & 0xe` 检查，别名不代替必需属性；这不等于完整全局注册或兼容性已经通过。
+
+`ProteinSchemaDefinitionLoadOptions` 限制输入数、事件数、累计声明、保留的属性历史和缓存值，并提供单定义与继承深度上限。输入必须是尚未执行显式父属性合并或加载期改写的局部索引，已有 XML 值不会重新解析。索引及副本维持所有文档/值的寿命，结果可并发只读查询。
+
+每个加载索引是独立作用域；不同文件、库或模型图中的同名 UID 不会自动合并。Base 文件与归档加载、自动 NWD 库/图作用域构造、完整全局注册兼容性仍需单独接入。
+
+```cpp
+std::vector<nwd::ProteinSchemaDefinitionIndex> local;
+for (const auto& document : documents) local.emplace_back(document);
+nwd::ProteinSchemaDefinitionLoadIndex batch(local);
+for (nwd::Id i = 0; i < batch.records().size(); ++i) {
+    const auto& record = batch.records()[i]; // 检查接受/等待/拒绝/未决状态。
+    if (const auto* definition = batch.definition(i)) {
+        auto property = definition->find("SchemaVersion");
+        // 返回缓存投影；重复项指向首次登记对象的最终快照。
+    }
+}
+```
+
 `numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
 
 数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。

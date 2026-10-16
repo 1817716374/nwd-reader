@@ -726,9 +726,11 @@ struct ProteinSchemaDefinitionChoice {
 using ProteinSchemaDefinitionValue = std::variant<
     bool, ProteinSchemaTextDefaults, ProteinSchemaNumericDefaults,
     ProteinSchemaConstructedDefaults, ProteinSchemaDefinitionChoice>;
+enum class ProteinSchemaPropertyOrigin { xml_declaration, load_default, load_rewrite };
 struct ProteinSchemaDefinitionProperty {
   const ProteinSchemaDocument *document = nullptr;
-  Id source = none; // original value declaration, including inherited values
+  Id source = none; // XML context; none for a generated load default
+  ProteinSchemaPropertyOrigin origin = ProteinSchemaPropertyOrigin::xml_declaration;
   std::string_view id, label;
   uint32_t value_type = 0, flags = 0;
   ProteinSchemaPropertyContainer container = ProteinSchemaPropertyContainer::ordinary;
@@ -778,6 +780,7 @@ class ProteinSchemaDefinitionIndex {
   struct Impl;
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaDefinitionIndex(std::shared_ptr<const Impl>);
+  friend class ProteinSchemaDefinitionLoadIndex;
 public:
   explicit ProteinSchemaDefinitionIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_alias_parent = nullptr,
@@ -799,6 +802,93 @@ public:
   // describe a different value shape. Does not repeat local alias registration.
   ProteinSchemaDefinitionIndex with_inherited_parent(
       const ProteinSchemaDefinitionIndex &, ProteinSchemaDefinitionOptions = {}) const;
+};
+
+enum class ProteinSchemaDefinitionLoadStatus {
+  dependencies_resolved, pending_dependencies, unresolved
+};
+enum class ProteinSchemaDefinitionLoadRecordStatus {
+  resolved, pending, duplicate, rejected, unresolved, unprocessed
+};
+enum class ProteinSchemaDefinitionLoadIssue {
+  none, empty_base, uncertain_local_definition, incompatible_base,
+  incompatible_version, uncertain_version, missing_common_text,
+  incompatible_common_text
+};
+struct ProteinSchemaDefinitionLoadRecord {
+  std::string_view uid, base;
+  ProteinSchemaDefinitionLoadRecordStatus status = ProteinSchemaDefinitionLoadRecordStatus::unprocessed;
+  ProteinSchemaDefinitionLoadIssue issue = ProteinSchemaDefinitionLoadIssue::none;
+  Id canonical = none, parent = none, waiting_on = none, cycle = none;
+  Id issue_property = none; // property history index in definition(), if known
+  bool duplicate_was_pending = false, version_dimension_invalid = false;
+  std::optional<int32_t> common_version; // ordinal0 read only by the root branch
+};
+enum class ProteinSchemaDefinitionLoadEventKind {
+  default_property, rewrite_property, version_invalid_dimension,
+  queued, resolved, duplicate, rejected, unresolved
+};
+struct ProteinSchemaDefinitionLoadEvent {
+  ProteinSchemaDefinitionLoadEventKind kind = ProteinSchemaDefinitionLoadEventKind::unresolved;
+  Id record = none, property = none, previous = none, related = none;
+  std::string_view name; // requested name, possibly an alias of actual property
+};
+struct ProteinSchemaDefinitionLoadCycle {
+  std::vector<Id> records; // cycle members in Base-following order; no closing repeat
+};
+enum class ProteinSchemaCommonRequirementStatus { matched, missing, flags_mismatch };
+struct ProteinSchemaCommonRequirement {
+  Id record = none, property = none;
+  std::string_view name;
+  uint32_t required_flags = 0; // compare actual flags & 0xe; not a type check
+  ProteinSchemaCommonRequirementStatus status = ProteinSchemaCommonRequirementStatus::missing;
+};
+enum class ProteinSchemaDefinitionLoadLookupStatus { found, pending, missing, unresolved };
+struct ProteinSchemaDefinitionLoadLookup {
+  ProteinSchemaDefinitionLoadLookupStatus status = ProteinSchemaDefinitionLoadLookupStatus::missing;
+  Id record = none; // canonical input index, only for found/pending
+};
+struct ProteinSchemaDefinitionLoadOptions {
+  uint32_t max_sources = 100000, max_events = 1000000;
+  uint64_t max_total_declarations = 1000000, max_total_property_history = 2000000;
+  uint64_t max_total_cached_values = 1000000;
+  ProteinSchemaDefinitionOptions definition;
+};
+// One explicit batch namespace. Inputs are cached local XML definition indexes,
+// before explicit inheritance or a previous load's generated/rewritten values.
+// Copies share their values/documents; input order controls admission. UID keys
+// are exact strings. Both ready and pending duplicates retain the first identity;
+// definition(duplicate) follows that canonical object's final snapshot.
+// Applies post-XML SchemaVersion/CommonSchema values before named inheritance.
+// Pending promotions preserve the native smallest-ready-UID order using reverse
+// dependencies, without repeated whole-table scans. Cycles are derived diagnostics.
+// Known empty-Base rejection continues admission. Uncertain semantics retain the
+// processed prefix and stop later admission; input() still exposes every input.
+// dependencies_resolved can coexist with rejected rows; inspect record statuses.
+// Dependency readiness and the 17 direct-name CommonSchema flag checks do not
+// assert global registration/compatibility. No file IO, cross-batch UID merging,
+// automatic model/library scope construction or product callbacks are performed.
+// Aggregate limits charge logical input rows and distinct output snapshots;
+// inherited values are shared rather than charged as new cache allocations.
+// All returned views/pointers live with this immutable index or its copies.
+class ProteinSchemaDefinitionLoadIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+public:
+  explicit ProteinSchemaDefinitionLoadIndex(
+      std::span<const ProteinSchemaDefinitionIndex>, ProteinSchemaDefinitionLoadOptions = {});
+  ProteinSchemaDefinitionLoadStatus status() const noexcept;
+  std::span<const ProteinSchemaDefinitionLoadRecord> records() const noexcept;
+  const ProteinSchemaDefinitionIndex &input(Id record) const;
+  // nullptr means this input was not admitted. Rejected/unresolved inputs may
+  // expose a partial snapshot. Check records()[record].status before use.
+  const ProteinSchemaDefinitionIndex *definition(Id record) const;
+  ProteinSchemaDefinitionLoadLookup find_uid(std::string_view) const;
+  std::span<const ProteinSchemaDefinitionLoadEvent> events() const noexcept;
+  std::span<const Id> pending() const noexcept; // ordered by UID, not source ordinal
+  std::span<const ProteinSchemaDefinitionLoadCycle> cycles() const noexcept;
+  // Empty unless the canonical CommonSchema reached the ready namespace.
+  std::span<const ProteinSchemaCommonRequirement> common_requirements() const noexcept;
 };
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
