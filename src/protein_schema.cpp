@@ -920,7 +920,8 @@ struct ProteinSchemaAliasIndex::Impl {
         accepted;
     // Conflict pointers retain their original registration scope, even if a
     // later binding replaces the parent used for lookup.
-    std::vector<std::shared_ptr<const Impl>> registration_parents;
+    std::vector<std::pair<Id, std::shared_ptr<const Impl>>>
+        registration_parents;
     uint32_t registration_depth = 0;
     explicit Local(const ProteinSchemaDocument &doc) : document(doc) {}
   };
@@ -955,15 +956,15 @@ struct ProteinSchemaAliasIndex::Impl {
                     "Protein Schema alias parent-change limit");
     auto state = std::make_shared<Local>(doc);
     local = state;
-    auto retain_parent = [&] {
+    auto retain_parent = [&](Id before) {
+      state->registration_parents.emplace_back(before, parent);
       if (parent) {
         state->registration_depth =
             std::max(state->registration_depth, parent->depth);
-        state->registration_parents.push_back(parent);
       }
       rebuild_visible(options);
     };
-    retain_parent();
+    retain_parent(0);
     size_t next_change = 0;
     std::map<std::string_view, ProteinSchemaAliasBinding, std::less<>> targets;
     for (Id source : doc.entries()) {
@@ -971,7 +972,7 @@ struct ProteinSchemaAliasIndex::Impl {
           changes[next_change].before_entry == source) {
         const auto index = changes[next_change++].parent;
         parent = index ? index->impl : nullptr;
-        retain_parent();
+        retain_parent(source);
       }
       const auto fields = doc.entry_fields(source);
       if (fields.kind != "PropertyAlias")
@@ -1036,10 +1037,493 @@ ProteinSchemaAliasIndex::find(std::string_view name) const {
   return i == impl->visible.end() ? std::optional<ProteinSchemaAliasBinding>{}
                                   : i->second;
 }
+std::optional<ProteinSchemaAliasBinding>
+ProteinSchemaAliasIndex::find_before(Id source, std::string_view name) const {
+  const auto &local = *impl->local;
+  if (auto binding = find(name); binding &&
+                                 binding->document == &local.document &&
+                                 binding->source < source)
+    return binding;
+  const auto &events = local.registration_parents;
+  const auto end = std::upper_bound(
+      events.begin(), events.end(), source,
+      [](Id id, const auto &event) { return id < event.first; });
+  if (end == events.begin() || !std::prev(end)->second)
+    return {};
+  const auto &visible = std::prev(end)->second->visible;
+  const auto i = visible.find(name);
+  return i == visible.end() ? std::optional<ProteinSchemaAliasBinding>{}
+                            : i->second;
+}
 ProteinSchemaAliasIndex ProteinSchemaAliasIndex::with_parent_aliases(
     const ProteinSchemaAliasIndex &parent,
     ProteinSchemaAliasOptions options) const {
   return ProteinSchemaAliasIndex(
       std::make_shared<Impl>(impl->local, parent.impl, options));
+}
+
+namespace {
+using DefinitionStatus = ProteinSchemaDefinitionStatus;
+using DeclarationStatus = ProteinSchemaDeclarationStatus;
+using DeclarationGate = ProteinSchemaDeclarationGate;
+using PropertyContainer = ProteinSchemaPropertyContainer;
+
+PropertyContainer schema_container(uint32_t flags) {
+  return flags & 2   ? PropertyContainer::readonly_data
+         : flags & 8 ? PropertyContainer::iterator_data
+                     : PropertyContainer::ordinary;
+}
+std::string_view schema_effective_id(const ProteinSchemaEntryFields &fields) {
+  if (fields.kind == "type")
+    return "assettype";
+  if (fields.kind == "localtype" || fields.kind == "localname")
+    return fields.kind;
+  return fields.id.value_or(std::string_view{});
+}
+void schema_ignored_values(const ProteinSchemaEntryFields &fields,
+                           ProteinSchemaValueOptions options) {
+  ValueBudget budget{options.max_values};
+  auto count = [&](std::string_view input) {
+    uint64_t size = 0;
+    tokens<false>(input, budget, [&](std::string) { ++size; });
+    return size;
+  };
+  if (fields.kind == "ui" || fields.kind == "implementation")
+    budget.use(1);
+  else if (fields.value)
+    count(*fields.value);
+  const bool color = fields.kind == "Color";
+  if (!color && fields.kind != "Vector3")
+    return;
+  auto components = fields.rgba;
+  for (size_t c = 0; c < 3; ++c)
+    if (fields.xyz[c])
+      components[c] = fields.xyz[c];
+  std::array<uint64_t, 4> sizes{};
+  uint64_t length = color ? 0 : 1;
+  const size_t channels = color ? 4 : 3;
+  for (size_t c = 0; c < channels; ++c) {
+    if (components[c]) {
+      sizes[c] = count(*components[c]);
+      if (!color)
+        sizes[c] = std::min<uint64_t>(sizes[c], 1);
+    }
+    length = std::max(length, sizes[c]);
+  }
+  for (size_t c = 0; c < channels; ++c)
+    budget.use(length - sizes[c]);
+}
+// Numeric projection uncertainty can concern a later array value while factory
+// existence is known. Only an uncertain first-value/constraint gate stops XML.
+bool schema_numeric_gate_known(const ProteinSchemaDocument &doc,
+                               const ProteinSchemaEntryFields &fields,
+                               const ProteinSchemaNumericDefaults &value) {
+  if (value.status != ProteinSchemaNumericStatus::unresolved)
+    return true;
+  if (fields.kind == "Vector3")
+    return true;
+  if (fields.kind == "Color") {
+    if (value.candidates.empty())
+      return true;
+    return std::all_of(
+        value.candidates.begin(), value.candidates.begin() + 4,
+        [](const auto &number) { return number.value.has_value(); });
+  }
+  bool has_range = value.constraint.range.has_value();
+  if (value.constraint.status == ProteinSchemaConstraintStatus::unresolved) {
+    const auto raw = doc.constraint_fields(value.constraint.source);
+    if ((raw.minimum && !raw.minimum->value) ||
+        (raw.maximum && !raw.maximum->value))
+      return false;
+    // Increment alone is never part of the first-value contains test.
+    has_range = true;
+  }
+  // No range object means no contains test, even for unresolved numeric text.
+  // A present unbounded range still consumes the numeric first value.
+  if (!has_range)
+    return true;
+  if (!value.candidates.empty())
+    return value.candidates.front().value.has_value();
+  // Omitted val in a multiple declaration has no retained candidates but its
+  // first-value gate uses the known default zero.
+  return !fields.value;
+}
+uint64_t schema_cached_values(const ProteinSchemaDefinitionValue &value) {
+  return std::visit(
+      [](const auto &v) -> uint64_t {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, ProteinSchemaTextDefaults>)
+          return v.values.size();
+        else if constexpr (std::is_same_v<T, ProteinSchemaNumericDefaults>)
+          return v.candidates.size();
+        else if constexpr (std::is_same_v<T, ProteinSchemaDefinitionChoice>)
+          return v.index.entries().size() + v.defaults.tokens.size() +
+                 v.defaults.values.size();
+        else
+          return 1;
+      },
+      value);
+}
+} // namespace
+
+struct ProteinSchemaDefinitionIndex::Impl {
+  struct Local {
+    ProteinSchemaAliasIndex aliases;
+    std::vector<ProteinSchemaDefinitionDeclaration> declarations;
+    std::string uid;
+    Id uid_source = none;
+    size_t processed_aliases = 0;
+    uint64_t cached_values = 0;
+    static ProteinSchemaAliasIndex
+    checked_aliases(const ProteinSchemaDocument &doc,
+                    const ProteinSchemaAliasIndex *parent,
+                    const ProteinSchemaDefinitionOptions &options,
+                    std::span<const ProteinSchemaAliasParentChange> changes) {
+      detail::require(doc.entries().size() <= options.max_declarations,
+                      "Protein Schema definition declaration limit");
+      return ProteinSchemaAliasIndex(doc, parent, options.aliases, changes);
+    }
+    Local(const ProteinSchemaDocument &doc,
+          const ProteinSchemaAliasIndex *parent,
+          const ProteinSchemaDefinitionOptions &options,
+          std::span<const ProteinSchemaAliasParentChange> changes)
+        : aliases(checked_aliases(doc, parent, options, changes)) {}
+  };
+  std::shared_ptr<const Local> local;
+  ProteinSchemaAliasIndex visible_aliases;
+  std::vector<std::shared_ptr<const Impl>> parents;
+  std::vector<ProteinSchemaDefinitionProperty> properties;
+  std::array<std::map<std::string_view, Id, std::less<>>, 3> tables;
+  std::array<std::vector<Id>, 3> containers;
+  DefinitionStatus status = DefinitionStatus::ready;
+  Id stopped_before = none;
+  uint32_t depth = 1;
+
+  const ProteinSchemaDocument &document() const {
+    return local->aliases.document();
+  }
+  Id direct(std::string_view name) const {
+    for (const auto &table : tables)
+      if (auto i = table.find(name); i != table.end())
+        return i->second;
+    return none;
+  }
+  Id before(Id source, std::string_view name) const {
+    if (const auto found = direct(name); found != none)
+      return found;
+    if (const auto alias = local->aliases.find_before(source, name))
+      return direct(alias->target);
+    return none;
+  }
+  Id insert(ProteinSchemaDefinitionProperty property,
+            const ProteinSchemaDefinitionOptions &options) {
+    detail::require(properties.size() < options.max_property_history,
+                    "Protein Schema property history limit");
+    property.container = schema_container(property.flags);
+    property.active = true;
+    auto &table = tables[static_cast<size_t>(property.container)];
+    if (auto i = table.find(property.id); i != table.end()) {
+      properties[i->second].active = false;
+      property.replaced = i->second;
+    }
+    const Id id = static_cast<Id>(properties.size());
+    properties.push_back(std::move(property));
+    table.insert_or_assign(properties.back().id, id);
+    return id;
+  }
+  void finish() {
+    for (size_t c = 0; c < tables.size(); ++c) {
+      containers[c].clear();
+      containers[c].reserve(tables[c].size());
+      for (const auto &[name, id] : tables[c]) {
+        (void)name;
+        containers[c].push_back(id);
+      }
+    }
+  }
+  Impl(const ProteinSchemaDocument &doc, const ProteinSchemaAliasIndex *parent,
+       const ProteinSchemaDefinitionOptions &options,
+       std::span<const ProteinSchemaAliasParentChange> changes)
+      : local(std::make_shared<Local>(doc, parent, options, changes)),
+        visible_aliases(local->aliases) {
+    detail::require(options.max_inheritance_depth != 0,
+                    "Protein Schema inheritance depth limit");
+    // Local is uniquely mutable while constructing this immutable snapshot.
+    auto state = std::const_pointer_cast<Local>(local);
+    const auto &owned = document();
+    state->declarations.reserve(owned.entries().size());
+    auto cache = [&](ProteinSchemaDefinitionValue value) {
+      const auto count = schema_cached_values(value);
+      detail::require(state->cached_values <= options.max_cached_values &&
+                          count <=
+                              options.max_cached_values - state->cached_values,
+                      "Protein Schema cached value limit");
+      state->cached_values += count;
+      return std::make_shared<const ProteinSchemaDefinitionValue>(
+          std::move(value));
+    };
+    auto ignored = [&](Id source) {
+      // Enforce the same per-declaration input limit even when a gate rejects
+      // it. Defaults also bounds component normalization for Color/Vector3.
+      schema_ignored_values(owned.entry_fields(source), options.values);
+    };
+    auto create = [&](ProteinSchemaDefinitionDeclaration &row,
+                      std::string_view label, uint32_t flags, uint32_t type) {
+      ProteinSchemaDefinitionProperty p;
+      p.document = p.flags_document = &owned;
+      p.source = p.flags_source = row.source;
+      p.id = row.effective_id;
+      p.label = label;
+      p.flags = flags;
+      p.value_type = type;
+      p.value = row.candidate;
+      row.property = insert(std::move(p), options);
+      row.status = DeclarationStatus::property;
+    };
+    for (Id source : owned.entries()) {
+      ProteinSchemaDefinitionDeclaration row;
+      row.source = source;
+      const auto fields = owned.entry_fields(source);
+      const auto kind = fields.kind;
+      row.effective_id = schema_effective_id(fields);
+      if (stopped_before != none) {
+        state->declarations.push_back(std::move(row));
+        continue;
+      }
+      // Base's special handler executes before the ordinary declaration gate.
+      if (kind == "Base") {
+        row.identity = owned.identity_assignment(source, {}, options.values);
+        if (row.identity->status == ProteinSchemaIdentityStatus::ready) {
+          const auto prior = before(source, "BaseSchema");
+          std::string_view current;
+          bool safe = true;
+          if (prior != none) {
+            const auto *text = std::get_if<ProteinSchemaTextDefaults>(
+                properties[prior].value.get());
+            safe = text && text->value_type == 2 && !text->multiple;
+            if (safe && !text->values.empty())
+              current = text->values.front();
+          }
+          if (!safe) {
+            row.status = DeclarationStatus::unresolved;
+            status = DefinitionStatus::unresolved;
+            stopped_before = source;
+            state->declarations.push_back(std::move(row));
+            continue;
+          }
+          if (!current.empty()) {
+            row.identity->status = ProteinSchemaIdentityStatus::redefined;
+            row.identity->value.clear();
+            row.identity->flags = 0;
+          } else {
+            ProteinSchemaTextDefaults text;
+            text.status = ProteinSchemaTextStatus::ready;
+            text.value_type = 2;
+            text.flags = 8;
+            text.values.push_back(row.identity->value);
+            row.candidate = cache(std::move(text));
+            row.effective_id = "BaseSchema";
+            create(row, fields.label.value_or(std::string_view{}), 8, 2);
+          }
+        }
+      }
+      if (row.effective_id.empty())
+        row.gate = DeclarationGate::empty_id;
+      else if (const auto found = before(source, row.effective_id);
+               found != none) {
+        row.gate = DeclarationGate::existing_property;
+        row.gate_conflict = found;
+      } else {
+        // A name not in the exact type map leaves the native initialized type0.
+        row.flag_conflicts = protein_schema_flag_conflicts(
+            protein_schema_value_type(kind).value_or(0),
+            fields.declaration_flags);
+        row.gate = row.flag_conflicts ? DeclarationGate::flag_conflicts
+                                      : DeclarationGate::accepted;
+      }
+      if (kind == "UID") {
+        row.identity =
+            owned.identity_assignment(source, state->uid, options.values);
+        if (row.identity->status == ProteinSchemaIdentityStatus::ready) {
+          detail::require(state->cached_values < options.max_cached_values,
+                          "Protein Schema cached value limit");
+          ++state->cached_values;
+          state->uid = row.identity->value;
+          state->uid_source = source;
+          row.status = DeclarationStatus::metadata;
+        } else
+          row.status = DeclarationStatus::rejected;
+      } else if (kind == "PropertyAlias") {
+        ignored(source);
+        row.alias = static_cast<Id>(state->processed_aliases++);
+        row.status = state->aliases.entries()[row.alias].status ==
+                             ProteinSchemaAliasStatus::accepted
+                         ? DeclarationStatus::alias
+                         : DeclarationStatus::rejected;
+      } else if (row.property != none) {
+        // Successful Base already made a property; its ordinary follow-up
+        // observes that property and returns no additional object.
+      } else if (row.gate != DeclarationGate::accepted) {
+        ignored(source);
+        row.status = DeclarationStatus::rejected;
+      } else {
+        const auto prepared =
+            protein_schema_prepare_fields(fields, row.effective_id);
+        uint32_t type = 0;
+        bool accepted = true, known = true;
+        if (kind == "Integer" || kind == "Float" || kind == "Distance" ||
+            kind == "Color" || kind == "Vector3") {
+          auto value = owned.numeric_defaults(source, options.values);
+          accepted = value.status != ProteinSchemaNumericStatus::rejected;
+          known = schema_numeric_gate_known(owned, fields, value);
+          type = value.value_type;
+          row.candidate = cache(std::move(value));
+        } else if (kind == "Choice") {
+          ProteinSchemaChoiceIndex choices(owned, source, options.values);
+          auto value = choices.defaults(options.values);
+          known = value.status == ProteinSchemaChoiceDefaultStatus::ready;
+          row.candidate = cache(ProteinSchemaDefinitionChoice{
+              std::move(choices), std::move(value)});
+          type = 10;
+        } else if (kind == "Boolean") {
+          auto value = owned.defaults(source, options.values);
+          row.candidate = cache(*value.boolean_value);
+          type = 5;
+        } else if (kind == "Binary" || kind == "Reference") {
+          row.candidate =
+              cache(owned.constructed_defaults(source, options.values));
+          type = kind == "Binary" ? 1 : fields.type == "texture" ? 9 : 12;
+        } else {
+          auto value = owned.text_defaults(source, options.values);
+          if (value.status == ProteinSchemaTextStatus::unsupported) {
+            ignored(source);
+            row.status = DeclarationStatus::unsupported;
+            status = DefinitionStatus::unsupported;
+            state->declarations.push_back(std::move(row));
+            continue;
+          }
+          accepted = value.status == ProteinSchemaTextStatus::ready;
+          type = value.value_type;
+          row.candidate = cache(std::move(value));
+        }
+        if (!known) {
+          row.status = DeclarationStatus::unresolved;
+          status = DefinitionStatus::unresolved;
+          stopped_before = source;
+        } else if (accepted)
+          create(row, prepared.label, prepared.flags, type);
+        else
+          row.status = DeclarationStatus::rejected;
+      }
+      state->declarations.push_back(std::move(row));
+    }
+    finish();
+  }
+};
+
+ProteinSchemaDefinitionIndex::ProteinSchemaDefinitionIndex(
+    const ProteinSchemaDocument &doc, const ProteinSchemaAliasIndex *parent,
+    ProteinSchemaDefinitionOptions options,
+    std::span<const ProteinSchemaAliasParentChange> changes)
+    : impl(std::make_shared<Impl>(doc, parent, options, changes)) {}
+ProteinSchemaDefinitionIndex::ProteinSchemaDefinitionIndex(
+    std::shared_ptr<const Impl> p)
+    : impl(std::move(p)) {}
+const ProteinSchemaDocument &
+ProteinSchemaDefinitionIndex::document() const noexcept {
+  return impl->document();
+}
+ProteinSchemaDefinitionStatus
+ProteinSchemaDefinitionIndex::status() const noexcept {
+  return impl->status;
+}
+std::span<const ProteinSchemaDefinitionDeclaration>
+ProteinSchemaDefinitionIndex::declarations() const noexcept {
+  return impl->local->declarations;
+}
+std::span<const ProteinSchemaAliasEntry>
+ProteinSchemaDefinitionIndex::aliases() const noexcept {
+  return impl->local->aliases.entries().first(impl->local->processed_aliases);
+}
+std::optional<ProteinSchemaAliasBinding>
+ProteinSchemaDefinitionIndex::find_alias(std::string_view name) const {
+  return impl->stopped_before == none
+             ? impl->visible_aliases.find(name)
+             : impl->local->aliases.find_before(impl->stopped_before, name);
+}
+std::string_view ProteinSchemaDefinitionIndex::uid() const noexcept {
+  return impl->local->uid;
+}
+Id ProteinSchemaDefinitionIndex::uid_source() const noexcept {
+  return impl->local->uid_source;
+}
+std::span<const ProteinSchemaDefinitionProperty>
+ProteinSchemaDefinitionIndex::properties() const noexcept {
+  return impl->properties;
+}
+std::span<const Id> ProteinSchemaDefinitionIndex::container(
+    ProteinSchemaPropertyContainer group) const {
+  const auto i = static_cast<uint32_t>(group);
+  detail::require(i < impl->containers.size(),
+                  "Protein Schema property container");
+  return impl->containers[i];
+}
+ProteinSchemaDefinitionLookup
+ProteinSchemaDefinitionIndex::find(std::string_view name) const {
+  auto found = impl->direct(name);
+  if (found == none)
+    if (const auto alias = find_alias(name))
+      found = impl->direct(alias->target);
+  if (found != none)
+    return {ProteinSchemaDefinitionLookupStatus::found, found};
+  return {impl->status == DefinitionStatus::ready
+              ? ProteinSchemaDefinitionLookupStatus::missing
+              : ProteinSchemaDefinitionLookupStatus::unresolved,
+          none};
+}
+ProteinSchemaDefinitionIndex
+ProteinSchemaDefinitionIndex::with_inherited_parent(
+    const ProteinSchemaDefinitionIndex &parent,
+    ProteinSchemaDefinitionOptions options) const {
+  detail::require(impl->status == DefinitionStatus::ready &&
+                      parent.impl->status == DefinitionStatus::ready,
+                  "Protein Schema inheritance requires known acceptance");
+  detail::require(std::max(impl->depth, parent.impl->depth) <
+                      options.max_inheritance_depth,
+                  "Protein Schema inheritance depth limit");
+  detail::require(impl->properties.size() <= options.max_property_history &&
+                      impl->local->declarations.size() <=
+                          options.max_declarations &&
+                      impl->local->cached_values <= options.max_cached_values,
+                  "Protein Schema definition snapshot limit");
+  auto result = std::make_shared<Impl>(*impl);
+  result->depth = std::max(impl->depth, parent.impl->depth) + 1;
+  result->parents.push_back(parent.impl);
+  result->visible_aliases = impl->visible_aliases.with_parent_aliases(
+      parent.impl->visible_aliases, options.aliases);
+  for (const auto &group : parent.impl->containers)
+    for (Id id : group) {
+      const auto &p = parent.impl->properties[id];
+      const auto previous = result->direct(p.id);
+      if (previous == none) {
+        auto copy = p;
+        copy.previous = copy.replaced = none;
+        result->insert(std::move(copy), options);
+      } else {
+        auto copy = result->properties[previous];
+        const auto old_container = copy.container;
+        copy.flags = p.flags | (copy.flags & 0x180);
+        copy.flags_document = p.flags_document;
+        copy.flags_source = p.flags_source;
+        copy.previous = previous;
+        copy.replaced = none;
+        result->properties[previous].active = false;
+        const auto new_id = result->insert(std::move(copy), options);
+        if (result->properties[new_id].container != old_container)
+          result->tables[static_cast<size_t>(old_container)].erase(p.id);
+      }
+    }
+  result->finish();
+  return ProteinSchemaDefinitionIndex(std::move(result));
 }
 } // namespace nwd

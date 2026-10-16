@@ -371,6 +371,30 @@ type/localtype/localname 要求原始 val 非空，然后只取首 token；type 
 
 别名查询只展开一层；完整属性查找应先查实际属性，再用别名目标做一次直接属性查询。该索引负责别名登记和父级可见性，普通属性接受、属性值合并、父定义选择、文件加载及最终 Schema 注册仍需分别处理。
 
+`ProteinSchemaDefinitionIndex(document, visible_alias_parent, options, parent_changes)` 将声明接受、UID/Base 局部赋值、别名和值工厂组合为不可变定义快照。`declarations()` 按 XML 顺序返回每条声明的门槛、标志冲突、动作、属性历史索引和候选值；`uid()` 与 `uid_source()` 返回成功赋值的 UID 及其来源。父级别名的可见时点由显式参数控制，后面的别名不会提前影响前面的声明。
+
+`properties()` 包含属性的值来源文档/节点、ID、标签、工厂值类型、标志、容器及覆盖历史。仅 `active` 条目属于当前实际属性表；`container(group)` 返回普通、定义迭代、只读容器内的有效属性索引。`find(name)` 先按这三个容器的顺序查实际属性，再对别名目标做一次直接查询。值以 `shared_ptr<const ProteinSchemaDefinitionValue>` 缓存，调用方可用 `std::visit` 读取布尔、文本、数值、构造默认值或带枚举表的 Choice 投影。索引和副本维持所有返回视图及来源文档的寿命，独立读取可并发进行。
+
+`child.with_inherited_parent(parent, options)` 显式合并父属性并返回新快照。缺失属性共享父值；同名属性保留子值，标志合并为 `parent.flags | (child.flags & 0x180)`，必要时移动容器。继承不会依据新标志重新塑造原值；跨容器同名属性、移动时覆盖的目标，以及旧状态都保留历史索引。后绑定父别名不会重新登记子别名。
+
+`status()` 区分已知声明接受、未知工厂和未决接受。已知拒绝允许继续读取后面的声明；首次值约束是否通过仍未知、Choice 首项缺失或不安全的 BaseSchema 类型会停止后续语义推断，并将后面的声明标为 `unprocessed`。此时已保留前缀仍可检查，未命中的查询返回 `unresolved`。`ready` 仅描述声明接受过程，数值候选仍可能带有独立的转换未决状态。资源限制覆盖声明数、属性历史、缓存值、继承深度、单声明值和别名作用域。
+
+这个索引读取局部定义和显式继承；Base 文件加载、命名父依赖求解、加载后 SchemaVersion 补值及全局 Schema 注册仍需单独处理。
+
+```cpp
+nwd::ProteinSchemaDefinitionIndex definition(document);
+for (const auto& property : definition.properties()) {
+    if (!property.active) continue;
+    // property.id / label / flags / document / source 保留属性及其来源。
+    std::visit([](const auto& value) { /* 读取具体投影类型 */ }, *property.value);
+}
+auto found = definition.find("diffuse");
+if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
+    const auto& property = definition.properties()[found.property];
+    // 使用缓存值；无需重新解析 XML。
+}
+```
+
 `numeric_defaults(entry, options)` 返回 Integer、Float、Distance、Color、Vector3 的 XML 数值工厂转换结果。`status` 区分 ready、rejected、unresolved、unsupported；只有 ready 时，`candidates` 才是完整且通过局部数值检查的结果。候选项保留原始数值文本和转换状态，按值排列，`components` 为每个值的分量数（标量 1、XYZ 3、RGBA 4）。
 
 数值数组只用首值检查范围，整数还检查上下限是否为整数；后续数组值保留原值。Color 首项检查 RGB `[0,255]`、alpha `[0,1]`，数组后续项不重复检查。Vector3 只保留各分量首值；Color/Vector3 不使用数值约束节点。空数组、标量缺省值和未决数字分别保留，未知输入不自动变成 0。`rejections` 给出范围、整数边界或首颜色拒绝原因；`constraint` 保留所检查约束的来源和状态，只有步长未决不影响值的范围检查。该接口不换算单位，也不代替声明 ID/标志、继承或注册验证。

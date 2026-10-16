@@ -690,6 +690,9 @@ class ProteinSchemaAliasIndex {
   struct Impl;
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaAliasIndex(std::shared_ptr<const Impl>);
+  std::optional<ProteinSchemaAliasBinding> find_before(
+      Id source, std::string_view name) const;
+  friend class ProteinSchemaDefinitionIndex;
 public:
   explicit ProteinSchemaAliasIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_parent = nullptr,
@@ -704,6 +707,98 @@ public:
   // distinction between a parent visible during XML input and a deferred one.
   ProteinSchemaAliasIndex with_parent_aliases(const ProteinSchemaAliasIndex &,
       ProteinSchemaAliasOptions = {}) const;
+};
+
+enum class ProteinSchemaDefinitionStatus { ready, unsupported, unresolved };
+enum class ProteinSchemaDeclarationStatus {
+  property, metadata, alias, rejected, unsupported, unresolved, unprocessed
+};
+enum class ProteinSchemaDeclarationGate {
+  not_evaluated, accepted, empty_id, existing_property, flag_conflicts
+};
+enum class ProteinSchemaPropertyContainer : uint32_t {
+  ordinary = 0, iterator_data = 1, readonly_data = 2
+};
+struct ProteinSchemaDefinitionChoice {
+  ProteinSchemaChoiceIndex index;
+  ProteinSchemaChoiceDefaults defaults;
+};
+using ProteinSchemaDefinitionValue = std::variant<
+    bool, ProteinSchemaTextDefaults, ProteinSchemaNumericDefaults,
+    ProteinSchemaConstructedDefaults, ProteinSchemaDefinitionChoice>;
+struct ProteinSchemaDefinitionProperty {
+  const ProteinSchemaDocument *document = nullptr;
+  Id source = none; // original value declaration, including inherited values
+  std::string_view id, label;
+  uint32_t value_type = 0, flags = 0;
+  ProteinSchemaPropertyContainer container = ProteinSchemaPropertyContainer::ordinary;
+  bool active = true;
+  Id previous = none, replaced = none; // history indexes in this snapshot
+  const ProteinSchemaDocument *flags_document = nullptr;
+  Id flags_source = none; // most recent flags supplier; value origin stays above
+  std::shared_ptr<const ProteinSchemaDefinitionValue> value;
+};
+struct ProteinSchemaDefinitionDeclaration {
+  Id source = none;
+  std::string_view effective_id;
+  ProteinSchemaDeclarationStatus status = ProteinSchemaDeclarationStatus::unprocessed;
+  ProteinSchemaDeclarationGate gate = ProteinSchemaDeclarationGate::not_evaluated;
+  uint32_t flag_conflicts = 0;
+  Id property = none, gate_conflict = none, alias = none;
+  std::optional<ProteinSchemaIdentityAssignment> identity;
+  // Retained factory projection, including rejected/unresolved candidates.
+  std::shared_ptr<const ProteinSchemaDefinitionValue> candidate;
+};
+enum class ProteinSchemaDefinitionLookupStatus { found, missing, unresolved };
+struct ProteinSchemaDefinitionLookup {
+  ProteinSchemaDefinitionLookupStatus status = ProteinSchemaDefinitionLookupStatus::missing;
+  Id property = none; // properties() history index, only when found
+};
+struct ProteinSchemaDefinitionOptions {
+  uint32_t max_declarations = 1000000, max_property_history = 1000000;
+  uint64_t max_cached_values = 1000000; // aggregate retained local values/choice rows
+  uint32_t max_inheritance_depth = 256;
+  ProteinSchemaValueOptions values;
+  ProteinSchemaAliasOptions aliases;
+};
+// Immutable local XML acceptance and explicit parent-property merge. Reuses
+// the value/identity/alias readers; owns document views and shares cached values.
+// Actual property lookup scans ordinary/iterator/readonly containers, then
+// expands one alias target. Replacements/moves retain inactive history rows.
+// ready describes known declaration acceptance, not resolved numeric text or
+// downstream DateTime/UUID/URL formats. Candidate projections retain their own
+// conversion states. An uncertain acceptance stops inference; later XML stays
+// available as unprocessed rows. Missing queries then return unresolved.
+// Unknown factories are explicit unsupported rows and do not silently become
+// complete definitions. Known diagnostic rejection paths allow later rows.
+// No external IO, Base-name dependency solving, postload SchemaVersion or global
+// registration is implied. Parent alias visibility during XML input is explicit;
+// parent property copying happens only through with_inherited_parent().
+class ProteinSchemaDefinitionIndex {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaDefinitionIndex(std::shared_ptr<const Impl>);
+public:
+  explicit ProteinSchemaDefinitionIndex(const ProteinSchemaDocument &,
+      const ProteinSchemaAliasIndex *visible_alias_parent = nullptr,
+      ProteinSchemaDefinitionOptions = {},
+      std::span<const ProteinSchemaAliasParentChange> parent_changes = {});
+  const ProteinSchemaDocument &document() const noexcept;
+  ProteinSchemaDefinitionStatus status() const noexcept;
+  std::span<const ProteinSchemaDefinitionDeclaration> declarations() const noexcept;
+  std::span<const ProteinSchemaAliasEntry> aliases() const noexcept;
+  std::optional<ProteinSchemaAliasBinding> find_alias(std::string_view) const;
+  std::string_view uid() const noexcept;
+  Id uid_source() const noexcept; // none if no successful UID assignment
+  std::span<const ProteinSchemaDefinitionProperty> properties() const noexcept;
+  // Active indexes in lexicographic ID order; not a claim of native iteration order.
+  std::span<const Id> container(ProteinSchemaPropertyContainer) const;
+  ProteinSchemaDefinitionLookup find(std::string_view) const;
+  // Requires known acceptance in both indexes. Shares values/origins; retains
+  // child values and merges flags as parent | (child & 0x180), even if flags now
+  // describe a different value shape. Does not repeat local alias registration.
+  ProteinSchemaDefinitionIndex with_inherited_parent(
+      const ProteinSchemaDefinitionIndex &, ProteinSchemaDefinitionOptions = {}) const;
 };
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
