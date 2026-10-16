@@ -933,7 +933,7 @@ ProteinSchemaNumericDefaults ProteinSchemaDocument::numeric_defaults(
 }
 struct ProteinSchemaAliasIndex::Impl {
   struct Local {
-    ProteinSchemaDocument document;
+    std::shared_ptr<const ProteinSchemaDocument> document;
     std::vector<ProteinSchemaAliasEntry> entries;
     std::vector<std::pair<std::string_view, ProteinSchemaAliasBinding>>
         accepted;
@@ -942,7 +942,9 @@ struct ProteinSchemaAliasIndex::Impl {
     std::vector<std::pair<Id, std::shared_ptr<const Impl>>>
         registration_parents;
     uint32_t registration_depth = 0;
-    explicit Local(const ProteinSchemaDocument &doc) : document(doc) {}
+    std::vector<std::shared_ptr<const Impl>> imported_sources;
+    explicit Local(const ProteinSchemaDocument &doc)
+        : document(std::make_shared<const ProteinSchemaDocument>(doc)) {}
   };
   std::shared_ptr<const Local> local;
   std::shared_ptr<const Impl> parent;
@@ -999,6 +1001,7 @@ struct ProteinSchemaAliasIndex::Impl {
       detail::require(state->entries.size() < options.max_aliases,
                       "Protein Schema local alias limit");
       ProteinSchemaAliasEntry entry;
+      entry.document = state->document.get();
       entry.source = source;
       entry.name = fields.alias;
       entry.target = fields.id;
@@ -1016,7 +1019,8 @@ struct ProteinSchemaAliasIndex::Impl {
         detail::require(visible.size() < options.max_visible_aliases,
                         "Protein Schema visible alias limit");
         entry.status = ProteinSchemaAliasStatus::accepted;
-        ProteinSchemaAliasBinding binding{&state->document, source, *fields.id};
+        ProteinSchemaAliasBinding binding{state->document.get(), source,
+                                          *fields.id};
         visible.emplace(*fields.alias, binding);
         targets.emplace(*fields.id, binding);
         state->accepted.emplace_back(*fields.alias, binding);
@@ -1044,7 +1048,7 @@ ProteinSchemaAliasIndex::ProteinSchemaAliasIndex(std::shared_ptr<const Impl> p)
     : impl(std::move(p)) {}
 const ProteinSchemaDocument &
 ProteinSchemaAliasIndex::document() const noexcept {
-  return impl->local->document;
+  return *impl->local->document;
 }
 std::span<const ProteinSchemaAliasEntry>
 ProteinSchemaAliasIndex::entries() const noexcept {
@@ -1060,7 +1064,7 @@ std::optional<ProteinSchemaAliasBinding>
 ProteinSchemaAliasIndex::find_before(Id source, std::string_view name) const {
   const auto &local = *impl->local;
   if (auto binding = find(name); binding &&
-                                 binding->document == &local.document &&
+                                 binding->document == local.document.get() &&
                                  binding->source < source)
     return binding;
   const auto &events = local.registration_parents;
@@ -1079,6 +1083,74 @@ ProteinSchemaAliasIndex ProteinSchemaAliasIndex::with_parent_aliases(
     ProteinSchemaAliasOptions options) const {
   return ProteinSchemaAliasIndex(
       std::make_shared<Impl>(impl->local, parent.impl, options));
+}
+std::vector<ProteinSchemaNamedAlias>
+ProteinSchemaAliasIndex::enumerate(uint32_t limit) const {
+  size_t count = 0;
+  for (auto p = impl.get(); p; p = p->parent.get()) {
+    detail::require(p->local->accepted.size() <= limit - count,
+                    "Protein Schema enumerated alias limit");
+    count += p->local->accepted.size();
+  }
+  std::vector<ProteinSchemaNamedAlias> result;
+  result.reserve(count);
+  for (auto p = impl.get(); p; p = p->parent.get())
+    for (const auto &[name, binding] : p->local->accepted)
+      result.push_back({name, binding});
+  return result;
+}
+ProteinSchemaAliasIndex ProteinSchemaAliasIndex::copy_aliases_from(
+    const ProteinSchemaAliasIndex &source,
+    ProteinSchemaAliasOptions options) const {
+  const auto inputs = source.enumerate(options.max_enumerated_aliases);
+  if (inputs.empty())
+    return *this;
+  detail::require(impl->local->entries.size() <= options.max_aliases &&
+                      inputs.size() <=
+                          options.max_aliases - impl->local->entries.size(),
+                  "Protein Schema local alias limit");
+  auto local = std::make_shared<Impl::Local>(*impl->local);
+  local->registration_depth =
+      std::max(local->registration_depth, source.impl->depth);
+  local->imported_sources.push_back(source.impl);
+  // Runtime rejections can point into a parent bound after XML input. Retain
+  // that snapshot as well, so a later parent replacement cannot dangle them.
+  if (impl->parent) {
+    local->registration_depth =
+        std::max(local->registration_depth, impl->parent->depth);
+    local->imported_sources.push_back(impl->parent);
+  }
+  auto result = std::make_shared<Impl>(local, impl->parent, options);
+  std::map<std::string_view, ProteinSchemaAliasBinding, std::less<>> targets;
+  for (const auto &[name, binding] : local->accepted)
+    targets.emplace(binding.target, binding);
+  for (const auto &[name, binding] : inputs) {
+    ProteinSchemaAliasEntry entry;
+    entry.document = binding.document;
+    entry.source = binding.source;
+    entry.name = name;
+    entry.target = binding.target;
+    if (name.empty())
+      entry.status = ProteinSchemaAliasStatus::empty_name;
+    else if (binding.target.empty())
+      entry.status = ProteinSchemaAliasStatus::empty_target;
+    else if (auto i = result->visible.find(name); i != result->visible.end()) {
+      entry.status = ProteinSchemaAliasStatus::duplicate_name;
+      entry.conflict = i->second;
+    } else if (auto i = targets.find(binding.target); i != targets.end()) {
+      entry.status = ProteinSchemaAliasStatus::duplicate_local_target;
+      entry.conflict = i->second;
+    } else {
+      detail::require(result->visible.size() < options.max_visible_aliases,
+                      "Protein Schema visible alias limit");
+      entry.status = ProteinSchemaAliasStatus::accepted;
+      result->visible.emplace(name, binding);
+      targets.emplace(binding.target, binding);
+      local->accepted.emplace_back(name, binding);
+    }
+    local->entries.push_back(entry);
+  }
+  return ProteinSchemaAliasIndex(std::move(result));
 }
 
 namespace {
@@ -2148,6 +2220,12 @@ ProteinSchemaDefinitionIndex::find_alias(std::string_view name) const {
   return impl->stopped_before == none
              ? impl->visible_aliases.find(name)
              : impl->local->aliases.find_before(impl->stopped_before, name);
+}
+std::vector<ProteinSchemaNamedAlias>
+ProteinSchemaDefinitionIndex::enumerate_aliases(uint32_t limit) const {
+  detail::require(impl->status == ProteinSchemaDefinitionStatus::ready,
+                  "Protein Schema alias enumeration unresolved");
+  return impl->visible_aliases.enumerate(limit);
 }
 std::string_view ProteinSchemaDefinitionIndex::uid() const noexcept {
   return impl->local->uid;
@@ -3613,6 +3691,7 @@ struct ProteinSchemaDefinitionState::Impl {
   ProteinSchemaDefinitionIndex index, original;
   std::shared_ptr<const uint8_t> identity = std::make_shared<const uint8_t>(0);
   std::map<Id, ProteinSchemaPropertyState> updates;
+  std::optional<uint8_t> merge_marker = std::nullopt;
   explicit Impl(const ProteinSchemaDefinitionIndex &value)
       : index(value), original(value) {}
 };
@@ -3625,6 +3704,40 @@ ProteinSchemaDefinitionState::ProteinSchemaDefinitionState(
 bool ProteinSchemaDefinitionState::same_identity(
     const ProteinSchemaDefinitionState &other) const noexcept {
   return impl && other.impl && impl->identity == other.impl->identity;
+}
+std::optional<uint8_t>
+ProteinSchemaDefinitionState::merge_marker_byte() const noexcept {
+  return impl->merge_marker;
+}
+ProteinSchemaDefinitionState
+ProteinSchemaDefinitionState::with_merge_marker_byte(uint8_t value) const {
+  auto result = std::make_shared<Impl>(*impl);
+  result->merge_marker = value;
+  return ProteinSchemaDefinitionState(std::move(result));
+}
+std::span<const ProteinSchemaAliasEntry>
+ProteinSchemaDefinitionState::alias_attempts() const noexcept {
+  return impl->index.impl->status == ProteinSchemaDefinitionStatus::ready
+             ? impl->index.impl->visible_aliases.entries()
+             : impl->index.aliases();
+}
+ProteinSchemaDefinitionState ProteinSchemaDefinitionState::copy_aliases_from(
+    const ProteinSchemaDefinitionState &source,
+    ProteinSchemaAliasOptions options) const {
+  detail::require(
+      impl->index.status() == ProteinSchemaDefinitionStatus::ready &&
+          source.impl->index.status() == ProteinSchemaDefinitionStatus::ready,
+      "Protein Schema alias transfer unresolved");
+  auto aliases = impl->index.impl->visible_aliases.copy_aliases_from(
+      source.impl->index.impl->visible_aliases, options);
+  if (aliases.impl == impl->index.impl->visible_aliases.impl)
+    return *this;
+  auto metadata =
+      std::make_shared<ProteinSchemaDefinitionIndex::Impl>(*impl->index.impl);
+  metadata->visible_aliases = std::move(aliases);
+  auto state = std::make_shared<Impl>(*impl);
+  state->index = ProteinSchemaDefinitionIndex(std::move(metadata));
+  return ProteinSchemaDefinitionState(std::move(state));
 }
 const ProteinSchemaDefinitionIndex &
 ProteinSchemaDefinitionState::definition() const noexcept {
@@ -3797,6 +3910,82 @@ ProteinSchemaDefinitionState::create_reflected_properties(
   result.state = ProteinSchemaDefinitionState(std::move(state));
   return result;
 }
+ProteinSchemaMergeTailResult
+protein_schema_finish_merge(const ProteinSchemaDefinitionState &source,
+                            const ProteinSchemaDefinitionState &target,
+                            uint32_t sv, uint32_t tv, bool compatible,
+                            ProteinSchemaMergeTailOptions options) {
+  using Issue = ProteinSchemaMergeTailIssue;
+  ProteinSchemaMergeTailResult out{source, target, {}};
+  out.compatible = compatible;
+  out.version.status = ProteinSchemaVersionFinalStatus::unchanged;
+  if (!compatible)
+    return out;
+  const bool self = source.same_identity(target);
+  detail::require(
+      !self || source.impl == target.impl,
+      "Protein Schema merge tail has divergent snapshots of one scope");
+  detail::require(
+      options.profile == ProteinSchemaIterationProfile::reader_2017 ||
+          options.profile == ProteinSchemaIterationProfile::reader_2026,
+      "Protein Schema merge tail profile");
+  auto version = target.finalize_version(sv, tv, true, options.comparison,
+                                         options.definition);
+  out.target = std::move(version.state);
+  out.version = std::move(version.step);
+  out.version_property = version.property;
+  out.version_created = version.created;
+  if (self)
+    out.source = out.target;
+  if (out.version.status == ProteinSchemaVersionFinalStatus::unresolved) {
+    out.issue = Issue::version_unresolved;
+    return out;
+  }
+  if (out.target.definition().status() !=
+      ProteinSchemaDefinitionStatus::ready) {
+    out.issue = Issue::target_iteration_unresolved;
+    return out;
+  }
+  uint64_t count = 0;
+  for (auto group : {ProteinSchemaPropertyContainer::ordinary,
+                     ProteinSchemaPropertyContainer::iterator_data,
+                     ProteinSchemaPropertyContainer::readonly_data})
+    count += out.target.definition().container(group).size();
+  detail::require(count <= options.max_target_properties,
+                  "Protein Schema merge tail target property limit");
+  for (auto row :
+       out.target.definition().iteration({options.profile, false, false})) {
+    const auto name = out.target.property(row).target().id;
+    const auto found =
+        options.profile == ProteinSchemaIterationProfile::reader_2017
+            ? out.source.find(name)
+            : out.source.find_actual(name);
+    ++out.checked_target_properties;
+    if (found.status == ProteinSchemaDefinitionLookupStatus::unresolved) {
+      out.issue = Issue::source_lookup_unresolved;
+      return out;
+    }
+    if (found.status != ProteinSchemaDefinitionLookupStatus::found) {
+      out.first_target_only = row;
+      out.source = out.source.with_merge_marker_byte(1);
+      if (self)
+        out.target = out.source;
+      break;
+    }
+  }
+  if (out.source.definition().status() !=
+      ProteinSchemaDefinitionStatus::ready) {
+    out.issue = Issue::aliases_unresolved;
+    return out;
+  }
+  const auto before = out.target.alias_attempts().size();
+  out.target = out.target.copy_aliases_from(out.source, options.aliases);
+  out.alias_attempts = out.target.alias_attempts().size() - before;
+  if (self)
+    out.source = out.target;
+  return out;
+}
+
 struct ProteinSchemaDefinitionGraph::Impl {
   struct Topology {
     std::vector<ProteinSchemaDefinitionGraphNode> nodes;

@@ -674,11 +674,17 @@ struct ProteinSchemaAliasEntry {
   std::optional<std::string_view> name, target;
   ProteinSchemaAliasStatus status = ProteinSchemaAliasStatus::empty_name;
   std::optional<ProteinSchemaAliasBinding> conflict;
+  const ProteinSchemaDocument *document = nullptr; // attempt provenance
+};
+struct ProteinSchemaNamedAlias {
+  std::string_view name;
+  ProteinSchemaAliasBinding binding;
 };
 struct ProteinSchemaAliasOptions {
   uint32_t max_aliases = 1000000, max_visible_aliases = 1000000;
   uint32_t max_scope_depth = 256; // bounds retained parent/history ownership
   uint32_t max_parent_changes = 256; // constructor event array limit
+  uint32_t max_enumerated_aliases = 1000000; // includes shadowed parent entries
 };
 class ProteinSchemaAliasIndex;
 struct ProteinSchemaAliasParentChange {
@@ -702,6 +708,7 @@ class ProteinSchemaAliasIndex {
   std::optional<ProteinSchemaAliasBinding> find_before(
       Id source, std::string_view name) const;
   friend class ProteinSchemaDefinitionIndex;
+  friend class ProteinSchemaDefinitionState;
 public:
   explicit ProteinSchemaAliasIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_parent = nullptr,
@@ -715,6 +722,13 @@ public:
   // Local accepted names shadow the newly visible parent. This preserves the
   // distinction between a parent visible during XML input and a deferred one.
   ProteinSchemaAliasIndex with_parent_aliases(const ProteinSchemaAliasIndex &,
+      ProteinSchemaAliasOptions = {}) const;
+  // Accepted local entries in registration order, then each parent's local
+  // entries. Includes shadowed parent names; this is not the visible-name map.
+  std::vector<ProteinSchemaNamedAlias> enumerate(uint32_t max_aliases = 1000000) const;
+  // Snapshot source enumeration once and register each pair locally in order.
+  // Retains attempts/provenance, including rejections; accepted data is shared.
+  ProteinSchemaAliasIndex copy_aliases_from(const ProteinSchemaAliasIndex &,
       ProteinSchemaAliasOptions = {}) const;
 };
 
@@ -857,6 +871,7 @@ public:
   std::span<const ProteinSchemaDefinitionDeclaration> declarations() const noexcept;
   std::span<const ProteinSchemaAliasEntry> aliases() const noexcept;
   std::optional<ProteinSchemaAliasBinding> find_alias(std::string_view) const;
+  std::vector<ProteinSchemaNamedAlias> enumerate_aliases(uint32_t max_aliases = 1000000) const;
   std::string_view uid() const noexcept;
   Id uid_source() const noexcept; // none if no successful UID assignment
   std::span<const ProteinSchemaDefinitionProperty> properties() const noexcept;
@@ -1065,6 +1080,8 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
 
 struct ProteinSchemaScopedVersionResult;
 struct ProteinSchemaReflectedCreationResult;
+struct ProteinSchemaMergeTailOptions;
+struct ProteinSchemaMergeTailResult;
 struct ProteinSchemaReflectedCreationOptions {
   ProteinSchemaDefinitionOptions definition;
   uint64_t max_generated_text_bytes = 64ull << 20; // retained ID/label history
@@ -1078,11 +1095,18 @@ class ProteinSchemaDefinitionState {
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaDefinitionState(std::shared_ptr<const Impl>);
   friend class ProteinSchemaDefinitionGraph;
+  friend ProteinSchemaMergeTailResult protein_schema_finish_merge(
+      const ProteinSchemaDefinitionState &, const ProteinSchemaDefinitionState &,
+      uint32_t, uint32_t, bool, ProteinSchemaMergeTailOptions);
 public:
   explicit ProteinSchemaDefinitionState(const ProteinSchemaDefinitionIndex &);
   // Copies and immutable updates preserve this scope identity. A fresh state
   // constructor creates a distinct scope even if its XML/cache is shared.
   bool same_identity(const ProteinSchemaDefinitionState &) const noexcept;
+  // Opaque definition +b9 byte. XML alone does not establish its value. A
+  // target-only property in finish_merge sets the SOURCE byte to1.
+  std::optional<uint8_t> merge_marker_byte() const noexcept;
+  ProteinSchemaDefinitionState with_merge_marker_byte(uint8_t) const;
   // Metadata snapshot including locally generated rows; property() supplies
   // current fields. Existing rows keep their original identity after creation.
   const ProteinSchemaDefinitionIndex &definition() const noexcept;
@@ -1110,6 +1134,11 @@ public:
   ProteinSchemaReflectedCreationResult create_reflected_properties(
       std::span<const ProteinSchemaPropertyState>,
       ProteinSchemaReflectedCreationOptions = {}) const;
+  // Explicit local alias propagation only; no property/version/UID gates.
+  ProteinSchemaDefinitionState copy_aliases_from(const ProteinSchemaDefinitionState &,
+      ProteinSchemaAliasOptions = {}) const;
+  // Local XML and runtime alias attempts, including rejected copied entries.
+  std::span<const ProteinSchemaAliasEntry> alias_attempts() const noexcept;
 };
 struct ProteinSchemaScopedVersionResult {
   ProteinSchemaDefinitionState state;
@@ -1133,6 +1162,37 @@ struct ProteinSchemaReflectedCreationResult {
   size_t next_source = 0;
   ProteinSchemaPropertyCopyIssue issue = ProteinSchemaPropertyCopyIssue::none;
 };
+
+enum class ProteinSchemaMergeTailIssue {
+  none, version_unresolved, target_iteration_unresolved, source_lookup_unresolved,
+  aliases_unresolved
+};
+struct ProteinSchemaMergeTailOptions {
+  ProteinSchemaIterationProfile profile = ProteinSchemaIterationProfile::reader_2026;
+  ProteinSchemaComparisonOptions comparison;
+  ProteinSchemaDefinitionOptions definition;
+  ProteinSchemaAliasOptions aliases;
+  uint32_t max_target_properties = 1000000;
+};
+struct ProteinSchemaMergeTailResult {
+  ProteinSchemaDefinitionState source, target;
+  ProteinSchemaVersionFinalResult version;
+  Id version_property = none, first_target_only = none;
+  uint64_t checked_target_properties = 0, alias_attempts = 0;
+  bool compatible = true, version_created = false;
+  ProteinSchemaMergeTailIssue issue = ProteinSchemaMergeTailIssue::none;
+};
+// Final local tail AFTER ordinary source-property processing: conditional
+// target version write/create, first target-only name marking on source, then
+// source->target aliases. 2017 scan allows one source alias hop; 2026 is direct.
+// Setter/alias rejection does not revoke compatibility. Unresolved returns the
+// established prefix; limits throw Error without mutating either input. Caller
+// supplies original unsigned versions and prior compatibility. This does not
+// perform full registration, source iteration, propagation or wire association.
+ProteinSchemaMergeTailResult protein_schema_finish_merge(
+    const ProteinSchemaDefinitionState &source, const ProteinSchemaDefinitionState &target,
+    uint32_t source_version, uint32_t target_version, bool compatible = true,
+    ProteinSchemaMergeTailOptions = {});
 
 struct ProteinSchemaDefinitionRelation {
   Id parent = none;

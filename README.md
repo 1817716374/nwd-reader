@@ -601,6 +601,24 @@ graph = propagated.graph;
 
 调用方仍须提供真实的定义/namespace/父关系映射、普通缺失根属性的判断、源 SchemaVersion 跳过和上下文修复；该入口不执行完整源迭代、已有属性兼容、全局 UID/CommonSchema/assettype 门槛、别名传播或命名空间接管/释放。
 
+`protein_schema_finish_merge(source, target, source_version, target_version, compatible, options)` 执行普通属性处理之后的局部收尾：先按原始 uint32 版本和兼容结果写回或创建目标 SchemaVersion，再检查目标独有名称，最后把源别名逐条登记到目标。返回两个不可变状态；使用返回的 `source` 和 `target` 继续处理。
+
+```cpp
+auto tail = nwd::protein_schema_finish_merge(
+    source_state, target_state, source_version, target_version, compatible);
+source_state = tail.source;
+target_state = tail.target;
+// 检查 tail.issue；未决时仅此前已确定的步骤已建立。
+```
+
+默认 `reader_2026` 在源中直接查目标属性名；显式 `reader_2017` 允许先查实际名称、再展开一层源别名。两者是已确认的算法 profile，调用方选择；不由文件年份推测。检查包括全部活动容器和刚生成的版本属性，在首个缺失名称停止。它将源定义的原始 `merge_marker_byte()` 设为1；目标标记保持原值。该字节的其他产品语义不作推断；仅有 XML 时为未知，可用 `with_merge_marker_byte(byte)` 提供已确认原值。
+
+版本 setter 或别名登记拒绝不撤销此前的兼容结果；未确认的版本接口、属性查找、目标枚举或别名输入返回不同的 `issue`。`compatible=false` 跳过全部收尾。相同 scope 的同一快照按同一对象处理；同一身份的不同分叉快照被显式拒绝，避免静默拼接两份当前状态。资源限制抛 `Error`，输入状态保持不变。
+
+`ProteinSchemaAliasIndex::enumerate()` 与定义的 `enumerate_aliases()` 按“本地接受顺序→父级”枚举，包含被本地名称遮蔽的父级条目；它不同于可见名称查询。`copy_aliases_from(source, options)` 对该序列做一次快照，批量登记到目标本地，保留名称冲突、目标冲突及原文档来源。索引和定义状态均支持该操作；定义状态的 `alias_attempts()` 可检查本地 XML 和运行时登记的全部尝试。`ProteinSchemaDefinitionIndex::aliases()` 继续表示本地 XML 声明。属性查找始终先查实际属性，再展开一个别名目标。
+
+批量别名传播共享来源文档、名称和属性值，仅构建一次目标索引快照。`max_aliases` 包括被拒绝的本地尝试，`max_enumerated_aliases` 包括被遮蔽的父级条目，另有可见名称数和保留作用域深度限制。无源别名时不建立新快照。这个收尾入口仍需要调用方完成普通源属性迭代、修复及兼容检查，不代替完整全局注册、namespace 接管或文件记录到 scope 的身份映射。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。
