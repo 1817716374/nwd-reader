@@ -762,7 +762,7 @@ enum class ProteinSchemaComparisonIssue {
   none, missing_value, unknown_layout, unavailable_projection, unknown_number,
   unknown_unit, unassigned_type_default, incomplete_choice,
   short_choice_table, inconsistent_shape, unknown_constraint,
-  null_left_constraint
+  null_left_constraint, raw_layout_required, unsafe_raw_access
 };
 struct ProteinSchemaComparisonResult {
   ProteinSchemaComparisonStatus status = ProteinSchemaComparisonStatus::unresolved;
@@ -927,6 +927,16 @@ struct ProteinSchemaPropertyCopyResult {
   // diagnostics within a shared payload remain intact. No input is changed.
   std::optional<ProteinSchemaPropertyState> state;
 };
+
+// Native property compatibility over current state fields. Checks target type
+// and skip_type, current bounds/Choice, fixed concrete class, then actual data.
+// Arrays dispatch the left actual element comparator and use the right actual
+// stride. Stable int32/double/color4 layouts are read lazily as little endian
+// POD bytes; unsafe reads and mixed string ABI layouts stay unresolved. Does
+// not compare flags/labels/IDs, register anything or treat equality as identity.
+ProteinSchemaComparisonResult protein_schema_compare_property_states(
+    const ProteinSchemaPropertyState *, const ProteinSchemaPropertyState *,
+    uint32_t skip_type = 0, ProteinSchemaComparisonOptions = {});
 
 enum class ProteinSchemaDefinitionLoadStatus {
   dependencies_resolved, pending_dependencies, unresolved

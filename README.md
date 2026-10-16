@@ -416,6 +416,20 @@ if (copied.state) {
 
 无法可靠解释的跨底层布局复制返回 `raw_layout_required`，约束是否存在无法确定时返回 `unknown_constraint`，并保留输入。它们是未决情况，不表示原生操作返回拒绝。状态复制不改写原索引，不执行命名空间登记，也不模拟产品分配器或异常展开；完整全局登记仍未实现。
 
+`protein_schema_compare_property_states(&left, &right, skip_type, options)` 比较复制后的当前状态：先检查目标声明类型与跳过类型，再比较当前约束或选项表、固定目标具体类，最后比较实际数据。应使用这个接口处理 `ProteinSchemaPropertyState`；直接比较其 `data()` 投影会混淆数据供应方的原始类或元数据。
+
+```cpp
+auto relation = nwd::protein_schema_compare_property_states(&left, &right);
+if (relation.status == nwd::ProteinSchemaComparisonStatus::unresolved) {
+    auto reason = relation.issue;
+    auto element = relation.ordinal;
+}
+```
+
+数组比较采用左侧实际元素比较器和右侧实际元素步长，保留有方向性的原生结果。int32、double、Color4 的稳定 POD 布局按需读取，不展开或复制数组；RGB 保留原值，不做 255→1 转换。超出已知数据范围的读取返回 `unsafe_raw_access`；依赖未确定字符串 ABI 的混合读取返回 `raw_layout_required`。这些结果不表示普通的“值不同”。空公共前缀可直接按元素数比较，不猜测未知存储。相等不是对象身份或可用于去重的等价关系。
+
+该接口保留方向性 Choice 前缀、约束空引用、未知数字/单位和资源预算；忽略普通属性比较不使用的 flags、label 和 ID。URI 升级、版本处理、容器移动及全局登记应由调用层明确完成。当前状态 API 不执行原生形态位修改；这种修改不能用 flags 或具体类替换来模拟。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

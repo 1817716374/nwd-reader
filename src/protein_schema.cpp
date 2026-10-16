@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <cmath>
+#include <bit>
 
 namespace nwd {
 namespace {
@@ -1273,6 +1274,159 @@ Comparison compared(bool equal, uint64_t ordinal = 0) {
 Comparison uncertain(CompareIssue issue, uint64_t ordinal = 0) {
   return {CompareStatus::unresolved, issue, ordinal};
 }
+struct SchemaStatePayload {
+  enum class Kind {
+    invalid,
+    integer,
+    real,
+    color,
+    vector,
+    units,
+    text,
+    boolean,
+    constructed
+  };
+  Kind kind = Kind::invalid;
+  bool array = false;
+  size_t count = 0, stride = 0;
+  const ProteinSchemaNumericDefaults *numeric = nullptr;
+  const ProteinSchemaTextDefaults *strings = nullptr;
+  const ProteinSchemaDefinitionChoice *choice = nullptr;
+  const bool *boolean = nullptr;
+  CompareIssue issue = CompareIssue::none;
+  explicit SchemaStatePayload(const ProteinSchemaPropertyState &state) {
+    const auto binding = state.data_binding();
+    if (!binding || !state.data()) {
+      issue = CompareIssue::unknown_layout;
+      return;
+    }
+    const auto type = binding->data_type;
+    if (type == "int" || type == "run.int_array") {
+      kind = Kind::integer;
+      stride = 4;
+    } else if (type == "double" || type == "run.double_array") {
+      kind = Kind::real;
+      stride = 8;
+    } else if (type == "color4" || type == "run.color4_array") {
+      kind = Kind::color;
+      stride = 32;
+    } else if (type == "vector3") {
+      kind = Kind::vector;
+      stride = 24;
+    } else if (type == "units_value") {
+      kind = Kind::units;
+      stride = 16;
+    } else if (type == "string" || type == "run.string_array") {
+      kind = Kind::text;
+      stride = 16;
+    } else if (type == "bool") {
+      kind = Kind::boolean;
+      stride = 1;
+    } else if (std::holds_alternative<ProteinSchemaConstructedDefaults>(
+                   *state.data()))
+      kind = Kind::constructed;
+    else {
+      issue = CompareIssue::unknown_layout;
+      return;
+    }
+    array = type == "run.int_array" || type == "run.double_array" ||
+            type == "run.color4_array" || type == "run.string_array";
+    numeric = std::get_if<ProteinSchemaNumericDefaults>(state.data().get());
+    strings = std::get_if<ProteinSchemaTextDefaults>(state.data().get());
+    choice = std::get_if<ProteinSchemaDefinitionChoice>(state.data().get());
+    boolean = std::get_if<bool>(state.data().get());
+    if (numeric) {
+      const auto dimensions = kind == Kind::color    ? 4u
+                              : kind == Kind::vector ? 3u
+                                                     : 1u;
+      if (numeric->status == ProteinSchemaNumericStatus::rejected ||
+          numeric->status == ProteinSchemaNumericStatus::unsupported)
+        issue = CompareIssue::unavailable_projection;
+      else if (numeric->components != dimensions ||
+               numeric->multiple != array ||
+               numeric->candidates.size() % dimensions)
+        issue = CompareIssue::inconsistent_shape;
+      else
+        count = numeric->candidates.size() / dimensions;
+    } else if (choice) {
+      if (choice->defaults.status != ProteinSchemaChoiceDefaultStatus::ready)
+        issue = CompareIssue::unavailable_projection;
+      else if (kind != Kind::integer || choice->defaults.multiple != array)
+        issue = CompareIssue::inconsistent_shape;
+      else
+        count = choice->defaults.values.size();
+    } else if (strings) {
+      if (strings->status != ProteinSchemaTextStatus::ready)
+        issue = CompareIssue::unavailable_projection;
+      else if (strings->multiple != array ||
+               (array && strings->uses_type_default) ||
+               (!array &&
+                (strings->uses_type_default ? !strings->values.empty()
+                                            : strings->values.size() != 1)))
+        issue = CompareIssue::inconsistent_shape;
+      else
+        count = array ? strings->values.size() : 1;
+    } else if (boolean || kind == Kind::constructed)
+      count = 1;
+    else
+      issue = CompareIssue::unknown_layout;
+    if (issue == CompareIssue::none &&
+        ((!array && count != 1) ||
+         (stride && count > std::numeric_limits<size_t>::max() / stride)))
+      issue = CompareIssue::inconsistent_shape;
+  }
+  std::optional<double> number(size_t component) const {
+    if (numeric && component < numeric->candidates.size())
+      return numeric->candidates[component].value;
+    if (choice && component < choice->defaults.values.size())
+      return choice->defaults.values[component];
+    return std::nullopt;
+  }
+  std::string_view string(size_t ordinal) const {
+    return strings->uses_type_default ? std::string_view{}
+                                      : strings->values[ordinal];
+  }
+  std::optional<uint64_t> bits(size_t offset, size_t bytes,
+                               CompareIssue &failure) const {
+    if (offset > count * stride || bytes > count * stride - offset) {
+      failure = CompareIssue::unsafe_raw_access;
+      return std::nullopt;
+    }
+    if (kind != Kind::integer && kind != Kind::real && kind != Kind::color) {
+      failure = CompareIssue::raw_layout_required;
+      return std::nullopt;
+    }
+    const size_t word_size = kind == Kind::integer ? 4 : 8;
+    uint64_t result = 0;
+    for (size_t done = 0; done < bytes;) {
+      const auto position = offset + done;
+      const auto value = number(position / word_size);
+      if (!value) {
+        failure = CompareIssue::unknown_number;
+        return std::nullopt;
+      }
+      uint64_t word;
+      if (kind == Kind::integer) {
+        if (!std::isfinite(*value) ||
+            *value < std::numeric_limits<int32_t>::min() ||
+            *value > std::numeric_limits<int32_t>::max() ||
+            *value != std::trunc(*value)) {
+          failure = CompareIssue::inconsistent_shape;
+          return std::nullopt;
+        }
+        word = static_cast<uint32_t>(static_cast<int32_t>(*value));
+      } else
+        word = std::bit_cast<uint64_t>(*value);
+      const auto within = position % word_size;
+      const auto take = std::min(bytes - done, word_size - within);
+      const auto mask = take == 8 ? std::numeric_limits<uint64_t>::max()
+                                  : (uint64_t{1} << (take * 8)) - 1;
+      result |= ((word >> (within * 8)) & mask) << (done * 8);
+      done += take;
+    }
+    return result;
+  }
+};
 struct SchemaComparison {
   ProteinSchemaComparisonOptions limits;
   uint64_t values = 0, bytes = 0;
@@ -1467,6 +1621,85 @@ struct SchemaComparison {
     return compared(
         x.defaults.values.size() == y.defaults.values.size(),
         std::min(x.defaults.values.size(), y.defaults.values.size()));
+  }
+  Comparison state_values(const ProteinSchemaPropertyState &a,
+                          const ProteinSchemaPropertyState &b) {
+    const auto at = a.binding(), bt = b.binding();
+    if (!at || !bt)
+      return uncertain(CompareIssue::unknown_layout);
+    if (at->type_name != bt->type_name)
+      return compared(false);
+    SchemaStatePayload x(a), y(b);
+    if (x.issue != CompareIssue::none)
+      return uncertain(x.issue);
+    if (y.issue != CompareIssue::none)
+      return uncertain(y.issue);
+    if (x.array != y.array)
+      return uncertain(CompareIssue::inconsistent_shape);
+    if (x.numeric && y.numeric &&
+        a.data_binding()->data_type == b.data_binding()->data_type)
+      return numeric(*x.numeric, *y.numeric);
+    using K = SchemaStatePayload::Kind;
+    for (size_t i = 0; i < std::min(x.count, y.count); ++i) {
+      if (x.kind == K::text) {
+        if (y.kind != K::text) {
+          value();
+          return uncertain(CompareIssue::raw_layout_required, i);
+        }
+        auto result = text(x.string(i), y.string(i), i);
+        if (result.status != CompareStatus::equal)
+          return result;
+      } else if (x.kind == K::boolean || x.kind == K::constructed) {
+        value();
+        if (x.kind != y.kind)
+          return uncertain(CompareIssue::unknown_layout, i);
+        if (x.boolean && (!y.boolean || *x.boolean != *y.boolean))
+          return compared(false, i);
+      } else {
+        const auto dimensions = x.kind == K::color    ? 4u
+                                : x.kind == K::vector ? 3u
+                                                      : 1u;
+        for (uint32_t c = 0; c < dimensions; ++c) {
+          value();
+          const auto left = x.number(i * dimensions + c);
+          if (!left)
+            return uncertain(CompareIssue::unknown_number, i);
+          if (y.kind == K::text)
+            return uncertain(CompareIssue::raw_layout_required, i);
+          CompareIssue failure = CompareIssue::none;
+          const auto raw =
+              y.bits(i * y.stride + c * (x.kind == K::integer ? 4 : 8),
+                     x.kind == K::integer ? 4 : 8, failure);
+          if (!raw)
+            return uncertain(failure, i);
+          if (x.kind == K::integer) {
+            if (!std::isfinite(*left) ||
+                *left < std::numeric_limits<int32_t>::min() ||
+                *left > std::numeric_limits<int32_t>::max() ||
+                *left != std::trunc(*left))
+              return uncertain(CompareIssue::inconsistent_shape, i);
+            const auto right =
+                std::bit_cast<int32_t>(static_cast<uint32_t>(*raw));
+            if (*left != right)
+              return compared(false, i);
+          } else {
+            const auto right = std::bit_cast<double>(*raw);
+            if (x.kind == K::color) {
+              const double difference = *left - right;
+              if (std::isnan(difference))
+                break;
+              if (difference != 0)
+                return compared(false, i);
+            } else if (*left < right || *left > right)
+              return compared(false, i);
+          }
+        }
+      }
+    }
+    if (!x.array &&
+        (x.kind == K::text || x.kind == K::boolean || x.kind == K::constructed))
+      return compared(true);
+    return compared(x.count == y.count, std::min(x.count, y.count));
   }
   struct Range {
     bool known = true, present = false;
@@ -2583,7 +2816,8 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
     return {Issue::unknown_constraint, std::nullopt};
   if (impl->data == source.impl->data && impl->flags == source.impl->flags &&
       impl->label == source.impl->label &&
-      (!source.impl->constraint || impl->constraint == source.impl->constraint) &&
+      (!source.impl->constraint ||
+       impl->constraint == source.impl->constraint) &&
       (!source.impl->choice || impl->choice == source.impl->choice))
     return {Issue::none, *this};
   auto result = std::make_shared<Impl>(*impl);
@@ -2597,5 +2831,36 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
   if (source.impl->choice)
     result->choice = source.impl->choice;
   return {Issue::none, ProteinSchemaPropertyState(std::move(result))};
+}
+ProteinSchemaComparisonResult protein_schema_compare_property_states(
+    const ProteinSchemaPropertyState *a, const ProteinSchemaPropertyState *b,
+    uint32_t skip_type, ProteinSchemaComparisonOptions options) {
+  if (!a || !b || a->target().value_type != b->target().value_type)
+    return compared(false);
+  if (a->target().value_type == skip_type)
+    return compared(true);
+  if (!a->data() || !b->data())
+    return uncertain(CompareIssue::missing_value);
+  SchemaComparison compare{options};
+  if (a->target().value_type == 6 || a->target().value_type == 7) {
+    if (a->constraint_presence() ==
+            ProteinSchemaReferencePresence::unresolved ||
+        b->constraint_presence() == ProteinSchemaReferencePresence::unresolved)
+      return uncertain(CompareIssue::unknown_constraint);
+    const ProteinSchemaResolvedConstraint absent;
+    const auto result =
+        compare.bounds(a->constraint() ? *a->constraint() : absent,
+                       b->constraint() ? *b->constraint() : absent);
+    if (result.status != CompareStatus::equal)
+      return result;
+  } else if (a->target().value_type == 10) {
+    if (!a->choice_table() || !b->choice_table())
+      return uncertain(CompareIssue::incomplete_choice);
+    const auto result =
+        compare.choice_table(*a->choice_table(), *b->choice_table());
+    if (result.status != CompareStatus::equal)
+      return result;
+  }
+  return compare.state_values(*a, *b);
 }
 } // namespace nwd
