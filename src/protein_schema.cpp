@@ -2241,6 +2241,16 @@ ProteinSchemaDefinitionIndex::find(std::string_view name) const {
               : ProteinSchemaDefinitionLookupStatus::unresolved,
           none};
 }
+ProteinSchemaDefinitionLookup
+ProteinSchemaDefinitionIndex::find_actual(std::string_view name) const {
+  const auto found = impl->direct(name);
+  if (found != none)
+    return {ProteinSchemaDefinitionLookupStatus::found, found};
+  return {impl->status == DefinitionStatus::ready
+              ? ProteinSchemaDefinitionLookupStatus::missing
+              : ProteinSchemaDefinitionLookupStatus::unresolved,
+          none};
+}
 ProteinSchemaDefinitionIndex
 ProteinSchemaDefinitionIndex::with_inherited_parent(
     const ProteinSchemaDefinitionIndex &parent,
@@ -3515,10 +3525,6 @@ protein_schema_read_version(const ProteinSchemaPropertyState *property,
     result.defaulted = true;
     return result;
   }
-  if (property->target().id != "SchemaVersion") {
-    result.issue = I::wrong_name;
-    return result;
-  }
   result.integer = protein_schema_get_integer(*property, 0, options);
   result.value = result.integer->bits;
   if (!result.value)
@@ -3546,10 +3552,6 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
     result.status = S::creation_required;
     return result;
   }
-  if (property->target().id != "SchemaVersion") {
-    result.issue = I::wrong_name;
-    return result;
-  }
   result.write_requested = true;
   result.integer = protein_schema_set_integer(*property, sv, 0, options);
   result.target = result.integer->target;
@@ -3558,6 +3560,118 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
     result.issue = I::integer_unresolved;
   else
     result.status = S::finished;
+  return result;
+}
+struct ProteinSchemaDefinitionState::Impl {
+  ProteinSchemaDefinitionIndex index, original;
+  std::map<Id, ProteinSchemaPropertyState> updates;
+  explicit Impl(const ProteinSchemaDefinitionIndex &value)
+      : index(value), original(value) {}
+};
+ProteinSchemaDefinitionState::ProteinSchemaDefinitionState(
+    std::shared_ptr<const Impl> value)
+    : impl(std::move(value)) {}
+ProteinSchemaDefinitionState::ProteinSchemaDefinitionState(
+    const ProteinSchemaDefinitionIndex &index)
+    : impl(std::make_shared<const Impl>(index)) {}
+const ProteinSchemaDefinitionIndex &
+ProteinSchemaDefinitionState::definition() const noexcept {
+  return impl->index;
+}
+ProteinSchemaDefinitionLookup
+ProteinSchemaDefinitionState::find_actual(std::string_view name) const {
+  return impl->index.find_actual(name);
+}
+ProteinSchemaDefinitionLookup
+ProteinSchemaDefinitionState::find(std::string_view name) const {
+  return impl->index.find(name);
+}
+ProteinSchemaPropertyState
+ProteinSchemaDefinitionState::property(Id row) const {
+  detail::require(row < impl->index.properties().size(),
+                  "Protein Schema definition state row out of range");
+  if (auto i = impl->updates.find(row); i != impl->updates.end())
+    return i->second;
+  return ProteinSchemaPropertyState(impl->original, row);
+}
+ProteinSchemaDefinitionState ProteinSchemaDefinitionState::with_property(
+    Id row, const ProteinSchemaPropertyState &value) const {
+  detail::require(&property(row).target() == &value.target(),
+                  "Protein Schema definition state target identity mismatch");
+  auto result = std::make_shared<Impl>(*impl);
+  result->updates.insert_or_assign(row, value);
+  return ProteinSchemaDefinitionState(std::move(result));
+}
+ProteinSchemaVersionRead ProteinSchemaDefinitionState::read_version(
+    ProteinSchemaComparisonOptions options) const {
+  const auto found = find("SchemaVersion");
+  const auto value = found.status == ProteinSchemaDefinitionLookupStatus::found
+                         ? std::optional(property(found.property))
+                         : std::nullopt;
+  return protein_schema_read_version(
+      value ? &*value : nullptr,
+      found.status != ProteinSchemaDefinitionLookupStatus::unresolved, options);
+}
+ProteinSchemaScopedVersionResult ProteinSchemaDefinitionState::finalize_version(
+    uint32_t sv, uint32_t tv, bool compatible,
+    ProteinSchemaComparisonOptions options,
+    ProteinSchemaDefinitionOptions limits) const {
+  ProteinSchemaScopedVersionResult result{*this, {}};
+  if (!compatible || sv <= tv) {
+    result.step.status = ProteinSchemaVersionFinalStatus::unchanged;
+    return result;
+  }
+  const auto found = find("SchemaVersion");
+  const auto value = found.status == ProteinSchemaDefinitionLookupStatus::found
+                         ? std::optional(property(found.property))
+                         : std::nullopt;
+  result.property = found.property;
+  result.step = protein_schema_finalize_version(
+      value ? &*value : nullptr, sv, tv, compatible,
+      found.status != ProteinSchemaDefinitionLookupStatus::unresolved, options);
+  if (value) {
+    if (result.step.written)
+      result.state = with_property(found.property, *result.step.target);
+    return result;
+  }
+  if (result.step.status != ProteinSchemaVersionFinalStatus::creation_required)
+    return result;
+  // Generated local metadata owns no borrowed XML identity. Scalar payload
+  // construction reuses the same normalized representation as load defaults.
+  detail::require(
+      impl->index.impl->local->cached_values < limits.max_cached_values &&
+          impl->index.impl->extra_cached_values <
+              limits.max_cached_values - impl->index.impl->local->cached_values,
+      "Protein Schema cached value limit");
+  ProteinSchemaNumericDefaults number;
+  number.status = ProteinSchemaNumericStatus::ready;
+  number.value_type = 6;
+  number.components = 1;
+  const auto signed_value =
+      sv <= 0x7fffffff ? int64_t(sv) : int64_t(sv) - (int64_t{1} << 32);
+  number.candidates.push_back(default_number(double(signed_value)));
+  ProteinSchemaDefinitionProperty generated;
+  generated.document = generated.flags_document = &impl->index.document();
+  generated.origin = ProteinSchemaPropertyOrigin::registration_create;
+  generated.id = "SchemaVersion";
+  generated.value_type = 6;
+  generated.flags = 2;
+  generated.value =
+      std::make_shared<const ProteinSchemaDefinitionValue>(std::move(number));
+  auto metadata =
+      std::make_shared<ProteinSchemaDefinitionIndex::Impl>(*impl->index.impl);
+  result.property = metadata->insert(std::move(generated), limits);
+  ++metadata->extra_cached_values;
+  metadata->finish();
+  auto state = std::make_shared<Impl>(*impl);
+  state->index = ProteinSchemaDefinitionIndex(std::move(metadata));
+  ProteinSchemaPropertyState created(state->index, result.property);
+  state->updates.emplace(result.property, created);
+  result.state = ProteinSchemaDefinitionState(std::move(state));
+  result.step.target = created;
+  result.step.status = ProteinSchemaVersionFinalStatus::finished;
+  result.step.written = true;
+  result.created = true;
   return result;
 }
 ProteinSchemaComparisonResult protein_schema_compare_property_states(

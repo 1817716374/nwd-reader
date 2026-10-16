@@ -522,11 +522,33 @@ if (write.written) {
 
 `pod_bits(offset, bytes)` 按小端读取当前 int32/double/color4 存储，每次 1..8 字节，返回位型或明确的未知/越界原因。offset 是逻辑值存储内偏移，不是文件偏移。`pod_patches()` 枚举显式四字节修改，`backing_supplier()` 指向原始缓存来源；修改字节不冒充源 XML 数据。POD 覆盖按偏移扁平保存、共享复制，不保留历史状态链，不复制整个数组。状态比较读取当前字节，完整复制能携带或清除覆盖；原缓存中的转换诊断仍保留。
 
-`protein_schema_read_version(property, lookup_complete, options)` 接收调用方按实际名称定位的 SchemaVersion 属性。已知不存在时默认 1，查找不确定或错误/未知整数接口则保持未决；空整数数组返回带诊断的 0，不能误当成默认 1。输入的声明名称必须精确匹配 SchemaVersion，不使用别名代替。
+`protein_schema_read_version(property, lookup_complete, options)` 接收 SchemaVersion 接口查询的结果：先直接名称查询，再扩展一次别名，实际属性 ID 可以不同。已知不存在时默认 1，查找不确定或错误/未知整数接口保持未决；空整数数组返回带诊断的 0，不能误当成默认 1。指针入口要求调用方完成查询，不自行检查属性名称。
 
 `protein_schema_finalize_version(property, source_version, target_version, compatible, lookup_complete, options)` 只在此前兼容且源版本按 uint32 大于目标版本时执行最终步骤。已有属性请求 ordinal0 写入；结果区分 `write_requested` 与 `written`。Choice 不匹配或空 Array 拒写时，局部步骤可为 `finished` 且 `written=false`，不会额外撤销已有兼容判断。`finished` 只描述这个步骤，不代表完整定义登记成功。
 
-目标缺失时，结果为 `creation_required`，携带精确的 SchemaVersion 名称、flags2、空标签及原始32位值；它没有创建属性。实际创建、容器身份、接管和派生传播仍须由作用域登记层实现。查找、整数值或 Choice 表未知时返回明确未决；资源预算耗尽抛 `Error`。这些逻辑不执行产品所有者通知、分配器或异常策略。
+低级指针入口在目标缺失时返回 `creation_required`，携带精确的 SchemaVersion 名称、flags2、空标签及原始32位值；该入口本身没有创建属性。局部创建可使用下面的作用域 API；全局接管和派生传播仍需单独实现。查找、整数值或 Choice 表未知时返回明确未决；资源预算耗尽抛 `Error`。这些逻辑不执行产品所有者通知、分配器或异常策略。
+
+`ProteinSchemaDefinitionState` 为已解析定义保留不可变局部运行状态。`definition()` 提供元数据索引，`property(row)` 提供当前字段，`with_property(row, state)` 保存同一目标身份的当前状态；同名的外来属性会被拒绝。原始文档、属性值、POD/URI 覆盖共享，当前 flags 写入不会改变登记时的容器。元数据索引中的已有行仍是原始字段，不能替代当前状态访问。
+
+`find_actual(name)` 只查实际属性；`find(name)` 先查实际名称，再扩展一次别名。两者按普通、iterator、readonly 容器顺序查询，保留跨容器同名身份。别名链不递归，实际属性优先。`ProteinSchemaDefinitionIndex` 也提供这两个查询；接受状态未知时，未知缺失返回 unresolved。
+
+```cpp
+nwd::ProteinSchemaDefinitionState current(definition);
+const auto target_version = current.read_version();
+if (target_version.value) {
+    auto result = current.finalize_version(source_version,
+                                          *target_version.value,
+                                          previously_compatible);
+    current = result.state;
+    // result.created / result.step.written describe actual local changes.
+}
+```
+
+`read_version()` 使用作用域内的 SchemaVersion 接口查询。`finalize_version()` 只在此前兼容且源版本按 uint32 更大时工作：命中实际属性或别名目标就复用其整数/Choice setter；确认缺失才生成独立的局部 Integer 属性。生成属性为 Type6、flags2、空标签、readonly 容器和原始 int32 位型，无约束/Choice；`origin=registration_create`、`source=none`，不会借用已有 XML 行作为新身份。重复写入复用生成身份。输入文档不变，也不通过合成 XML 创建属性。
+
+作用域创建成功时，`created=true`，`step.status=finished`、`step.written=true`，`step.target` 为新属性，`step.creation` 保留初始化请求，`step.integer` 为空。已有属性拒写时仍区分 finished 与 written=false；查找或值未知时不创建。参数中的比较预算及定义历史/缓存上限耗尽抛出 `Error`。
+
+已有属性更新只复制稀疏修改表，数组和定义缓存继续共享。单次缺失版本创建复制元数据容器/历史表，成本随属性数增长，值不复制。这个 API 不执行普通属性批量创建、全定义兼容判断、产品命名空间接管或派生传播，也不替代全局 Schema 登记。
 
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
@@ -556,7 +578,7 @@ for (auto id : definition.iteration(order)) {
 
 `ProteinSchemaDefinitionLoadIndex(local_definitions, options)` 在一个明确的批次作用域内组合已缓存的局部定义，执行 XML 读取后的补值及命名父依赖解析。输入顺序决定登记时点，UID 精确匹配；已就绪或等待中的同名定义均保留首次登记身份。`records()` 返回每个输入的 UID、实际读取的 Base、规范对象、父级、等待关系、循环和接受状态；根定义、重复或未处理输入的 `base` 可以为空。`input(i)` 始终保留原始局部索引，`definition(i)` 返回加载结果，重复项跟随规范对象最终合并后的快照；尚未处理的输入返回空指针。
 
-加载期只在缺失时补只读 Integer `SchemaVersion=1`，随后才进行命名父合并，因此缺少版本声明的子定义会保留自己的 1。CommonSchema 还会按需创建 AssetLibID、VersionGUID、localtype、localname，并按已知旧版本规则改写 category/keyword。`ProteinSchemaDefinitionProperty::origin` 区分 XML、加载期默认和加载期改写；生成属性的 `source` 为 `none`，改写保留原 XML 上下文及历史值。继承复用不可变值，旧版文本清空保留标量/数组形态。
+加载期只在缺失时补只读 Integer `SchemaVersion=1`，随后才进行命名父合并，因此缺少版本声明的子定义会保留自己的 1。CommonSchema 还会按需创建 AssetLibID、VersionGUID、localtype、localname，并按已知旧版本规则改写 category/keyword。`ProteinSchemaDefinitionProperty::origin` 区分 XML、加载期默认、加载期改写和局部登记创建；生成属性的 `source` 为 `none`，改写保留原 XML 上下文及历史值。继承复用不可变值，旧版文本清空保留标量/数组形态。
 
 `events()` 保留补值、改写、登记、等待、重复、拒绝和未决事件的顺序。等待队列按 UID 顺序选择当前可就绪项，使用反向依赖避免重复扫描无关项。`pending()` 和 `cycles()` 分别返回剩余等待项和循环成员，记录的 `waiting_on` 还能区分指向已知等待项的边与当前缺失的父。
 

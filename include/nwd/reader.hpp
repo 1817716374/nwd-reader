@@ -743,7 +743,7 @@ struct ProteinSchemaRuntimeBinding {
 // conversion or link resolution. Unknown/unsupported layouts return nullopt.
 std::optional<ProteinSchemaRuntimeBinding> protein_schema_runtime_binding(
     const ProteinSchemaDefinitionValue &) noexcept;
-enum class ProteinSchemaPropertyOrigin { xml_declaration, load_default, load_rewrite };
+enum class ProteinSchemaPropertyOrigin { xml_declaration, load_default, load_rewrite, registration_create };
 struct ProteinSchemaDefinitionProperty {
   const ProteinSchemaDocument *document = nullptr;
   Id source = none; // XML context; none for a generated load default
@@ -842,6 +842,7 @@ class ProteinSchemaDefinitionIndex {
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaDefinitionIndex(std::shared_ptr<const Impl>);
   friend class ProteinSchemaDefinitionLoadIndex;
+  friend class ProteinSchemaDefinitionState;
 public:
   explicit ProteinSchemaDefinitionIndex(const ProteinSchemaDocument &,
       const ProteinSchemaAliasIndex *visible_alias_parent = nullptr,
@@ -865,6 +866,8 @@ public:
   // before treating the sequence as complete. The index owns referenced data.
   std::vector<Id> iteration(ProteinSchemaIterationOptions = {}) const;
   ProteinSchemaDefinitionLookup find(std::string_view) const;
+  // Core direct-name lookup, without the public interface's one alias hop.
+  ProteinSchemaDefinitionLookup find_actual(std::string_view) const;
   // Requires known acceptance in both indexes. Shares values/origins; retains
   // child values and merges flags as parent | (child & 0x180), even if flags now
   // describe a different value shape. Does not repeat local alias registration.
@@ -1019,6 +1022,8 @@ ProteinSchemaIntegerWrite protein_schema_set_integer(
     const ProteinSchemaPropertyState &, uint32_t bits, uint64_t ordinal = 0,
     ProteinSchemaComparisonOptions = {});
 
+// wrong_name is retained for source compatibility; resolved aliases may have a
+// different actual ID, so version helpers no longer emit it.
 enum class ProteinSchemaVersionAccessIssue { none, lookup_unresolved, wrong_name, integer_unresolved };
 struct ProteinSchemaVersionRead {
   std::optional<uint32_t> value = std::nullopt;
@@ -1026,8 +1031,9 @@ struct ProteinSchemaVersionRead {
   bool defaulted = false;
   std::optional<ProteinSchemaIntegerRead> integer = std::nullopt;
 };
-// Caller supplies actual-name SchemaVersion lookup. Null means known absent
-// (default1), not an uncertain lookup or a wrong/unknown typed interface.
+// Caller supplies the result of the SchemaVersion interface lookup (actual
+// property first, then one alias target). Its actual ID can differ. Null means
+// known absent (default1), not an uncertain lookup or wrong typed interface.
 ProteinSchemaVersionRead protein_schema_read_version(
     const ProteinSchemaPropertyState *, bool lookup_complete = true,
     ProteinSchemaComparisonOptions = {});
@@ -1052,6 +1058,44 @@ ProteinSchemaVersionFinalResult protein_schema_finalize_version(
     const ProteinSchemaPropertyState *, uint32_t source_version, uint32_t target_version,
     bool compatible = true, bool lookup_complete = true,
     ProteinSchemaComparisonOptions = {});
+
+struct ProteinSchemaScopedVersionResult;
+// Immutable local definition state. Retains original indexed property identities
+// and shares their cached payloads; sparse updates do not copy whole arrays or
+// definitions. Container membership follows registration, not later flags writes.
+// This is not a global registry or a namespace/descendant adoption operation.
+class ProteinSchemaDefinitionState {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaDefinitionState(std::shared_ptr<const Impl>);
+public:
+  explicit ProteinSchemaDefinitionState(const ProteinSchemaDefinitionIndex &);
+  // Metadata snapshot including locally generated rows; property() supplies
+  // current fields. Existing rows keep their original identity after creation.
+  const ProteinSchemaDefinitionIndex &definition() const noexcept;
+  ProteinSchemaDefinitionLookup find_actual(std::string_view) const;
+  ProteinSchemaDefinitionLookup find(std::string_view) const;
+  ProteinSchemaPropertyState property(Id row) const;
+  // Requires the same target identity at row, not a same-name foreign property.
+  ProteinSchemaDefinitionState with_property(Id row, const ProteinSchemaPropertyState &) const;
+  ProteinSchemaVersionRead read_version(ProteinSchemaComparisonOptions = {}) const;
+  // On known absence, creates a distinct local scalar Integer: flags2, empty
+  // label, exact int32 bits, no constraint/Choice, registration_create origin.
+  // No XML synthesis or input mutation. Bounds limit generated history/value
+  // growth; unknown lookup cannot create. Other property factories and global
+  // propagation are outside this operation.
+  ProteinSchemaScopedVersionResult finalize_version(
+      uint32_t source_version, uint32_t target_version, bool compatible = true,
+      ProteinSchemaComparisonOptions = {}, ProteinSchemaDefinitionOptions = {}) const;
+};
+struct ProteinSchemaScopedVersionResult {
+  ProteinSchemaDefinitionState state;
+  ProteinSchemaVersionFinalResult step;
+  Id property = none; // lookup row, or new row; none if gate skipped/missing
+  // Creation consumes step.creation and returns finished, written=true, and
+  // target. integer stays absent because initialization is not a setter call.
+  bool created = false;
+};
 
 // Native property compatibility over current state fields. Checks target type
 // and skip_type, current bounds/Choice, raw control byte, fixed concrete class,
