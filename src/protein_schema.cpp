@@ -1291,6 +1291,7 @@ struct SchemaStatePayload {
   size_t count = 0, stride = 0;
   const ProteinSchemaNumericDefaults *numeric = nullptr;
   const ProteinSchemaTextDefaults *strings = nullptr;
+  const ProteinSchemaPropertyState *text_state = nullptr;
   const ProteinSchemaDefinitionChoice *choice = nullptr;
   const bool *boolean = nullptr;
   CompareIssue issue = CompareIssue::none;
@@ -1366,6 +1367,7 @@ struct SchemaStatePayload {
         issue = CompareIssue::inconsistent_shape;
       else
         count = array ? strings->values.size() : 1;
+      text_state = &state;
     } else if (boolean || kind == Kind::constructed)
       count = 1;
     else
@@ -1383,8 +1385,7 @@ struct SchemaStatePayload {
     return std::nullopt;
   }
   std::string_view string(size_t ordinal) const {
-    return strings->uses_type_default ? std::string_view{}
-                                      : strings->values[ordinal];
+    return text_state->text_value(ordinal)->value;
   }
   std::optional<uint64_t> bits(size_t offset, size_t bytes,
                                CompareIssue &failure) const {
@@ -2703,6 +2704,13 @@ struct ProteinSchemaPropertyState::Impl {
     }
   };
   using Owner = std::shared_ptr<const Seed>;
+  struct TextOverride {
+    size_t ordinal;
+    Owner owner;
+    size_t source_ordinal, prefix_length;
+  };
+  using TextOverrides = std::vector<TextOverride>;
+  std::shared_ptr<const TextOverrides> text_overrides;
   Owner identity, data, flags, label, constraint, choice, control;
   std::optional<uint8_t> control_byte;
   ProteinSchemaReferencePresence constraint_presence =
@@ -2758,6 +2766,53 @@ std::optional<ProteinSchemaRuntimeBinding>
 ProteinSchemaPropertyState::data_binding() const noexcept {
   return data() ? protein_schema_runtime_binding(*data()) : std::nullopt;
 }
+std::optional<size_t>
+ProteinSchemaPropertyState::text_value_count() const noexcept {
+  const auto binding = data_binding();
+  const auto *text =
+      data() ? std::get_if<ProteinSchemaTextDefaults>(data().get()) : nullptr;
+  if (!binding || !text || text->status != ProteinSchemaTextStatus::ready)
+    return std::nullopt;
+  const bool array = binding->data_type == "run.string_array";
+  if ((!array && binding->data_type != "string") || text->multiple != array ||
+      (array && text->uses_type_default) ||
+      (!array && (text->uses_type_default ? !text->values.empty()
+                                          : text->values.size() != 1)))
+    return std::nullopt;
+  return array ? text->values.size() : 1;
+}
+std::optional<ProteinSchemaPropertyTextValue>
+ProteinSchemaPropertyState::text_value(size_t ordinal) const noexcept {
+  const auto count = text_value_count();
+  if (!count || ordinal >= *count)
+    return std::nullopt;
+  auto owner = impl->data.get();
+  auto source_ordinal = ordinal;
+  std::optional<size_t> prefix;
+  if (impl->text_overrides) {
+    const auto &rows = *impl->text_overrides;
+    const auto i = std::lower_bound(
+        rows.begin(), rows.end(), ordinal,
+        [](const auto &row, size_t value) { return row.ordinal < value; });
+    if (i != rows.end() && i->ordinal == ordinal) {
+      owner = i->owner.get();
+      source_ordinal = i->source_ordinal;
+      prefix = i->prefix_length;
+    }
+  }
+  const auto &text = std::get<ProteinSchemaTextDefaults>(*owner->get().value);
+  const auto value = text.uses_type_default
+                         ? std::string_view{}
+                         : std::string_view(text.values[source_ordinal]);
+  return ProteinSchemaPropertyTextValue{prefix ? value.substr(0, *prefix)
+                                               : value,
+                                        {&owner->definition, owner->property},
+                                        source_ordinal,
+                                        prefix};
+}
+bool ProteinSchemaPropertyState::has_text_overrides() const noexcept {
+  return bool(impl->text_overrides);
+}
 std::optional<uint8_t>
 ProteinSchemaPropertyState::control_byte() const noexcept {
   return impl->control_byte;
@@ -2805,6 +2860,8 @@ ProteinSchemaPropertyState::supplier(ProteinSchemaPropertyField field) const {
     owner = &impl->identity;
     break;
   case ProteinSchemaPropertyField::data:
+    if (impl->text_overrides)
+      return {};
     owner = &impl->data;
     break;
   case ProteinSchemaPropertyField::flags:
@@ -2851,14 +2908,16 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
   if (source.constraint_presence() ==
       ProteinSchemaReferencePresence::unresolved)
     return {Issue::unknown_constraint, std::nullopt};
-  if (impl->data == source.impl->data && impl->flags == source.impl->flags &&
-      impl->label == source.impl->label &&
+  if (impl->data == source.impl->data &&
+      impl->text_overrides == source.impl->text_overrides &&
+      impl->flags == source.impl->flags && impl->label == source.impl->label &&
       (!source.impl->constraint ||
        impl->constraint == source.impl->constraint) &&
       (!source.impl->choice || impl->choice == source.impl->choice))
     return {Issue::none, *this};
   auto result = std::make_shared<Impl>(*impl);
   result->data = source.impl->data;
+  result->text_overrides = source.impl->text_overrides;
   result->flags = source.impl->flags;
   result->label = source.impl->label;
   if (source.impl->constraint) {
@@ -2869,6 +2928,52 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
     result->choice = source.impl->choice;
   return {Issue::none, ProteinSchemaPropertyState(std::move(result))};
 }
+// Internal batch writer. Sparse entries hold indexed-row owners, never states.
+struct ProteinSchemaStateAccess {
+  struct Write {
+    size_t ordinal, prefix_length;
+  };
+  static ProteinSchemaPropertyState
+  text_written(const ProteinSchemaPropertyState &target,
+               const ProteinSchemaPropertyState &source,
+               std::span<const Write> writes) {
+    if (writes.empty())
+      return target;
+    using Impl = ProteinSchemaPropertyState::Impl;
+    auto rows = std::make_shared<Impl::TextOverrides>();
+    const Impl::TextOverrides empty;
+    const auto &previous =
+        target.impl->text_overrides ? *target.impl->text_overrides : empty;
+    rows->reserve(previous.size() + writes.size());
+    auto old = previous.begin();
+    const auto *source_rows = source.impl->text_overrides.get();
+    auto si = size_t{0};
+    for (const auto &write : writes) {
+      while (old != previous.end() && old->ordinal < write.ordinal)
+        rows->push_back(*old++);
+      if (old != previous.end() && old->ordinal == write.ordinal)
+        ++old;
+      auto owner = source.impl->data;
+      auto original = write.ordinal;
+      if (source_rows) {
+        while (si < source_rows->size() &&
+               (*source_rows)[si].ordinal < write.ordinal)
+          ++si;
+        if (si < source_rows->size() &&
+            (*source_rows)[si].ordinal == write.ordinal) {
+          owner = (*source_rows)[si].owner;
+          original = (*source_rows)[si].source_ordinal;
+        }
+      }
+      rows->push_back(
+          {write.ordinal, std::move(owner), original, write.prefix_length});
+    }
+    rows->insert(rows->end(), old, previous.end());
+    auto result = std::make_shared<Impl>(*target.impl);
+    result->text_overrides = std::move(rows);
+    return ProteinSchemaPropertyState(std::move(result));
+  }
+};
 namespace {
 Comparison schema_compare_property_states(const ProteinSchemaPropertyState *a,
                                           const ProteinSchemaPropertyState *b,
@@ -3011,6 +3116,96 @@ schema_compare_base_properties(const ProteinSchemaPropertyState *target,
     return uncertain(CompareIssue::missing_value);
   return compare.state_values(*target, *source, false);
 }
+ProteinSchemaUriResult
+schema_apply_uri(const ProteinSchemaPropertyState &source,
+                 const ProteinSchemaPropertyState &target,
+                 ProteinSchemaUriContext context, SchemaComparison &compare) {
+  using Status = ProteinSchemaUriStatus;
+  using Issue = ProteinSchemaUriIssue;
+  ProteinSchemaUriResult result{target};
+  const auto incompatible = [&](Issue issue) {
+    result.status = Status::incompatible;
+    result.issue = issue;
+    return result;
+  };
+  if (target.target().value_type != 4 || source.target().value_type != 4)
+    return incompatible(Issue::type_mismatch);
+  if ((source.flags() | target.flags()) & 0x200u) {
+    if (!context.source_context_complete) {
+      result.issue = Issue::unknown_context;
+      return result;
+    }
+    if (context.source_context_word == 3 &&
+        ((source.flags() ^ target.flags()) & 0xfffffdfbu))
+      return incompatible(Issue::flags_mismatch);
+  }
+  if (!source.control_byte() || !target.control_byte()) {
+    result.issue = Issue::unknown_layout;
+    return result;
+  }
+  if (source.control_byte() != target.control_byte())
+    return incompatible(Issue::control_mismatch);
+  const auto count =
+      [](const ProteinSchemaPropertyState &state) -> std::optional<size_t> {
+    const auto binding = state.binding();
+    if (!binding)
+      return std::nullopt;
+    if (binding->type_name == "UriValue")
+      return 1;
+    if (binding->type_name != "UriList" &&
+        binding->type_name != "TextureURIValue")
+      return std::nullopt;
+    const SchemaStatePayload payload(state);
+    if (payload.issue != CompareIssue::none || !payload.array)
+      return std::nullopt;
+    return payload.count;
+  };
+  const auto sc = count(source), tc = count(target);
+  if (!sc || !tc) {
+    result.issue = Issue::unknown_layout;
+    return result;
+  }
+  if (*sc != *tc)
+    return incompatible(Issue::count_mismatch);
+  if (*sc == 0) {
+    result.status = Status::compatible;
+    return result;
+  }
+  if (!source.text_value_count() || !target.text_value_count()) {
+    result.issue = Issue::raw_layout_required;
+    return result;
+  }
+  // Scan at most one byte past the remaining logical text budget. Embedded NUL
+  // ends the visible value; bytes after it are retained but not inspected here.
+  const auto visible = [&](std::string_view value) {
+    const auto remaining = compare.limits.max_text_bytes - compare.bytes;
+    const auto bound =
+        remaining < value.size() ? size_t(remaining) + 1 : value.size();
+    const auto nul = value.substr(0, bound).find('\0');
+    const auto size = nul == std::string_view::npos ? value.size() : nul;
+    compare.text_bytes(size);
+    return value.substr(0, size);
+  };
+  const auto relative = [](std::string_view text) {
+    return !text.empty() && text.front() != '/' && text.front() != '\\' &&
+           text.find(':') == std::string_view::npos;
+  };
+  std::vector<ProteinSchemaStateAccess::Write> writes;
+  for (size_t i = 0; i < *sc; ++i) {
+    compare.value();
+    const auto a = visible(target.text_value(i)->value);
+    const auto b = visible(source.text_value(i)->value);
+    if (a != b && !relative(a) && relative(b)) {
+      writes.push_back({i, b.size()});
+      result.replaced_ordinals.push_back(i);
+    }
+  }
+  result.target =
+      ProteinSchemaStateAccess::text_written(target, source, writes);
+  result.status = Status::compatible;
+  result.ordinal = *sc;
+  return result;
+}
 } // namespace
 ProteinSchemaComparisonResult protein_schema_compare_property_states(
     const ProteinSchemaPropertyState *a, const ProteinSchemaPropertyState *b,
@@ -3032,6 +3227,14 @@ protein_schema_compare_base_properties(const ProteinSchemaPropertyState *target,
                                        ProteinSchemaComparisonOptions options) {
   SchemaComparison compare{options};
   return schema_compare_base_properties(target, source, compare);
+}
+ProteinSchemaUriResult
+protein_schema_apply_uri(const ProteinSchemaPropertyState &source,
+                         const ProteinSchemaPropertyState &target,
+                         ProteinSchemaUriContext context,
+                         ProteinSchemaComparisonOptions options) {
+  SchemaComparison compare{options};
+  return schema_apply_uri(source, target, context, compare);
 }
 ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
     const ProteinSchemaPropertyState &source,
@@ -3095,8 +3298,21 @@ ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
     return result;
   }
   if (target.target().value_type == 4) {
-    result.route = Route::uri_required;
-    result.issue = Issue::uri_branch_required;
+    result.route = Route::uri;
+    result.uri = schema_apply_uri(source, target, context.uri_context, compare);
+    result.target = result.uri->target;
+    switch (result.uri->status) {
+    case ProteinSchemaUriStatus::compatible:
+      result.status = Status::compatible;
+      break;
+    case ProteinSchemaUriStatus::incompatible:
+      result.status = Status::incompatible;
+      result.issue = Issue::uri_incompatible;
+      break;
+    case ProteinSchemaUriStatus::unresolved:
+      result.issue = Issue::uri_unresolved;
+      break;
+    }
     return result;
   }
   result.route = Route::ordinary_version;

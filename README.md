@@ -397,7 +397,7 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 
 String、DateTime、Uuid、URL 的单值省略 `val` 时，底层内部字符串构造为空。投影保留 `uses_type_default=true` 和空 `values`；显式 `val=""` 则产生一个空字符串赋值 token。两者在兼容比较中按实际空值处理，调用方仍可区分赋值来源。多值 String/URL/TextureURI 省略 `val` 为空数组，显式空值为含一个空字符串的数组。此规则不生成时间戳或16字节 UUID。
 
-`ProteinSchemaPropertyState(index, property)` 提供可独立保留的属性状态，适合在导入或定义处理时组合数据。`target()` 保留初始目标属性的 ID、具体类和定义来源；`flags()`、`label()`、`constraint()`、`choice_table()` 返回当前元数据。`data()` 共享实际数据供应方的不可变缓存；`binding()` 与 `data_binding()` 分别描述目标类和当前数据类型。数组复制携带源元素类型，例如 IntegerList 目标可以保存从 StringList 复制的数据，调用方应按 `data_binding()` 读取。
+`ProteinSchemaPropertyState(index, property)` 提供可独立保留的属性状态，适合在导入或定义处理时组合数据。`target()` 保留初始目标属性的 ID、具体类和定义来源；`flags()`、`label()`、`constraint()`、`choice_table()` 返回当前元数据。`data()` 共享数据的原始不可变缓存投影；URI 逐项更新后的有效文本应通过 `text_value()` 读取，不能仅凭 `data()` 指针相同判断值相同。`binding()` 与 `data_binding()` 分别描述目标类和当前数据类型。数组复制携带源元素类型，例如 IntegerList 目标可以保存从 StringList 复制的数据，调用方应按 `data_binding()` 读取。
 
 ```cpp
 nwd::ProteinSchemaPropertyState target(targetDefinition, targetProperty);
@@ -428,7 +428,7 @@ if (relation.status == nwd::ProteinSchemaComparisonStatus::unresolved) {
 
 数组比较采用左侧实际元素比较器和右侧实际元素步长，保留有方向性的原生结果。int32、double、Color4 的稳定 POD 布局按需读取，不展开或复制数组；RGB 保留原值，不做 255→1 转换。超出已知数据范围的读取返回 `unsafe_raw_access`；依赖未确定字符串 ABI 的混合读取返回 `raw_layout_required`。这些结果不表示普通的“值不同”。空公共前缀可直接按元素数比较，不猜测未知存储。相等不是对象身份或可用于去重的等价关系。
 
-该接口保留方向性 Choice 前缀、约束空引用、未知数字/单位和资源预算；忽略普通属性比较不使用的 flags、label 和 ID。URI 升级、版本处理、容器移动及全局登记应由调用层明确完成。`control_byte()` 返回独立的原始控制字节，`with_control_byte(value)` 返回修改后的不可变状态。已知的 21 个工厂类初始值均为 1，包括列表；这个字节不是数组开关，其完整字段语义仍未确定。修改保留具体类、数据、flags、标签和约束，普通 `copied_from` 保留目标端控制字节。普通状态比较在值比较前检查字节一致性，Reference/Texture 也经过此检查；类型跳过和约束/Choice 检查仍先执行。
+该接口保留方向性 Choice 前缀、约束空引用、未知数字/单位和资源预算；忽略普通属性比较不使用的 flags、label 和 ID。URI 更新与版本处理分别提供独立接口，由调用方明确组合；容器移动和全局登记仍需另行处理。`control_byte()` 返回独立的原始控制字节，`with_control_byte(value)` 返回修改后的不可变状态。已知的 21 个工厂类初始值均为 1，包括列表；这个字节不是数组开关，其完整字段语义仍未确定。修改保留具体类、数据、flags、标签和约束，普通 `copied_from` 保留目标端控制字节。普通状态比较在值比较前检查字节一致性，Reference/Texture 也经过此检查；类型跳过和约束/Choice 检查仍先执行。
 
 ```cpp
 auto raw = left.control_byte(); // optional<uint8_t>
@@ -458,7 +458,7 @@ if (applied.status == nwd::ProteinSchemaPropertyVersionStatus::unresolved) {
 
 `protein_schema_compare_base_properties(&target, &source, options)` 提供 BaseSchema 的目标优先比较：检查声明类型、控制字节及屏蔽位 8 后的 flags，再按具体类比较 const 值。它跳过属性范围约束，但 Choice 自身的表仍参与比较，且保留有方向性的前缀规则。不能用普通属性比较或只比较选中值替代它。
 
-`protein_schema_reconcile_existing_property(source, target, context, options)` 组合已有属性的处理顺序。SchemaVersion 留给最终版本写入；随后先比较目标与源父属性，相等时直接复制当前源属性；否则再处理 BaseSchema、URI 或普通版本分支。父级覆盖先于这些分支，因此它也可能更新 BaseSchema 或 URI。URI 未发生父级覆盖时仍返回 `uri_branch_required`，完整 URI 更新和全定义登记尚未实现。
+`protein_schema_reconcile_existing_property(source, target, context, options)` 组合已有属性的处理顺序。SchemaVersion 留给最终版本写入；随后先比较目标与源父属性，相等时直接复制当前源属性；否则再处理 BaseSchema、URI 或普通版本分支。父级覆盖先于这些分支，因此它也可能更新 BaseSchema 或 URI。URI 分支按上下文、控制字节、数量和逐项路径规则更新；全定义登记仍未实现。
 
 ```cpp
 nwd::ProteinSchemaExistingPropertyContext context;
@@ -471,9 +471,36 @@ auto current = reconciled.target;
 auto route = reconciled.route;
 ```
 
-父级查找不能确定时应设置 `parent_lookup_complete = false`；查找或父比较未决会停止推断。版本为可选值，只在普通分支需要时读取，缺失不会自动当成 1。结果保留父比较、BaseSchema 比较、普通版本结果、复制诊断和已知目标状态；父比较失败时可继续分派，未决时不能冒充“不相等”。比较预算累计覆盖父比较和后续分支，耗尽抛 `Error`。输入保持不可变，成功复制继续共享缓存数据和扁平字段来源。
+父级查找不能确定时应设置 `parent_lookup_complete = false`；查找或父比较未决会停止推断。版本为可选值，只在普通分支需要时读取，缺失不会自动当成 1。结果保留父比较、BaseSchema 比较、URI/普通版本结果、复制诊断和已知目标状态；父比较失败时可继续分派，未决时不能冒充“不相等”。比较预算累计覆盖父比较和后续分支，耗尽抛 `Error`。输入保持不可变，成功复制继续共享缓存数据和扁平字段来源。
 
 该入口要求调用方已经完成实际名称查找和旧上下文的源元数据修复；它不解析父级作用域、不查别名、不创建或传播属性，也不执行最终 SchemaVersion 写入、命名空间接管或产品分配器/异常处理。
+
+`protein_schema_apply_uri(source, target, context, options)` 处理已有 URI 属性的逐项更新。两边声明类型必须为 URI，原始控制字节及值数量相同；不同 URI 具体类可以匹配，例如单值 URL 与含一个元素的 TextureURI。只有目标不是相对路径、源是相对路径时，才写入对应项；其它不相等组合仍可兼容。空文本不是相对路径，首字符 `/` 或 `\`、或含冒号的文本也不是相对路径。该接口不规范化路径、不拼接目录、不检查文件存在。
+
+```cpp
+nwd::ProteinSchemaUriContext uriContext;
+// Default means the source context is known absent. Set complete=false if
+// unresolved; source_context_word retains the actual raw context value.
+auto updated = nwd::protein_schema_apply_uri(source, target, uriContext);
+if (updated.status == nwd::ProteinSchemaUriStatus::compatible) {
+    if (auto count = updated.target.text_value_count()) {
+        for (size_t i = 0; i < *count; ++i) {
+            auto item = *updated.target.text_value(i);
+            auto text = item.value;          // current borrowed bytes
+            auto origin = item.supplier;    // retained indexed row
+            auto originalOrdinal = item.ordinal;
+        }
+    }
+}
+```
+
+`ProteinSchemaUriContext` 保存源定义原始上下文的 `+d0` 单元，不是文件年份或 SchemaVersion。已知上下文缺失时保留空值；信息不足应设 `source_context_complete=false`。上下文值精确为 3、且任一属性 flags 含 0x200 时，额外要求屏蔽 0x204 后的 flags 相同；其它已知上下文不附加这项检查。现有属性组合入口通过 `context.uri_context` 接受相同信息，父级覆盖仍优先于 URI 分支。
+
+URI getter/比较/写入使用首次 NUL 前的 C-string 字节。可见前缀相同时保留目标完整原值；实际写入时仅存源可见前缀。`replaced_ordinals` 返回发生写入的位置，目标类、数据布局、flags、标签和控制字节保持原状。非空的外来 Array 若不能安全按字符串解释，返回 `raw_layout_required`；空 Array 可以在数量检查后完成，不读取元素。
+
+`text_value_count()` 区分不可用/非文本数据与空数组；`text_value(i)` 返回当前值及其原始供应行、ordinal 和可选前缀长度。值和来源视图借用状态寿命。URI 修改以稀疏记录共享原始字符串，批量合并覆盖，不保留旧状态链。`has_text_overrides()` 为真时，`supplier(data)` 没有单一来源，应逐项查询；`data()` 仍是底层原始缓存投影。后续状态比较和 `copied_from()` 均使用或携带有效文本。输入及索引不可变，可并发只读使用。
+
+值/文本预算累计覆盖父比较和 URI 处理，耗尽抛出 `Error`。该逻辑不执行产品所有者通知，也不补齐全定义创建、派生传播和最终 SchemaVersion 写入。
 
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 

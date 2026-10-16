@@ -879,6 +879,13 @@ struct ProteinSchemaPropertyFieldSource {
   const ProteinSchemaDefinitionIndex *definition = nullptr;
   Id property = none;
 };
+struct ProteinSchemaPropertyTextValue {
+  std::string_view value;
+  ProteinSchemaPropertyFieldSource supplier;
+  size_t ordinal = 0; // ordinal in the supplier's original factory projection
+  // Present after a URI write: only this prefix of the original value is used.
+  std::optional<size_t> prefix_length = std::nullopt;
+};
 enum class ProteinSchemaReferencePresence { absent, present, unresolved };
 enum class ProteinSchemaPropertyCopyIssue {
   none, missing_value, unknown_layout, raw_layout_required, unknown_constraint
@@ -898,6 +905,7 @@ class ProteinSchemaPropertyState {
   struct Impl;
   std::shared_ptr<const Impl> impl;
   explicit ProteinSchemaPropertyState(std::shared_ptr<const Impl>);
+  friend struct ProteinSchemaStateAccess;
 public:
   explicit ProteinSchemaPropertyState(const ProteinSchemaDefinitionIndex &, Id property);
   // Initial target row, including its original flags/container/label. Use the
@@ -906,9 +914,18 @@ public:
   std::optional<ProteinSchemaRuntimeBinding> binding() const noexcept;
   // Supplier's factory projection, including its original class/default markers
   // and diagnostics. Its metadata is not the current state metadata. Consult
-  // data_binding() for actual data, binding() for the fixed target class.
+  // data_binding() for the actual layout, binding() for the fixed target class.
+  // After URI writes this remains the backing projection; text_value() returns
+  // current text. Pointer equality of data() alone does not imply equal values.
   const std::shared_ptr<const ProteinSchemaDefinitionValue> &data() const noexcept;
   std::optional<ProteinSchemaRuntimeBinding> data_binding() const noexcept;
+  // Current string/string-Array values, including unassigned scalar empty
+  // defaults. Null count means unavailable/nontext data, not an empty array.
+  // Values and suppliers borrow this state's lifetime. Sparse URI overrides
+  // share original strings and retain flat origins, never prior state chains.
+  std::optional<size_t> text_value_count() const noexcept;
+  std::optional<ProteinSchemaPropertyTextValue> text_value(size_t ordinal) const noexcept;
+  bool has_text_overrides() const noexcept;
   // Opaque PropertyBase runtime control byte; all 21 known factory classes
   // initialize it to 1, including lists. It is not the array flag. Its full
   // semantic name is unresolved; this is not a file offset or a data conversion.
@@ -925,7 +942,8 @@ public:
   const ProteinSchemaResolvedConstraint *constraint() const noexcept;
   const ProteinSchemaChoiceIndex *choice_table() const noexcept;
   // A supplier is an indexed row in this retained scope, not a global NWD ID.
-  // Absent references have no supplier. Flags rows can themselves carry a
+  // Absent references and data with URI overrides have no single supplier.
+  // Consult text_value() for individual text origins. Flags rows can carry a
   // different flags_document/flags_source after inheritance.
   ProteinSchemaPropertyFieldSource supplier(ProteinSchemaPropertyField) const;
   ProteinSchemaPropertyCopyResult copied_from(const ProteinSchemaPropertyState &) const;
@@ -987,16 +1005,47 @@ ProteinSchemaComparisonResult protein_schema_compare_base_properties(
     const ProteinSchemaPropertyState *target, const ProteinSchemaPropertyState *source,
     ProteinSchemaComparisonOptions = {});
 
+enum class ProteinSchemaUriStatus { compatible, incompatible, unresolved };
+enum class ProteinSchemaUriIssue {
+  none, type_mismatch, unknown_context, flags_mismatch, unknown_layout,
+  control_mismatch, count_mismatch, unavailable_value, raw_layout_required
+};
+struct ProteinSchemaUriContext {
+  // Null word means known absent source context. False means not yet known;
+  // only the flags-0x200 route needs it. Raw +d0 is not a SchemaVersion/year.
+  bool source_context_complete = true;
+  std::optional<uint64_t> source_context_word = std::nullopt;
+};
+struct ProteinSchemaUriResult {
+  ProteinSchemaPropertyState target;
+  ProteinSchemaUriStatus status = ProteinSchemaUriStatus::unresolved;
+  ProteinSchemaUriIssue issue = ProteinSchemaUriIssue::none;
+  uint64_t ordinal = 0; // first unresolved ordinal, or visited count on success
+  std::vector<uint64_t> replaced_ordinals = {};
+};
+// Target-first URI workflow for nonnull current properties: type4, conditional
+// context flags, control and count gates, then C-string prefix comparison.
+// Equal prefixes retain full target storage; only nonrelative target/relative
+// source writes the source prefix. Empty is nonrelative in both known profiles.
+// Does not normalize paths, require equal concrete classes, copy metadata or
+// invoke live product-owner notifications. Nonempty foreign string ABI stays
+// unresolved; empty Arrays can finish without element access. Inputs immutable.
+ProteinSchemaUriResult protein_schema_apply_uri(
+    const ProteinSchemaPropertyState &source, const ProteinSchemaPropertyState &target,
+    ProteinSchemaUriContext = {}, ProteinSchemaComparisonOptions = {});
+
 enum class ProteinSchemaExistingPropertyStatus { compatible, incompatible, unresolved };
 enum class ProteinSchemaExistingPropertyRoute {
   none, parent_check, parent_override, base_schema, ordinary_version,
-  uri_required, schema_version_required
+  uri, schema_version_required,
+  uri_required = uri // retained enum spelling; URI is now an implemented route
 };
 enum class ProteinSchemaExistingPropertyIssue {
   none, schema_version_required, parent_lookup_unresolved,
   parent_comparison_unresolved, parent_copy_unresolved, base_comparison_different,
   base_comparison_unresolved, uri_branch_required, unknown_version,
-  ordinary_version_incompatible, ordinary_version_unresolved
+  ordinary_version_incompatible, ordinary_version_unresolved,
+  uri_incompatible, uri_unresolved
 };
 struct ProteinSchemaExistingPropertyContext {
   // Borrowed for this call. Null means known absent, not an uncertain lookup.
@@ -1004,6 +1053,7 @@ struct ProteinSchemaExistingPropertyContext {
   bool parent_lookup_complete = true;
   // Needed only when the ordinary branch is reached. No implicit version1.
   std::optional<uint32_t> source_version = std::nullopt, target_version = std::nullopt;
+  ProteinSchemaUriContext uri_context;
 };
 struct ProteinSchemaExistingPropertyResult {
   ProteinSchemaPropertyState target;
@@ -1013,18 +1063,19 @@ struct ProteinSchemaExistingPropertyResult {
   std::optional<ProteinSchemaComparisonResult> parent_comparison = std::nullopt;
   std::optional<ProteinSchemaComparisonResult> base_comparison = std::nullopt;
   std::optional<ProteinSchemaPropertyVersionResult> version = std::nullopt;
+  std::optional<ProteinSchemaUriResult> uri = std::nullopt;
   ProteinSchemaPropertyCopyIssue copy_issue = ProteinSchemaPropertyCopyIssue::none;
   bool copy_attempted = false, copied = false;
 };
 // Existing-property routing after source old-context metadata repair and actual
 // name lookup. Skips SchemaVersion, then compares target to source's parent.
 // Equal parent comparison copies current source to target before Base/URI/version
-// routing. Otherwise BaseSchema is target-first; URI stays explicitly unresolved;
+// routing. Otherwise BaseSchema and URI use their target-first workflows;
 // ordinary properties use the version branch. Unknown parent lookup/comparison
 // stops inference. Result owns its state and retains comparison/copy diagnostics.
 // One aggregate comparison budget covers the parent and the subsequent branch.
 // No lookup, source repair, final SchemaVersion write, property creation,
-// propagation, URI update or complete namespace registration is implied.
+// propagation or complete namespace registration is implied.
 ProteinSchemaExistingPropertyResult protein_schema_reconcile_existing_property(
     const ProteinSchemaPropertyState &source, const ProteinSchemaPropertyState &target,
     ProteinSchemaExistingPropertyContext = {}, ProteinSchemaComparisonOptions = {});
