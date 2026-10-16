@@ -397,6 +397,25 @@ if (found.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 
 String、DateTime、Uuid、URL 的单值省略 `val` 时，底层内部字符串构造为空。投影保留 `uses_type_default=true` 和空 `values`；显式 `val=""` 则产生一个空字符串赋值 token。两者在兼容比较中按实际空值处理，调用方仍可区分赋值来源。多值 String/URL/TextureURI 省略 `val` 为空数组，显式空值为含一个空字符串的数组。此规则不生成时间戳或16字节 UUID。
 
+`ProteinSchemaPropertyState(index, property)` 提供可独立保留的属性状态，适合在导入或定义处理时组合数据。`target()` 保留初始目标属性的 ID、具体类和定义来源；`flags()`、`label()`、`constraint()`、`choice_table()` 返回当前元数据。`data()` 共享实际数据供应方的不可变缓存；`binding()` 与 `data_binding()` 分别描述目标类和当前数据类型。数组复制携带源元素类型，例如 IntegerList 目标可以保存从 StringList 复制的数据，调用方应按 `data_binding()` 读取。
+
+```cpp
+nwd::ProteinSchemaPropertyState target(targetDefinition, targetProperty);
+nwd::ProteinSchemaPropertyState source(sourceDefinition, sourceProperty);
+auto copied = target.copied_from(source);
+if (copied.state) {
+    auto state = *copied.state;
+    auto payload = state.data();  // shared immutable factory projection
+    auto actualType = state.data_binding();
+    auto label = state.label();
+    auto origin = state.supplier(nwd::ProteinSchemaPropertyField::data);
+}
+```
+
+复制覆盖数据、标志和标签；源约束或选项表不存在时，目标原有引用保留。各字段通过 `supplier(field)` 保留独立的索引和历史行来源，包含继承标志的原始供应信息，不按同名或相同值合并身份。状态持有文档和值的寿命，连续复制不保留旧状态链，可并发只读使用。`data()` 内的类、默认赋值标记和诊断属于其供应方；当前元数据应读取状态接口。
+
+无法可靠解释的跨底层布局复制返回 `raw_layout_required`，约束是否存在无法确定时返回 `unknown_constraint`，并保留输入。它们是未决情况，不表示原生操作返回拒绝。状态复制不改写原索引，不执行命名空间登记，也不模拟产品分配器或异常展开；完整全局登记仍未实现。
+
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
 比较保留原生规则：普通浮点无序比较可返回 equal，颜色与向量采用各自的分量规则；Reference/Texture 的该兼容判断只检查具体类。Choice 以左表为准，右表额外条目可被忽略，右表短前缀返回 unresolved；数值约束的单侧空对象也保留方向差异。已确定的早期不匹配先返回，未知数字和单位提供器结果会保留未决状态。它们不定义模型对象身份或资源目标相同。

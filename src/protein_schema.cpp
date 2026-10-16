@@ -2446,4 +2446,156 @@ std::span<const ProteinSchemaCommonRequirement>
 ProteinSchemaDefinitionLoadIndex::common_requirements() const noexcept {
   return impl->requirements;
 }
+struct ProteinSchemaPropertyState::Impl {
+  struct Seed {
+    ProteinSchemaDefinitionIndex definition;
+    Id property;
+    Seed(const ProteinSchemaDefinitionIndex &index, Id row)
+        : definition(index), property(row) {}
+    const ProteinSchemaDefinitionProperty &get() const noexcept {
+      return definition.properties()[property];
+    }
+  };
+  using Owner = std::shared_ptr<const Seed>;
+  Owner identity, data, flags, label, constraint, choice;
+  ProteinSchemaReferencePresence constraint_presence =
+      ProteinSchemaReferencePresence::absent;
+  Impl(const ProteinSchemaDefinitionIndex &index, Id row) {
+    detail::require(row < index.properties().size(),
+                    "Protein Schema property state row out of range");
+    identity = data = flags = label = std::make_shared<const Seed>(index, row);
+    if (const auto &value = data->get().value) {
+      if (const auto *numeric =
+              std::get_if<ProteinSchemaNumericDefaults>(value.get())) {
+        const auto status = numeric->constraint.status;
+        if (status == ProteinSchemaConstraintStatus::ready ||
+            status == ProteinSchemaConstraintStatus::unresolved) {
+          constraint = data;
+          constraint_presence =
+              status == ProteinSchemaConstraintStatus::ready
+                  ? ProteinSchemaReferencePresence::present
+                  : ProteinSchemaReferencePresence::unresolved;
+        }
+      }
+      if (std::holds_alternative<ProteinSchemaDefinitionChoice>(*value))
+        choice = data;
+    }
+  }
+};
+
+ProteinSchemaPropertyState::ProteinSchemaPropertyState(
+    std::shared_ptr<const Impl> state)
+    : impl(std::move(state)) {}
+ProteinSchemaPropertyState::ProteinSchemaPropertyState(
+    const ProteinSchemaDefinitionIndex &index, Id property)
+    : impl(std::make_shared<const Impl>(index, property)) {}
+const ProteinSchemaDefinitionProperty &
+ProteinSchemaPropertyState::target() const noexcept {
+  return impl->identity->get();
+}
+std::optional<ProteinSchemaRuntimeBinding>
+ProteinSchemaPropertyState::binding() const noexcept {
+  const auto &value = target().value;
+  return value ? protein_schema_runtime_binding(*value) : std::nullopt;
+}
+const std::shared_ptr<const ProteinSchemaDefinitionValue> &
+ProteinSchemaPropertyState::data() const noexcept {
+  return impl->data->get().value;
+}
+std::optional<ProteinSchemaRuntimeBinding>
+ProteinSchemaPropertyState::data_binding() const noexcept {
+  return data() ? protein_schema_runtime_binding(*data()) : std::nullopt;
+}
+uint32_t ProteinSchemaPropertyState::flags() const noexcept {
+  return impl->flags->get().flags;
+}
+std::string_view ProteinSchemaPropertyState::label() const noexcept {
+  return impl->label->get().label;
+}
+ProteinSchemaReferencePresence
+ProteinSchemaPropertyState::constraint_presence() const noexcept {
+  return impl->constraint_presence;
+}
+const ProteinSchemaResolvedConstraint *
+ProteinSchemaPropertyState::constraint() const noexcept {
+  return impl->constraint ? &std::get<ProteinSchemaNumericDefaults>(
+                                 *impl->constraint->get().value)
+                                 .constraint
+                          : nullptr;
+}
+const ProteinSchemaChoiceIndex *
+ProteinSchemaPropertyState::choice_table() const noexcept {
+  return impl->choice ? &std::get<ProteinSchemaDefinitionChoice>(
+                             *impl->choice->get().value)
+                             .index
+                      : nullptr;
+}
+ProteinSchemaPropertyFieldSource
+ProteinSchemaPropertyState::supplier(ProteinSchemaPropertyField field) const {
+  const Impl::Owner *owner = nullptr;
+  switch (field) {
+  case ProteinSchemaPropertyField::identity:
+    owner = &impl->identity;
+    break;
+  case ProteinSchemaPropertyField::data:
+    owner = &impl->data;
+    break;
+  case ProteinSchemaPropertyField::flags:
+    owner = &impl->flags;
+    break;
+  case ProteinSchemaPropertyField::label:
+    owner = &impl->label;
+    break;
+  case ProteinSchemaPropertyField::constraint:
+    owner = &impl->constraint;
+    break;
+  case ProteinSchemaPropertyField::choice:
+    owner = &impl->choice;
+    break;
+  default:
+    detail::require(false, "Invalid Protein Schema property state field");
+  }
+  return *owner ? ProteinSchemaPropertyFieldSource{&(*owner)->definition,
+                                                   (*owner)->property}
+                : ProteinSchemaPropertyFieldSource{};
+}
+ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
+    const ProteinSchemaPropertyState &source) const {
+  using Issue = ProteinSchemaPropertyCopyIssue;
+  if (!target().value || !source.data())
+    return {Issue::missing_value, std::nullopt};
+  const auto left = binding(), right = source.data_binding();
+  if (!left || !right)
+    return {Issue::unknown_layout, std::nullopt};
+  // All registered run.*_array projections share the native Array assignment
+  // callback. Its source element Type travels with the copied storage.
+  const auto array = [](std::string_view type) {
+    return type == "run.string_array" || type == "run.int_array" ||
+           type == "run.double_array" || type == "run.color4_array";
+  };
+  if (left->data_type != right->data_type &&
+      !(array(left->data_type) && array(right->data_type)))
+    return {Issue::raw_layout_required, std::nullopt};
+  if (impl == source.impl)
+    return {Issue::none, *this};
+  if (source.constraint_presence() ==
+      ProteinSchemaReferencePresence::unresolved)
+    return {Issue::unknown_constraint, std::nullopt};
+  if (impl->data == source.impl->data && impl->flags == source.impl->flags &&
+      impl->label == source.impl->label &&
+      (!source.impl->constraint || impl->constraint == source.impl->constraint) &&
+      (!source.impl->choice || impl->choice == source.impl->choice))
+    return {Issue::none, *this};
+  auto result = std::make_shared<Impl>(*impl);
+  result->data = source.impl->data;
+  result->flags = source.impl->flags;
+  result->label = source.impl->label;
+  if (source.impl->constraint) {
+    result->constraint = source.impl->constraint;
+    result->constraint_presence = source.impl->constraint_presence;
+  }
+  if (source.impl->choice)
+    result->choice = source.impl->choice;
+  return {Issue::none, ProteinSchemaPropertyState(std::move(result))};
+}
 } // namespace nwd

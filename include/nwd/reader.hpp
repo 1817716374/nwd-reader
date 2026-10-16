@@ -872,6 +872,62 @@ public:
       const ProteinSchemaDefinitionIndex &, ProteinSchemaDefinitionOptions = {}) const;
 };
 
+enum class ProteinSchemaPropertyField {
+  identity, data, flags, label, constraint, choice
+};
+struct ProteinSchemaPropertyFieldSource {
+  const ProteinSchemaDefinitionIndex *definition = nullptr;
+  Id property = none;
+};
+enum class ProteinSchemaReferencePresence { absent, present, unresolved };
+enum class ProteinSchemaPropertyCopyIssue {
+  none, missing_value, unknown_layout, raw_layout_required, unknown_constraint
+};
+struct ProteinSchemaPropertyCopyResult;
+
+// Immutable property state with separate target identity and data/metadata
+// suppliers. Owns the indexed rows and their document views. Copying shares
+// immutable payloads and flattens field ownership; it retains no state chains.
+// Target class/ID/context stay fixed. Source flags/label replace the target;
+// source bounds/Choice replace only when present, otherwise target refs remain.
+// Array data carries the source's actual element type, even across array classes.
+// Arbitrary cross-POD byte reinterpretation stays unresolved, never converted or
+// reported as native rejection. This is a logical state operation, not product
+// allocation/exception emulation, namespace registration or an index mutation.
+class ProteinSchemaPropertyState {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaPropertyState(std::shared_ptr<const Impl>);
+public:
+  explicit ProteinSchemaPropertyState(const ProteinSchemaDefinitionIndex &, Id property);
+  // Initial target row, including its original flags/container/label. Use the
+  // state accessors for current data/metadata. Includes inactive history rows.
+  const ProteinSchemaDefinitionProperty &target() const noexcept;
+  std::optional<ProteinSchemaRuntimeBinding> binding() const noexcept;
+  // Supplier's factory projection, including its original class/default markers
+  // and diagnostics. Its metadata is not the current state metadata. Consult
+  // data_binding() for actual data, binding() for the fixed target class.
+  const std::shared_ptr<const ProteinSchemaDefinitionValue> &data() const noexcept;
+  std::optional<ProteinSchemaRuntimeBinding> data_binding() const noexcept;
+  uint32_t flags() const noexcept;
+  std::string_view label() const noexcept;
+  ProteinSchemaReferencePresence constraint_presence() const noexcept;
+  // Candidate is also available when presence is unresolved; null when absent.
+  const ProteinSchemaResolvedConstraint *constraint() const noexcept;
+  const ProteinSchemaChoiceIndex *choice_table() const noexcept;
+  // A supplier is an indexed row in this retained scope, not a global NWD ID.
+  // Absent references have no supplier. Flags rows can themselves carry a
+  // different flags_document/flags_source after inheritance.
+  ProteinSchemaPropertyFieldSource supplier(ProteinSchemaPropertyField) const;
+  ProteinSchemaPropertyCopyResult copied_from(const ProteinSchemaPropertyState &) const;
+};
+struct ProteinSchemaPropertyCopyResult {
+  ProteinSchemaPropertyCopyIssue issue = ProteinSchemaPropertyCopyIssue::none;
+  // Present only when all field rules can be applied. Unresolved conversion
+  // diagnostics within a shared payload remain intact. No input is changed.
+  std::optional<ProteinSchemaPropertyState> state;
+};
+
 enum class ProteinSchemaDefinitionLoadStatus {
   dependencies_resolved, pending_dependencies, unresolved
 };
