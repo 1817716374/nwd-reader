@@ -1543,6 +1543,9 @@ struct ProteinSchemaReconciliationResult {
   Id alias_issue_scope = none;
   std::vector<ProteinSchemaScopedAlias> alias_inputs = {};
   std::optional<ProteinSchemaScopedAlias> alias_blocked_input = std::nullopt;
+  // For source_receiver_overlap, created retains completed receivers before
+  // this scope. Its replacement was not attempted; no merge tail was run.
+  Id blocked_receiver = none;
 };
 
 enum class ProteinSchemaDefinitionLoadStatus {

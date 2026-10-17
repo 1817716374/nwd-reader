@@ -5194,21 +5194,26 @@ ProteinSchemaDefinitionGraph::reconcile_definition(
         out.events.push_back(std::move(event));
         return unresolved(Issue::receiver_unresolved);
       }
-      // Native reentrant source-iterator ownership after reflected replacement
-      // is not established by normalized snapshots. Do not invent a restart or
-      // silently process the pre-insertion source rows as if nothing changed.
-      if (std::find(out.selection->receivers.begin(),
-                    out.selection->receivers.end(),
-                    source_id) != out.selection->receivers.end()) {
-        out.events.push_back(std::move(event));
-        return unresolved(Issue::source_receiver_overlap);
-      }
-      out.copy_issue = schema_reflected_copy_issue(value);
-      if (out.copy_issue != ProteinSchemaPropertyCopyIssue::none) {
-        out.events.push_back(std::move(event));
-        return unresolved(Issue::copy_unresolved);
-      }
+      bool copy_checked = false;
       for (const auto receiver : out.selection->receivers) {
+        // Prior receivers complete before native insertion can replace the
+        // source's mapped object. That insertion requests destruction/free,
+        // then the native loop reads the old raw source pointer again. Preserve
+        // the proven prefix; do not invent ownership, a restart or a ready
+        // half-initialized source replacement.
+        if (receiver == source_id) {
+          out.blocked_receiver = receiver;
+          out.events.push_back(std::move(event));
+          return unresolved(Issue::source_receiver_overlap);
+        }
+        if (!copy_checked) {
+          out.copy_issue = schema_reflected_copy_issue(value);
+          if (out.copy_issue != ProteinSchemaPropertyCopyIssue::none) {
+            out.events.push_back(std::move(event));
+            return unresolved(Issue::copy_unresolved);
+          }
+          copy_checked = true;
+        }
         detail::require(out.events.size() < options.max_events &&
                             out.created.size() <
                                 options.max_events - out.events.size() - 1,
