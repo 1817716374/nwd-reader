@@ -718,6 +718,8 @@ public:
   const ProteinSchemaDocument &document() const noexcept;
   std::span<const ProteinSchemaAliasEntry> entries() const noexcept;
   std::optional<ProteinSchemaAliasBinding> find(std::string_view name) const;
+  std::span<const ProteinSchemaNamedAlias> local_aliases() const noexcept;
+  std::optional<ProteinSchemaAliasBinding> find_local(std::string_view name) const;
   // Bind/replace a parent after local registration. Existing accepted/rejected
   // attempts keep their outcomes and provenance; they are not re-registered.
   // Local accepted names shadow the newly visible parent. This preserves the
@@ -1241,6 +1243,44 @@ struct ProteinSchemaDefinitionPropagationOptions {
 struct ProteinSchemaDefinitionPropagationResult;
 struct ProteinSchemaReconciliationOptions;
 struct ProteinSchemaReconciliationResult;
+enum class ProteinSchemaGraphAliasIssue {
+  none, invalid_scope, scope_unresolved, missing_node, unknown_parent, parent_cycle
+};
+struct ProteinSchemaGraphAliasOptions {
+  uint64_t max_parent_edges = 1000000; // logical reads; cached hits do not reread
+  uint32_t max_aliases = 1000000;
+  uint32_t max_cached_queries = 65536; // per composed operation; no global cache
+};
+struct ProteinSchemaGraphAliasLookup {
+  std::optional<ProteinSchemaAliasBinding> binding = std::nullopt;
+  Id scope = none, issue_scope = none; // owner is none in indexed snapshot mode
+  ProteinSchemaGraphAliasIssue issue = ProteinSchemaGraphAliasIssue::none;
+  uint64_t parent_edges = 0;
+};
+struct ProteinSchemaGraphPropertyLookup {
+  ProteinSchemaDefinitionLookup property;
+  ProteinSchemaGraphAliasLookup alias;
+  bool alias_consulted = false;
+};
+struct ProteinSchemaScopedAlias {
+  Id scope = none; // none when an indexed snapshot has no graph association
+  ProteinSchemaNamedAlias alias;
+};
+struct ProteinSchemaGraphAliasEnumeration {
+  // On an issue these are positively known entries, not a copyable native
+  // enumeration: the native count has not completed.
+  std::vector<ProteinSchemaScopedAlias> aliases;
+  std::vector<Id> scopes = {}; // verified local-to-parent walk, including empty scopes
+  ProteinSchemaGraphAliasIssue issue = ProteinSchemaGraphAliasIssue::none;
+  Id issue_scope = none;
+  uint64_t parent_edges = 0;
+};
+struct ProteinSchemaGraphAliasTransferOptions {
+  ProteinSchemaGraphAliasOptions graph;
+  ProteinSchemaAliasOptions aliases;
+  uint64_t max_metadata_history = 1000000;
+};
+struct ProteinSchemaGraphAliasTransferResult;
 // One row per scope identity; repeated enumeration uses the same graph-local Id.
 // Equal UID/XML/name/cache never merges scopes. Topology is immutable and current
 // definitions use sparse updates. Row IDs are meaningful only in this graph's
@@ -1257,6 +1297,19 @@ public:
   ProteinSchemaDefinitionRelation relation(Id) const;
   const ProteinSchemaDefinitionState &definition(Id) const;
   ProteinSchemaDefinitionGraph with_definition(Id, const ProteinSchemaDefinitionState &) const;
+  // Explicit graph-parent aliases; no inherited value copy or local replay.
+  // definition(row) stays an indexed snapshot. Use the graph queries below
+  // for runtime aliases. Immutable old graphs keep their former parent tables.
+  bool aliases_follow_parents() const noexcept;
+  ProteinSchemaDefinitionGraph with_alias_parents(bool enabled = true) const;
+  ProteinSchemaGraphAliasLookup find_alias(Id, std::string_view,
+      ProteinSchemaGraphAliasOptions = {}) const;
+  ProteinSchemaGraphPropertyLookup find(Id, std::string_view,
+      ProteinSchemaGraphAliasOptions = {}) const;
+  ProteinSchemaGraphAliasEnumeration enumerate_aliases(Id,
+      ProteinSchemaGraphAliasOptions = {}) const;
+  ProteinSchemaGraphAliasTransferResult copy_aliases(
+      Id source, Id target, ProteinSchemaGraphAliasTransferOptions = {}) const;
   // Includes target plus chains of enumerated descendants, including unenumerated
   // intermediate ancestors. Memoizes immutable parent walks; unrelated cycles
   // are not traversed. Null enumeration entries use none. Missing information
@@ -1298,6 +1351,18 @@ struct ProteinSchemaDefinitionPropagationResult {
   size_t next_source = 0;
   uint64_t new_cached_values = 0, new_text_bytes = 0;
   uint64_t receiver_history = 0;
+};
+struct ProteinSchemaGraphAliasTransferResult {
+  ProteinSchemaDefinitionGraph graph;
+  ProteinSchemaGraphAliasEnumeration source;
+  ProteinSchemaGraphAliasLookup blocked;
+  ProteinSchemaGraphAliasIssue issue = ProteinSchemaGraphAliasIssue::none;
+  size_t next_alias = 0; // completed attempts; the unresolved one is absent
+  uint64_t parent_edges = 0, metadata_history = 0;
+  // source is the initial count/inventory; inputs are the actual completed
+  // ordinal reads. They differ when appending to an ancestor shifts enumeration.
+  std::vector<ProteinSchemaScopedAlias> inputs = {};
+  std::optional<ProteinSchemaScopedAlias> blocked_input = std::nullopt;
 };
 
 // Native property compatibility over current state fields. Checks target type
@@ -1437,6 +1502,7 @@ struct ProteinSchemaReconciliationOptions {
   ProteinSchemaComparisonOptions comparison;
   ProteinSchemaDefinitionPropagationOptions propagation;
   ProteinSchemaAliasOptions aliases;
+  ProteinSchemaGraphAliasOptions graph_aliases;
   uint32_t max_source_properties = 1000000, max_target_properties = 1000000;
   uint64_t max_events = 2000000;
   // All cloned metadata rows + generated rows, and sparse old/new update rows,
@@ -1472,6 +1538,11 @@ struct ProteinSchemaReconciliationResult {
   uint64_t metadata_history = 0, state_history = 0;
   uint64_t reflected_receiver_history = 0;
   uint64_t new_properties = 0, new_cached_values = 0, new_text_bytes = 0;
+  uint64_t alias_parent_edges = 0;
+  ProteinSchemaGraphAliasIssue alias_issue = ProteinSchemaGraphAliasIssue::none;
+  Id alias_issue_scope = none;
+  std::vector<ProteinSchemaScopedAlias> alias_inputs = {};
+  std::optional<ProteinSchemaScopedAlias> alias_blocked_input = std::nullopt;
 };
 
 enum class ProteinSchemaDefinitionLoadStatus {

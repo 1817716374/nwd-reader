@@ -636,9 +636,29 @@ graph = merged.graph;
 
 内部为受影响 scope 使用私有可变索引/稀疏覆盖，结束时冻结；每个 scope 最多复制一次已有元数据和更新表。生成行共享同一最终索引与源数据，已有属性/scope/图身份保留。`comparison` 是整次调用的累计读取预算，覆盖 UID、初始/当前版本、父级和属性比较及最终整数写入；`max_metadata_history`、`max_state_history` 分别限制所有 scope 复制和新增的元数据/覆盖行。传播预算也累计使用，最终新建版本计入新增属性/值总量；事件、源/目标枚举及别名另有限制。
 
-结果的 `events` 保留已访问源行及已有分派诊断，`created` 保留按源顺序的接收事件，`next_source` 表示原始源枚举中已经完成的前缀。`graph` 始终包含已确定的当前状态，包括未决前完成的源 flags 修复、控制字节或 URI 修改。预算超限抛 `Error`，输入图保持不变；这不模拟产品异常回滚。缺失创建若会反射回正在枚举的源 scope，当前返回 `source_receiver_overlap` 未决，避免猜测重入迭代及对象释放行为；同一行的源=目标普通合并可直接处理。
+结果的 `events` 保留已访问源行及已有分派诊断，`created` 保留按源顺序的接收事件，`next_source` 表示原始源枚举中已经完成的前缀。`graph` 保留已确定的本地状态，包括未决前完成的源 flags 修复、控制字节或 URI 修改。运行时别名继承使用下述图级查询；抽出的定义索引保留自己的快照视图。预算超限抛 `Error`，输入图保持不变；这不模拟产品异常回滚。缺失创建若会反射回正在枚举的源 scope，当前返回 `source_receiver_overlap` 未决，避免猜测重入迭代及对象释放行为；同一行的源=目标普通合并可直接处理。
 
 这个入口处理显式 runtime scope 上的局部合并。CommonSchema/全局注册门槛、namespace 接管/释放及持久文件记录到这些 scope 的映射仍需要上层解析流程提供，不能仅凭局部合并兼容就断言整个 NWD/NWC/NWF 已完整解析。
+
+图中的 `parent` 与定义索引在加载时保存的别名父级快照是两种视图。仅在已确认定义作用域父级映射时启用动态绑定，不能直接使用几何结构树的父节点。默认图查询仍使用索引快照。调用 `with_alias_parents()` 可明确将图关系绑定为运行时别名父级；此后使用图的 `find_alias(scope, name)`、`find(scope, name)` 和 `enumerate_aliases(scope)` 读取当前继承结果。
+
+```cpp
+graph = graph.with_alias_parents();
+auto copied = graph.copy_aliases(source_scope, parent_scope);
+graph = copied.graph;
+auto property = graph.find(child_scope, "new_alias");
+// 检查 property.property.status 和 property.alias.issue。
+```
+
+父作用域的别名表变化后，新图中的子节点查询立即读取当前父表；旧图继续返回旧结果。绑定和查询不复制子节点属性值，不按 UID/名称合并 scope，也不重放本地接受/拒绝结果。`definition(scope)`、抽出的 `ProteinSchemaDefinitionState` 和索引仍是本地/索引快照，不会自动携带整个图的动态继承关系。可用 `with_alias_parents(false)` 回到各索引保存的视图；本地运行时登记历史保留。
+
+动态 `find` 先查本作用域实际属性，缺失时才查询本地别名及当前父链，再用所得目标名对本作用域做一次直接属性查找。不展开别名链，也不从父级借用实际属性值。枚举保留本地接受顺序及被遮蔽的父级条目。`scope` 字段表示提供该本地接受条目的运行时作用域；binding 的 document/source 则表示原始文档来源，两者可能不同。返回视图借用所属图的生命周期。
+
+`copy_aliases(source, target, options)` 先确认源初始总数与父链，再按这个总数逐条读取当前序号。目标是源的祖先时，本地表追加会改变后续源枚举；不会盲目重放旧快照。结果的 source 是初始清单，inputs 是实际完成的序号及其供应作用域，blocked_input 是尚未登记的未决输入。名称冲突检查使用当前图父级，目标反查只检查目标本地。后续父级未知时，已完成的接受/拒绝前缀保留，未确认条目不生成历史行；源计数尚未完成时不复制其已知条目。尝试和冲突所引用的源/祖先文档被持有，抽出目标状态后仍能检查历史来源。
+
+未知父级、缺失节点、未完整作用域及被访问的父环有不同诊断；实际属性或本地别名命中可绕过无关的未知/循环父级。未决枚举只表示已知条目，不能当作原生计数已成功。`ProteinSchemaGraphAliasOptions` 限制逻辑父边读取、枚举条目和单次组合操作的查询缓存；资源超限抛 `Error`。登记同时遵守别名历史、索引可见表存储、来源持有深度及目标元数据历史预算。
+
+绑定模式下 `reconcile_definition` 的初始/当前/最终版本、旧 profile 的别名查找和末尾别名登记均使用这套动态视图。`graph_aliases` 预算贯穿整次合并；缓存仅保存别名名称绑定，属性值每次重新读取，因此已有字段更新仍立即可见。缓存没有全局可变状态，不跨图快照保存。
 
 `protein_schema_compare_values(left, right, options)` 对缓存工厂值执行原生兼容比较；`protein_schema_compare_choice_tables(left, right, options)` 单独比较 XML 枚举表。`protein_schema_compare_properties(left, right, skip_type, options)` 依次检查属性存在和类型、跳过类型、数值约束或 Choice 表及具体值。它们返回 `equal`、`different` 或 `unresolved`，并提供未决原因与条目位置；不会复制数据或执行全局登记。属性 flags、label、ID、别名、版本升级和 URI 更新由登记流程另行处理。
 
