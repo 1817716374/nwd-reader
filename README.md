@@ -935,3 +935,9 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 使用 zlib 进行解压，使用 JSON for Modern C++ 处理引用表与材质资产，使用 SQLite 在内存中读取嵌入数据库，复用 tiny-AES-c 与 Blowfish 实现读取格式内的编码载荷。版本及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 Schema XML 使用固定版本 Expat 2.8.5，静态链接并隔离符号；源码及许可证随库提供，构建无需联网。
+
+## 许可证 / License
+
+本项目原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。符合许可证条款的非商业用途可获得相应的使用、修改和分发许可；具体范围以正式英文条款为准。请阅读[非正式中文摘要](LICENSE.zh-CN.md)。拟进行商业使用者应在使用前联系维护者；超出英文许可证授权范围的商业使用须另行协商并签署书面协议，详见[商业授权政策](COMMERCIAL-LICENSING.md)。公开仓库本身不自动授予商业使用权。第三方组件仍受各自许可证约束，见[第三方声明](THIRD_PARTY_NOTICES.md)。由于商业用途受到限制，本项目属于源码可见许可，不应称为符合 OSI 开源定义的开源软件。
+
+The project's original code is offered under the [PolyForm Noncommercial License 1.0.0](LICENSE). Use, modification, and distribution for permitted noncommercial purposes are subject to the official English terms; a [nonofficial Chinese summary](LICENSE.zh-CN.md) is also available. Anyone planning commercial use should contact the maintainer beforehand; commercial use outside the English license grant requires separate negotiation and a signed written agreement. See the [commercial licensing policy](COMMERCIAL-LICENSING.md). A public repository does not automatically grant commercial use rights. Bundled third-party components keep their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Because commercial use is restricted, this is a source-available license and should not be described as open source under the OSI Open Source Definition.
