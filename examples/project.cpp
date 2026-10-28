@@ -71,8 +71,8 @@ static int run(const std::filesystem::path &file) {
             }
           }
         }
-        // Throws for explicitly unvalidated NWF placements; inspect raw
-        // reference.
+        // Throws for unsupported placements such as singular base replacement
+        // or nested NWF placement; inspect the raw reference.
         auto matrix = nwd::project_world_matrix(project, id, 0);
         (void)matrix;
       }

@@ -88,12 +88,15 @@ static int run(const std::filesystem::path &path) {
                     << " connection decoded="
                     << link.tagged_connection.has_value() << '\n';
       }
-      if (const auto *database = std::get_if<nwd::FileDatabase>(&block.value))
+      if (const auto *database = std::get_if<nwd::FileDatabase>(&block.value)) {
         for (const auto &table : database->tables)
           std::cout << "  table=" << table.name
                     << " columns=" << table.columns.size()
                     << " rows=" << table.rows.size()
                     << " foreign keys=" << table.foreign_keys.size() << '\n';
+        for (const auto &name : database->unread_virtual_tables)
+          std::cout << "  virtual table not evaluated=" << name << '\n';
+      }
       if (const auto *spatial =
               std::get_if<nwd::SpatialHierarchy>(&block.value))
         std::cout << "  spatial nodes=" << spatial->nodes.size()

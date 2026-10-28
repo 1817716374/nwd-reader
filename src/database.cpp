@@ -115,8 +115,10 @@ void read_file_database(FileDatabase &out, Cursor &r, bool wrapped,
   for (const auto &s : out.schema) {
     if (s.type != "table")
       continue;
-    if (!s.root_page)
-      throw UnsupportedLayout("database virtual table " + s.name);
+    if (!s.root_page) {
+      out.unread_virtual_tables.push_back(s.name);
+      continue;
+    }
     auto &table = out.tables.emplace_back();
     table.name = s.name;
     auto rows = query(raw, "SELECT * FROM " + identifier(s.name));

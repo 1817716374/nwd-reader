@@ -20,7 +20,7 @@
 - **碰撞**：读取测试、结果、结果组、规则、审批与模拟事件，以及验证选择中保存的路径编号。
 - **轴网**：读取系统坐标框架、轴线直线段和圆弧、楼层标高、活动系统与锁定层。
 - **数据库链接**：读取保存的 SQL、连接字符串、开关和字段映射，保留共享名称与原始编码字节。
-- **文件数据库**：在内存中读取 SQLite 表结构、行、列、原始单元格类型、外键和定义，不执行源视图或外部数据库查询。
+- **文件数据库**：在内存中读取 SQLite 表结构、行、列、原始单元格类型、外键和定义，不执行源视图或外部数据库查询。虚拟表的 DDL 和名称保留，未求值表会使对应产品块标记为部分解析；普通表及其 shadow tables 仍会读取。
 - **空间树**：读取原生空间层级及分片槽引用，保留父子结构并关联模型实例。
 - **旧式 Presenter**：读取 LightWorks 实体树、有类型的着色参数、编码图像、灯光、材质槽分配和纹理映射，保留归档内共享身份与路径关联。
 - **灯光与文档信息**：读取现代灯光资产、位置/目标点、图纸目录、默认图纸、发布字段、缓存配置、超链接、序列号和几何压缩参数。
@@ -806,9 +806,9 @@ XML 读取限制输入长度、节点数、属性数、深度及解码文本总�
 
 矩阵使用列主序。`world_matrix()` 保持源单位，`model.meters_per_unit` 提供到米的比例。`project_world_matrix()` 将受支持的引用放置和单位换算组合为米制矩阵；遇到不支持的引用放置会抛出异常。
 
-同单位 NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放和剪切；源几何仍共享。`model_base_matrix()` 返回源基准矩阵，`reference_placement_matrix()` 返回引用所需的米制修正矩阵。方向提示的变化单独保存在节点的 `orientation_changed` 中。
+NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放和剪切；已验证的单位覆盖会在米制项目矩阵中与基准替换组合，源几何仍共享。`model_base_matrix()` 返回源基准矩阵，`reference_placement_matrix()` 返回引用所需的米制修正矩阵。方向提示的变化单独保存在节点的 `orientation_changed` 中。
 
-`NwfReference.load_flags` 的 bit0、bit1、bit2 分别表示采用保存的单位、基准变换和朝向向量；版本244之前的缺省值为7，之后保留文件中的显式值。引用放置仅在 bit1 启用时替换基准变换；未启用单位和变换覆盖时保留源米制坐标。单位覆盖、跨单位基准替换及嵌套引用的复杂放置仍会明确报告不支持。朝向向量保留原始记录，尚未提供加载后的有效向量查询。
+`NwfReference.load_flags` 的 bit0、bit1、bit2 分别表示采用保存的单位、基准变换和朝向向量；版本244之前的缺省值为7，之后保留文件中的显式值。引用放置仅在 bit1 启用时替换基准变换；bit0/bit1可以组合不同的来源、引用和父级单位，项目矩阵在米制空间应用对应的基准修正。非恒等替换遇到奇异源基准时会明确报错。朝向向量保留原始记录，尚未提供加载后的有效向量查询；嵌套引用和Navisworks多文件根的最终矩阵仍未与产品运行时逐项对照。
 
 `NwfReference` 和 `NwfData` 的 `up`、`north`、`front` 分别返回保存的上向、北向和前向向量，不自动归一化或推算缺失方向。来源记录在格式版本109之前没有前向字段，`front` 返回零向量。
 
@@ -858,7 +858,7 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `SavedItem.sheet_info` 返回图纸ID、初始文件/图纸、属性类别和来源GUID；文件根的 `file_info.default_sheet_matches` 按原始图纸ID列出所有直接子项匹配，不擅自消除重复。`light` 的 `object` 与 `material_asset` 索引属于同一 `SavedItems.objects`，现代灯光另提供 `position` 和 `target`。
 
-`FileDatabase.tables` 保留数据库普通表的原始列与行；`DatabaseCell` 区分NULL、64位整数、浮点数、字符串和二进制字节。空BLOB与NULL、自动索引的NULL SQL与空字符串分别保留。`schema` 保留视图/索引/触发器定义，但读取器不会执行这些定义；应用表中BLOB内部格式和业务关联需另行解释。
+`FileDatabase.tables` 保留数据库普通表的原始列与行；`DatabaseCell` 区分NULL、64位整数、浮点数、字符串和二进制字节。空BLOB与NULL、自动索引的NULL SQL与空字符串分别保留。`schema` 保留视图/索引/触发器定义，但读取器不会执行这些定义。`unread_virtual_tables` 返回保留了DDL但未读取其逻辑行的虚拟表名；对应 `ProductBlock` 状态为 `partial`，普通表和可见的shadow tables仍保留。应用表中BLOB内部格式和业务关联需另行解释。
 
 `SpatialHierarchy.nodes` 使用 `parent/first_child/next_sibling` 表达邻接关系。类型1/4的 `fragment` 是模型分片槽，只有 `associations_verified` 为true时才能结合 `model` 访问 `Scene.models[model].instances[fragment]`。通过 `Options.products = true` 调用 `read_scene()` 才会校验此关联；单独 `read_products()` 保留未绑定状态。实例仍引用共享几何。
 

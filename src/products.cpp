@@ -804,8 +804,15 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     b.value.emplace<GeometryCompression>(read_geometry_compression(r, version));
   } else if (kind == "LcOpFileDatabaseElement" ||
              kind == "LcOpFileDatabaseElementNWD") {
-    read_file_database(b.value.emplace<FileDatabase>(), r,
-                       kind == "LcOpFileDatabaseElement", options);
+    auto &database = b.value.emplace<FileDatabase>();
+    read_file_database(database, r, kind == "LcOpFileDatabaseElement",
+                       options);
+    if (!database.unread_virtual_tables.empty()) {
+      std::string message = "database virtual tables not evaluated:";
+      for (const auto &name : database.unread_virtual_tables)
+        message += " " + name;
+      throw Unsupported(std::move(message));
+    }
   } else if (kind == "LcOpHyperlinksOverrideElement") {
     auto &v = b.value.emplace<HyperlinkOverrides>();
     v.implicit_node_map = implicit_node_map;

@@ -1383,31 +1383,45 @@ Matrix reference_placement_matrix(const Model &m, const NwfReference &r,
                                   uint32_t parent_units) {
   detail::require(m.linear_units >= 0, "unknown NWF source units");
   const auto source_units = static_cast<uint32_t>(m.linear_units);
-  (void)unit(source_units);
+  const auto source_scale = unit(source_units);
   (void)unit(parent_units);
   const bool replace_units = (r.load_flags & 1) != 0;
   const bool replace_transform = (r.load_flags & 2) != 0;
-  detail::require(!replace_units || r.linear_units == source_units,
-                  "NWF source unit override not supported");
   detail::require(r.orientation_flag <= 1, "invalid NWF orientation hint");
-  // An unselected serialized transform is not applied or even evaluated.
-  // With unchanged source units, parent-unit conversion preserves metric
-  // positions and does not require inverting a possibly singular old base.
-  if (!replace_transform)
+  if (!replace_transform &&
+      (!replace_units || r.linear_units == source_units))
     return identity();
-  // A selected reference affine maps reference-input units to parent units.
-  // Numeric equality with the old affine does not imply physical equality
-  // when those units differ. Leave the loading conversion explicit for now.
-  detail::require(r.linear_units == source_units &&
-                      parent_units == source_units,
-                  "NWF mixed-unit placement override not supported");
-  auto old = model_base_matrix(m), next = affine(r.affine);
+
+  const bool replace_transform_data = (r.load_flags & 2) != 0;
+  const auto input_units = replace_units ? r.linear_units : source_units;
+  const auto old_input_units = replace_transform_data ? r.linear_units
+                                                       : source_units;
+  const auto old_output_units = replace_transform_data ? parent_units
+                                                        : source_units;
+  const double input_scale = unit(input_units) / unit(old_input_units);
+  const double output_scale = unit(old_output_units) / unit(parent_units);
+  auto old = model_base_matrix(m);
+  auto next = replace_transform ? affine(r.affine) : old;
+  if (input_units != old_input_units)
+    for (unsigned col = 0; col < 3; ++col)
+      for (unsigned row = 0; row < 3; ++row)
+        next[col * 4 + row] *= input_scale;
+  if (old_output_units != parent_units)
+    for (unsigned col = 0; col < 4; ++col)
+      for (unsigned row = 0; row < 3; ++row)
+        next[col * 4 + row] *= output_scale;
+  for (double value : next)
+    detail::require(std::isfinite(value), "nonfinite NWF unit-adjusted transform");
+
+  const auto output_scale_m = unit(parent_units);
+  for (unsigned col = 0; col < 4; ++col)
+    for (unsigned row = 0; row < 3; ++row) {
+      old[col * 4 + row] *= source_scale;
+      next[col * 4 + row] *= output_scale_m;
+    }
   if (old == next)
     return identity();
-  auto delta = multiply(next, inverse(old));
-  for (unsigned i = 0; i < 3; ++i)
-    delta[12 + i] *= unit(r.linear_units);
-  return delta;
+  return multiply(next, inverse(old));
 }
 const Model &appearance_arena(const Project &p, ProjectAppearance a) {
   const auto &s = p.sources.at(a.source);

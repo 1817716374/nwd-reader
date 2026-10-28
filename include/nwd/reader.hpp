@@ -3213,6 +3213,11 @@ struct FileDatabase {
   uint32_t page_size = 0, page_count = 0, user_version = 0;
   std::vector<DatabaseSchemaEntry> schema;
   std::vector<DatabaseTable> tables;
+  // Virtual-table DDL remains in schema; rows and module-specific behavior are
+  // not evaluated. Ordinary tables, including virtual-table shadow tables,
+  // are still returned. A nonempty list makes the enclosing ProductBlock
+  // partial.
+  std::vector<std::string> unread_virtual_tables;
 };
 struct Hyperlink {
   std::string url, label;
@@ -3806,7 +3811,9 @@ const SavedPathBinding *saved_path_binding(const Project &, Id owner, Id block,
 Project load_project(const std::filesystem::path &, ProjectOptions = {});
 std::array<double, 16> model_base_matrix(const Model &);
 std::array<double, 16> nwf_transform_matrix(const NwfTransformOverride &);
-// Replaces the stored base transform. Throws for unvalidated unit overrides.
+// Replaces the stored base transform in metric space, including validated
+// NWF input/output unit overrides. Singular source bases still throw when a
+// nonidentity replacement requires inversion.
 std::array<double, 16> reference_placement_matrix(const Model &,
                                                   const NwfReference &,
                                                   uint32_t parent_units);
