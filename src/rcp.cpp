@@ -866,11 +866,20 @@ struct RcpProjectDocument::Impl {
             record.locked = xml.attribute(node, "Locked");
             record.removed = xml.attribute(node, "Removed");
             record.default_layer = is_default;
-            if (const auto color = rcp_child_element(xml, node, "Color"))
+            if (const auto color = rcp_child_element(xml, node, "Color")) {
               record.color_node = *color;
+              constexpr std::string_view channels[] = {"R", "G", "B"};
+              for (size_t i = 0; i < 3; ++i)
+                record.color.rgb[i] = xml.attribute(*color, channels[i]);
+            }
             if (const auto bounds =
-                    rcp_child_element(xml, node, "SelectionBounds"))
+                    rcp_child_element(xml, node, "SelectionBounds")) {
               record.selection_bounds_node = *bounds;
+              record.selection_bounds_min =
+                  rcp_project_vector3(xml, *bounds, "Min");
+              record.selection_bounds_max =
+                  rcp_project_vector3(xml, *bounds, "Max");
+            }
             region_layers.push_back(std::move(record));
           }
         };

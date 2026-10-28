@@ -74,11 +74,20 @@ int main(int argc, char **argv) {
                 << project.voxel_tree_runtime().size() << '\n';
       std::cout << "  Region layers=" << project.region_layers().size()
                 << '\n';
-      for (const auto &layer : project.region_layers())
+      for (const auto &layer : project.region_layers()) {
         std::cout << "    layer=" << layer.id.value_or(std::string_view{})
                   << " name=" << layer.name.value_or(std::string_view{})
                   << " index=" << layer.index.value_or(std::string_view{})
-                  << " default=" << layer.default_layer << '\n';
+                  << " default=" << layer.default_layer << " rgb=(";
+        for (size_t i = 0; i < layer.color.rgb.size(); ++i) {
+          if (i)
+            std::cout << ',';
+          std::cout << layer.color.rgb[i].value_or(std::string_view{});
+        }
+        std::cout << ")\n";
+        print_vector_fields("bounds.Min", layer.selection_bounds_min);
+        print_vector_fields("bounds.Max", layer.selection_bounds_max);
+      }
       const auto runtime = project.voxel_tree_runtime();
       const auto external_files = reader.external_rcs_files();
       for (uint32_t runtime_index = 0; runtime_index < runtime.size();

@@ -462,10 +462,15 @@ struct RcpProjectVector3 {
   std::array<std::optional<std::string_view>, 3> lowercase_xyz{},
       uppercase_xyz{};
 };
+struct RcpProjectColor3 {
+  std::array<std::optional<std::string_view>, 3> rgb{};
+};
 struct RcpProjectRegionLayer {
   Id xml_node = none;
   std::optional<std::string_view> id, name, index, visible, locked, removed;
   bool default_layer = false;
+  RcpProjectColor3 color;
+  RcpProjectVector3 selection_bounds_min, selection_bounds_max;
   Id color_node = none, selection_bounds_node = none;
 };
 struct RcpProjectRegionStatus {
