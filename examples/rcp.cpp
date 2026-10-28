@@ -88,6 +88,12 @@ int main(int argc, char **argv) {
         print_vector_fields("bounds.Min", layer.selection_bounds_min);
         print_vector_fields("bounds.Max", layer.selection_bounds_max);
       }
+      std::cout << "  Clip filters=" << project.clip_filters().size()
+                << '\n';
+      for (const auto &filter : project.clip_filters())
+        std::cout << "    clip OperationFlag="
+                  << filter.operation_flag.value_or(std::string_view{})
+                  << '\n';
       const auto runtime = project.voxel_tree_runtime();
       const auto external_files = reader.external_rcs_files();
       for (uint32_t runtime_index = 0; runtime_index < runtime.size();
@@ -144,6 +150,9 @@ int main(int argc, char **argv) {
         print_vector_fields("Eye", view.camera_eye);
         print_vector_fields("Center", view.camera_center);
         print_vector_fields("Up", view.camera_up);
+        std::cout << "      ClippingBoundaries OperationFlag="
+                  << view.clipping_operation_flag.value_or(std::string_view{})
+                  << '\n';
         std::cout << "      LimitBox vertices=" << view.limit_box_vertices.size()
                   << '\n';
         if (!view.limit_box_vertices.empty())

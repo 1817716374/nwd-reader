@@ -848,6 +848,7 @@ struct RcpProjectDocument::Impl {
   std::vector<RcpProjectShot> shots;
   std::vector<RcpProjectGroup> groups;
   std::vector<RcpProjectRegionLayer> region_layers;
+  std::vector<RcpProjectSpatialFilter> clip_filters;
   std::vector<RcpProjectViewState> navigator_view_states;
   std::vector<RcpProjectSavedView> saved_view_states;
   Impl(std::span<const uint8_t> bytes, RcpXmlOptions options)
@@ -893,6 +894,26 @@ struct RcpProjectDocument::Impl {
         if (const auto region_array =
                 rcp_child_element(xml, *manager, "RegionArray"))
           append_region_layers(*region_array, false);
+      }
+    }
+    if (const auto point_cloud =
+            rcp_child_element(xml, root, "PointCloudSegmentList")) {
+      if (const auto manager =
+              rcp_child_element(xml, *point_cloud, "ClipManager")) {
+        for (const auto node :
+             rcp_child_elements(xml, *manager, "MultiSpatialFilter")) {
+          RcpProjectSpatialFilter filter;
+          filter.xml_node = node;
+          if (const auto flag =
+                  rcp_child_element(xml, node, "OperationFlag")) {
+            filter.operation_flag_node = *flag;
+            filter.operation_flag = xml.attribute(*flag, "Value");
+          }
+          if (const auto all =
+                  rcp_child_element(xml, node, "AllSpatialFilters"))
+            filter.all_spatial_filters_node = *all;
+          clip_filters.push_back(std::move(filter));
+        }
       }
     }
     if (const auto nodes = rcp_child_element(xml, root, "Nodes"))
@@ -984,8 +1005,18 @@ struct RcpProjectDocument::Impl {
                 rcp_project_vector3_node(xml, vertex));
         }
         if (const auto child =
-                rcp_child_element(xml, node, "ClippingBoundaries"))
+                rcp_child_element(xml, node, "ClippingBoundaries")) {
           record.clipping_boundaries_node = *child;
+          if (const auto flag =
+                  rcp_child_element(xml, *child, "OperationFlag")) {
+            record.clipping_operation_flag_node = *flag;
+            record.clipping_operation_flag =
+                xml.attribute(*flag, "Value");
+          }
+          if (const auto all =
+                  rcp_child_element(xml, *child, "AllSpatialFilters"))
+            record.clipping_all_spatial_filters_node = *all;
+        }
         if (const auto child = rcp_child_element(xml, node, "Regions"))
           record.regions_node = *child;
         if (record.regions_node != none) {
@@ -1141,6 +1172,10 @@ std::span<const RcpProjectGroup> RcpProjectDocument::groups() const noexcept {
 std::span<const RcpProjectRegionLayer>
 RcpProjectDocument::region_layers() const noexcept {
   return impl_->region_layers;
+}
+std::span<const RcpProjectSpatialFilter>
+RcpProjectDocument::clip_filters() const noexcept {
+  return impl_->clip_filters;
 }
 std::span<const RcpProjectViewState>
 RcpProjectDocument::navigator_view_states() const noexcept {

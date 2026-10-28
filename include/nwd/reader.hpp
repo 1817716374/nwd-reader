@@ -473,6 +473,11 @@ struct RcpProjectRegionLayer {
   RcpProjectVector3 selection_bounds_min, selection_bounds_max;
   Id color_node = none, selection_bounds_node = none;
 };
+struct RcpProjectSpatialFilter {
+  Id xml_node = none, operation_flag_node = none,
+     all_spatial_filters_node = none;
+  std::optional<std::string_view> operation_flag;
+};
 struct RcpProjectRegionStatus {
   Id xml_node = none;
   std::optional<std::string_view> id, visible;
@@ -486,6 +491,9 @@ struct RcpProjectSavedView {
   std::optional<std::string_view> limit_box_visible, limit_box_node_name,
       limit_box_first_time;
   std::vector<RcpProjectVector3> limit_box_vertices;
+  std::optional<std::string_view> clipping_operation_flag;
+  Id clipping_operation_flag_node = none,
+     clipping_all_spatial_filters_node = none;
   std::optional<std::string_view> regions_isolated;
   Id camera_node = none, limit_box_node = none, clipping_boundaries_node = none,
      regions_node = none, default_region_status_node = none,
@@ -513,6 +521,7 @@ public:
   std::span<const RcpProjectShot> shots() const noexcept;
   std::span<const RcpProjectGroup> groups() const noexcept;
   std::span<const RcpProjectRegionLayer> region_layers() const noexcept;
+  std::span<const RcpProjectSpatialFilter> clip_filters() const noexcept;
   std::span<const RcpProjectViewState> navigator_view_states() const noexcept;
   std::span<const RcpProjectSavedView> saved_view_states() const noexcept;
 };

@@ -23,4 +23,4 @@ for (const auto &reference : project.external_rcs_files()) {
 }
 ```
 
-Encrypted members and compression methods other than stored and DEFLATE are not decoded. Their source bytes and unknown project XML remain accessible.
+`ClipManager/MultiSpatialFilter` exposes raw `OperationFlag/@Value` and the `AllSpatialFilters` node ID; saved views expose the equivalent clipping-boundary operation flag and container ID. Filter children remain available in the ordered XML tree, and operation enum semantics are not inferred. Encrypted members and compression methods other than stored and DEFLATE are not decoded. Their source bytes and unknown project XML remain accessible.
