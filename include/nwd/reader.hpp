@@ -217,7 +217,8 @@ struct RcsVoxelDescriptor {
 };
 struct RcsRawPoint {
   std::array<double, 3> position{};
-  std::array<uint8_t, 4> rgba{}; // rgba[3] is also the saved intensity byte
+  // Saved byte order is retained verbatim; native RGBA output swaps lanes 1/2.
+  std::array<uint8_t, 4> rgba{};
   uint8_t lidar_classification = 0;
   bool deleted = false;
   uint16_t normal = 0; // packed 14-bit NormalUtils table index
@@ -226,6 +227,9 @@ struct RcsRawPoint {
 
   // Native intensity output uses this saved byte unchanged when enabled.
   uint8_t raw_intensity() const noexcept { return rgba[3]; }
+  std::array<uint8_t, 4> color_rgba() const noexcept {
+    return {rgba[0], rgba[2], rgba[1], rgba[3]};
+  }
 };
 struct RcsFileIndex {
   uint32_t version_major = 0, version_minor = 0;

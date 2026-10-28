@@ -18,9 +18,13 @@ int main(int argc, char **argv) {
         continue;
       const auto point = reader.point(i, 0);
       const auto normal = nwd::decode_rcs_normal(point.normal);
+      const auto rgba = point.color_rgba();
       std::cout << "voxel " << i << ": " << voxel.point_count
                 << " points; first XYZ = " << point.position[0] << ", "
                 << point.position[1] << ", " << point.position[2]
+                << "; RGBA = " << unsigned(rgba[0]) << ", "
+                << unsigned(rgba[1]) << ", " << unsigned(rgba[2]) << ", "
+                << unsigned(rgba[3])
                 << "; first normal = " << normal[0] << ", " << normal[1]
                 << ", " << normal[2]
                 << "; raw intensity = " << unsigned(point.raw_intensity())
