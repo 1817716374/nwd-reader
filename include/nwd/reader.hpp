@@ -452,14 +452,25 @@ struct RcpProjectViewState {
   RcpIdentityLinkStatus saved_view_link = RcpIdentityLinkStatus::missing_id;
   std::optional<uint32_t> saved_view_index;
 };
+struct RcpProjectViewScanStatus {
+  Id xml_node = none;
+  std::optional<std::string_view> id, visible;
+  RcpIdentityLinkStatus scan_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> scan_index;
+};
 struct RcpProjectSavedView {
   Id xml_node = none;
-  std::optional<std::string_view> id, title;
+  std::optional<std::string_view> id, title, fov, point_size, shading_mode;
+  Id camera_node = none, limit_box_node = none, clipping_boundaries_node = none,
+     regions_node = none, default_region_status_node = none,
+     scan_locations_node = none, background_color_node = none;
+  std::vector<RcpProjectViewScanStatus> scan_locations;
 };
 // Source-named project records are projections of the generic XML tree: raw
 // field strings are preserved without numeric/unit normalization. Exact IDs
 // link runtime/Scan, shot/runtime, shot/group and navigator/saved-view records
-// only when unique. Other project fields remain accessible from xml() by node.
+// only when unique. Saved-view scan statuses link to Scan records by unique ID.
+// Other project fields remain accessible from xml() by node.
 class RcpProjectDocument {
   struct Impl;
   std::shared_ptr<const Impl> impl_;

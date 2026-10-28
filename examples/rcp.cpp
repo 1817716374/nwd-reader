@@ -104,6 +104,21 @@ int main(int argc, char **argv) {
           std::cout << ':' << *state.saved_view_index;
         std::cout << '\n';
       }
+      for (const auto &view : project.saved_view_states()) {
+        std::cout << "    saved-view="
+                  << view.title.value_or(std::string_view{}) << " fov="
+                  << view.fov.value_or(std::string_view{}) << " scans="
+                  << view.scan_locations.size() << '\n';
+        for (const auto &scan : view.scan_locations) {
+          std::cout << "      scan=" << scan.id.value_or(std::string_view{})
+                    << " visible="
+                    << scan.visible.value_or(std::string_view{}) << " link="
+                    << status_name(scan.scan_link);
+          if (scan.scan_index)
+            std::cout << ':' << *scan.scan_index;
+          std::cout << '\n';
+        }
+      }
     }
     return 0;
   } catch (const std::exception &error) {

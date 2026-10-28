@@ -901,9 +901,42 @@ struct RcpProjectDocument::Impl {
           groups.push_back({node, xml.attribute(node, "id")});
     }
     if (const auto views = rcp_child_element(xml, root, "ViewStates"))
-      for (const auto node : rcp_child_elements(xml, *views, "ViewState"))
-        saved_view_states.push_back(
-            {node, xml.attribute(node, "ID"), xml.attribute(node, "Title")});
+      for (const auto node : rcp_child_elements(xml, *views, "ViewState")) {
+        RcpProjectSavedView record;
+        record.xml_node = node;
+        record.id = xml.attribute(node, "ID");
+        record.title = xml.attribute(node, "Title");
+        record.fov = xml.attribute(node, "FOV");
+        record.point_size = xml.attribute(node, "PointSize");
+        record.shading_mode = xml.attribute(node, "ShadingMode");
+        if (const auto child = rcp_child_element(xml, node, "Camera"))
+          record.camera_node = *child;
+        if (const auto child = rcp_child_element(xml, node, "LimitBox"))
+          record.limit_box_node = *child;
+        if (const auto child =
+                rcp_child_element(xml, node, "ClippingBoundaries"))
+          record.clipping_boundaries_node = *child;
+        if (const auto child = rcp_child_element(xml, node, "Regions"))
+          record.regions_node = *child;
+        if (const auto child =
+                rcp_child_element(xml, node, "DefaultRegionStatus"))
+          record.default_region_status_node = *child;
+        if (const auto child = rcp_child_element(xml, node, "ScanLocations")) {
+          record.scan_locations_node = *child;
+          for (const auto status :
+               rcp_child_elements(xml, *child, "Status")) {
+            RcpProjectViewScanStatus scan_status;
+            scan_status.xml_node = status;
+            scan_status.id = xml.attribute(status, "ID");
+            scan_status.visible = xml.attribute(status, "Visible");
+            record.scan_locations.push_back(std::move(scan_status));
+          }
+        }
+        if (const auto child =
+                rcp_child_element(xml, node, "BackgroundColor"))
+          record.background_color_node = *child;
+        saved_view_states.push_back(std::move(record));
+      }
 
     const auto runtime_index = rcp_identity_index(
         runtime, [](const auto &record) { return record.id; });
@@ -959,6 +992,19 @@ struct RcpProjectDocument::Impl {
           navigator_view_states[i].saved_view_link = status;
           navigator_view_states[i].saved_view_index = target;
         });
+    for (auto &view : saved_view_states) {
+      const auto status_index = rcp_identity_index(
+          view.scan_locations,
+          [](const auto &record) { return record.id; });
+      rcp_link_identities(
+          view.scan_locations, status_index, scan_index,
+          [](const auto &record) { return record.id; },
+          [&](uint32_t i, RcpIdentityLinkStatus status,
+              std::optional<uint32_t> target) {
+            view.scan_locations[i].scan_link = status;
+            view.scan_locations[i].scan_index = target;
+          });
+    }
   }
 };
 RcpProjectDocument::RcpProjectDocument(std::span<const uint8_t> bytes,
