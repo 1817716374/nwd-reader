@@ -1,12 +1,14 @@
 # RCP project reader
 
-`RcpReader` maps an RCP archive read-only and indexes ZIP/ZIP64 members in saved order. Duplicate member names remain distinct. Raw archive and compressed member spans avoid copies. `read_entry()` decodes stored and DEFLATE members on demand and verifies size and CRC. Encrypted and unsupported compression methods remain available as raw bytes.
+`RcpReader` maps an RCP archive read-only and indexes ZIP/ZIP64 members in central-directory order. Duplicate member names remain distinct. `raw_archive()` and `raw_compressed_entry()` expose borrowed byte spans. `read_entry()` decodes stored and DEFLATE members on demand and verifies the uncompressed size and CRC.
 
-`RcpXmlDocument` provides a bounded ordered XML tree. It retains unknown elements, attributes, comments, processing instructions and decoded text. DTDs and external entities are not loaded.
+Entry names are exposed as UTF-8 in `RcpArchiveEntry::name`. The reader honors the ZIP UTF-8 flag; when it is unset, it accepts a version 1 Info-ZIP Unicode Path extra field only when its CRC matches the original filename bytes, then falls back to CP437. `raw_name` preserves the exact filename bytes and `name_encoding` reports the selected branch. An undefined legacy language-encoding field is reported as `unknown_legacy_encoding`; the displayed name then uses the CP437 fallback. These rules follow the ZIP format specification's filename encoding and Unicode Path definitions. [PKWARE APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
 
-`RcpProjectDocument` exposes project, point-cloud runtime, Scan, ShotInfo, GroupInfo and saved-view records. It preserves source strings for paths, transforms, IDs, titles and other fields. Exact unique IDs link runtime records to Scan records, ShotInfo records to point-cloud runtime and GroupInfo records, and navigator view entries to full saved-view records. Missing IDs, absent matches and duplicate identities have explicit statuses. Other project data remains accessible from the XML tree by node ID; coordinate units and rotation conventions are not inferred.
+`RcpXmlDocument` provides a bounded, ordered XML tree. It retains unknown elements, attributes, comments, processing instructions and decoded text. DTDs and external entities are not loaded.
 
-`RcpProjectReader` selects the XML member automatically when there is exactly one, or accepts an explicit member index. It resolves RCS files using exact `RcpPathRemap` entries first, then `RelativePath` beside the RCP, an absolute saved `Path`, caller-provided search directories, and filename fallback within those directories. Ambiguous matches are reported without choosing one. Missing and invalid files have separate statuses and diagnostics. External loading can be disabled. Each runtime occurrence remains distinct; repeated references to one canonical path share a read-only `RcsReader` mapping.
+`RcpProjectDocument` exposes project UUID, point-cloud runtime, Scan, ShotInfo, GroupInfo, navigator view and full saved-view records. It retains source strings for paths, transforms, IDs, titles and other projected fields. Exact unique IDs link runtime records to Scan records, ShotInfo records to point-cloud runtime and GroupInfo records, and navigator view entries to full saved-view records. Missing IDs, absent matches and duplicate IDs have explicit statuses. Other XML fields remain accessible by node ID; units and transform conventions are not inferred.
+
+`RcpProjectReader` selects the only XML member automatically or accepts an explicit member index. It resolves external RCS references in this order: exact `RcpPathRemap`, `RelativePath` beside the RCP, absolute saved `Path`, caller-provided search directories, then filename-only candidates in those directories. It reports ambiguous, missing and invalid files separately, and external loading can be disabled. Each runtime occurrence stays distinct; references to the same canonical file share one read-only `RcsReader` mapping.
 
 ```cpp
 #include <nwd/reader.hpp>
@@ -21,4 +23,4 @@ for (const auto &reference : project.external_rcs_files()) {
 }
 ```
 
-The library preserves project XML fields that do not yet have semantic projections. It does not assign meaning to unknown fields or infer world-coordinate composition. See also [the RCP example](../examples/rcp.cpp).
+Encrypted members and compression methods other than stored and DEFLATE are not decoded. Their source bytes and unknown project XML remain accessible.

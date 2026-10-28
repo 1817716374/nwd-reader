@@ -51,6 +51,151 @@ uint32_t zip_crc32(std::span<const uint8_t> bytes) {
   }
   return static_cast<uint32_t>(crc);
 }
+bool zip_valid_utf8(std::string_view value) {
+  size_t i = 0;
+  while (i < value.size()) {
+    const auto first = static_cast<uint8_t>(value[i]);
+    if (first <= 0x7f) {
+      ++i;
+      continue;
+    }
+    uint32_t codepoint = 0;
+    size_t count = 0;
+    if (first >= 0xc2 && first <= 0xdf) {
+      codepoint = first & 0x1f;
+      count = 1;
+    } else if (first >= 0xe0 && first <= 0xef) {
+      codepoint = first & 0x0f;
+      count = 2;
+    } else if (first >= 0xf0 && first <= 0xf4) {
+      codepoint = first & 0x07;
+      count = 3;
+    } else {
+      return false;
+    }
+    if (count > value.size() - i - 1)
+      return false;
+    for (size_t j = 1; j <= count; ++j) {
+      const auto byte = static_cast<uint8_t>(value[i + j]);
+      if ((byte & 0xc0) != 0x80)
+        return false;
+      codepoint = (codepoint << 6) | (byte & 0x3f);
+    }
+    if ((count == 2 && codepoint < 0x800) ||
+        (count == 3 && codepoint < 0x10000) ||
+        (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+        codepoint > 0x10ffff)
+      return false;
+    i += count + 1;
+  }
+  return true;
+}
+void zip_append_utf8(std::string &out, uint32_t cp) {
+  if (cp <= 0x7f) {
+    out.push_back(static_cast<char>(cp));
+  } else if (cp <= 0x7ff) {
+    out.push_back(static_cast<char>(0xc0 | (cp >> 6)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  } else if (cp <= 0xffff) {
+    out.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  } else {
+    out.push_back(static_cast<char>(0xf0 | (cp >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  }
+}
+std::string zip_decode_cp437(std::span<const uint8_t> bytes) {
+  static constexpr std::array<char32_t, 128> upper = {
+      0x00c7, 0x00fc, 0x00e9, 0x00e2, 0x00e4, 0x00e0, 0x00e5, 0x00e7,
+      0x00ea, 0x00eb, 0x00e8, 0x00ef, 0x00ee, 0x00ec, 0x00c4, 0x00c5,
+      0x00c9, 0x00e6, 0x00c6, 0x00f4, 0x00f6, 0x00f2, 0x00fb, 0x00f9,
+      0x00ff, 0x00d6, 0x00dc, 0x00a2, 0x00a3, 0x00a5, 0x20a7, 0x0192,
+      0x00e1, 0x00ed, 0x00f3, 0x00fa, 0x00f1, 0x00d1, 0x00aa, 0x00ba,
+      0x00bf, 0x2310, 0x00ac, 0x00bd, 0x00bc, 0x00a1, 0x00ab, 0x00bb,
+      0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+      0x2555, 0x2563, 0x2551, 0x2557, 0x255d, 0x255c, 0x255b, 0x2510,
+      0x2514, 0x2534, 0x252c, 0x251c, 0x2500, 0x253c, 0x255e, 0x255f,
+      0x255a, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256c, 0x2567,
+      0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256b,
+      0x256a, 0x2518, 0x250c, 0x2588, 0x2584, 0x258c, 0x2590, 0x2580,
+      0x03b1, 0x00df, 0x0393, 0x03c0, 0x03a3, 0x03c3, 0x00b5, 0x03c4,
+      0x03a6, 0x0398, 0x03a9, 0x03b4, 0x221e, 0x03c6, 0x03b5, 0x2229,
+      0x2261, 0x00b1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00f7, 0x2248,
+      0x00b0, 0x2219, 0x00b7, 0x221a, 0x207f, 0x00b2, 0x25a0, 0x00a0};
+  std::string result;
+  result.reserve(bytes.size());
+  for (const auto byte : bytes)
+    zip_append_utf8(result, byte < 0x80 ? byte : upper[byte - 0x80]);
+  return result;
+}
+std::optional<std::string>
+zip_unicode_path(std::span<const uint8_t> extra,
+                 std::span<const uint8_t> raw_name) {
+  std::optional<std::string> result;
+  uint64_t at = 0;
+  while (at < extra.size()) {
+    detail::require(extra.size() - at >= 4,
+                    "truncated RCP ZIP Unicode path extra field");
+    const auto id = zip_u16(extra, at);
+    const auto size = zip_u16(extra, at + 2);
+    at += 4;
+    detail::require(size <= extra.size() - at,
+                    "truncated RCP ZIP Unicode path payload");
+    const auto field = extra.subspan(static_cast<size_t>(at), size);
+    if (id == 0x7075 && size >= 5 && field[0] == 1 &&
+        zip_u32(field, 1) == zip_crc32(raw_name)) {
+      const std::string_view name(
+          reinterpret_cast<const char *>(field.data() + 5), size - 5);
+      if (zip_valid_utf8(name)) {
+        if (result && *result != name)
+          return std::nullopt;
+        result = std::string(name);
+      }
+    }
+    at += size;
+  }
+  return result;
+}
+bool zip_has_extra(std::span<const uint8_t> extra, uint16_t wanted) {
+  uint64_t at = 0;
+  while (at < extra.size()) {
+    detail::require(extra.size() - at >= 4,
+                    "truncated RCP ZIP extra field");
+    const auto id = zip_u16(extra, at);
+    const auto size = zip_u16(extra, at + 2);
+    at += 4;
+    detail::require(size <= extra.size() - at,
+                    "truncated RCP ZIP extra payload");
+    if (id == wanted)
+      return true;
+    at += size;
+  }
+  return false;
+}
+std::pair<std::string, RcpNameEncoding>
+zip_decode_name(std::span<const uint8_t> raw_name, uint16_t flags,
+                std::span<const uint8_t> central_extra,
+                std::span<const uint8_t> local_extra) {
+  const std::string_view raw(reinterpret_cast<const char *>(raw_name.data()),
+                             raw_name.size());
+  if (flags & 0x0800) {
+    detail::require(zip_valid_utf8(raw), "invalid UTF-8 RCP ZIP filename");
+    return {std::string(raw), RcpNameEncoding::utf8_flag};
+  }
+  if (auto name = zip_unicode_path(central_extra, raw_name))
+    return {std::move(*name), RcpNameEncoding::unicode_path_extra};
+  if (auto name = zip_unicode_path(local_extra, raw_name))
+    return {std::move(*name), RcpNameEncoding::unicode_path_extra};
+  const bool unknown_legacy_encoding =
+      zip_has_extra(central_extra, 0x0008) ||
+      zip_has_extra(local_extra, 0x0008);
+  return {zip_decode_cp437(raw_name),
+          unknown_legacy_encoding ? RcpNameEncoding::unknown_legacy_encoding
+                                  : RcpNameEncoding::cp437};
+}
 struct ZipDirectory {
   uint64_t entries = 0, size = 0, offset = 0;
 };
@@ -385,8 +530,9 @@ struct RcpReader::Impl {
       const uint64_t record_size = 46ull + name_size + extra_size + comment_size;
       zip_range(bytes, cursor, record_size, "central directory record");
       const auto name_at = cursor + 46;
-      entry.name.assign(reinterpret_cast<const char *>(bytes.data() + name_at),
-                        name_size);
+      entry.raw_name.assign(bytes.begin() + static_cast<ptrdiff_t>(name_at),
+                            bytes.begin() +
+                                static_cast<ptrdiff_t>(name_at + name_size));
       auto extra = bytes.subspan(static_cast<size_t>(name_at + name_size),
                                  extra_size);
       entry.central_extra.assign(extra.begin(), extra.end());
@@ -411,8 +557,6 @@ struct RcpReader::Impl {
                               total_uncompressed,
                       "RCP ZIP total expanded size budget");
       total_uncompressed += entry.uncompressed_size;
-      entry.directory = !entry.name.empty() &&
-                        (entry.name.back() == '/' || entry.name.back() == '\\');
       zip_range(bytes, entry.local_header_offset, 30, "local header");
       const auto local = entry.local_header_offset;
       detail::require(zip_u32(bytes, local) == 0x04034b50u,
@@ -427,9 +571,9 @@ struct RcpReader::Impl {
                       "RCP ZIP local/central header mismatch");
       zip_range(bytes, local + 30, uint64_t(local_name_size) + local_extra_size,
                 "local name/extra");
-      detail::require(std::equal(entry.name.begin(), entry.name.end(),
-                                 reinterpret_cast<const char *>(
-                                     bytes.data() + local + 30)),
+      detail::require(std::equal(entry.raw_name.begin(), entry.raw_name.end(),
+                                 bytes.begin() +
+                                     static_cast<ptrdiff_t>(local + 30)),
                       "RCP ZIP local/central filename mismatch");
       entry.payload_offset = local + 30ull + local_name_size + local_extra_size;
       const auto local_extra_at = local + 30ull + local_name_size;
@@ -437,6 +581,13 @@ struct RcpReader::Impl {
           bytes.begin() + static_cast<ptrdiff_t>(local_extra_at),
           bytes.begin() +
               static_cast<ptrdiff_t>(local_extra_at + local_extra_size));
+      auto decoded_name = zip_decode_name(entry.raw_name, entry.flags,
+                                          entry.central_extra,
+                                          entry.local_extra);
+      entry.name = std::move(decoded_name.first);
+      entry.name_encoding = decoded_name.second;
+      entry.directory = !entry.name.empty() &&
+                        (entry.name.back() == '/' || entry.name.back() == '\\');
       zip_range(bytes, entry.payload_offset, entry.compressed_size,
                 "member payload");
       entries.push_back(std::move(entry));

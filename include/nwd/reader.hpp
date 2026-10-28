@@ -343,8 +343,16 @@ public:
 // borrowed view of the exact member payload, while read_entry() validates and
 // decodes stored/DEFLATE members on demand. Unsupported compression methods
 // remain available as raw bytes.
+enum class RcpNameEncoding {
+  cp437,
+  utf8_flag,
+  unicode_path_extra,
+  unknown_legacy_encoding
+};
 struct RcpArchiveEntry {
-  std::string name; // exact saved name bytes; UTF-8 flag is not normalized
+  std::string name; // decoded UTF-8 filename used for lookup
+  std::vector<uint8_t> raw_name; // exact bytes saved in local/central headers
+  RcpNameEncoding name_encoding = RcpNameEncoding::cp437;
   uint16_t version_made_by = 0, version_needed = 0;
   uint16_t flags = 0, compression_method = 0;
   uint32_t crc32 = 0;
