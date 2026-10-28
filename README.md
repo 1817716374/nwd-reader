@@ -131,9 +131,9 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 内部版本 103 前文字保存 8 个参数，之后为 12 个，均按原始顺序存入 `parameters`。圆的前 9 个参数分别是原点、X 轴和 Y 轴，最后一个是半径；圆柱保存两个原点、两组附加向量和半径。库返回参数，不生成字形或离散曲面；负值、负零及非有限值保留，调用方自行决定处理策略。
 
-`Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；外部 RCS/RCP 或插件几何本体仍可能不可用，场景会报告警告。`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
+`Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
 
-`RcsReader` 独立读取 Autodesk RCS 点云文件，以只读内存映射访问文件数据。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 字段保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取；原生输出在相关选项关闭时写 0。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向；静态查找表只初始化一次，不增加点记录读取开销。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。当前已核对 RCS 3.2 布局；版本门控也接受 RCS 3.1 以上 3.x 和 4.0，但其他版本尚未由真实文件验证。RCP 容器与 NWD 外部描述到 RCS 点云的自动连接尚未实现。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
+`RcsReader` 以只读内存映射读取 Autodesk RCS 点云。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。当前实样验证的是 RCS 3.2；版本门控也接受 RCS 3.1 以上 3.x 和 4.0，但其他版本尚未由真实文件验证。RCP 容器及其自动关联仍未实现。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
 
 `ExternalReferenceIndex(table)` 一次建立可复用的路径索引。`resolve()` 检查精确保存字节并保留重复项歧义；`resolve_read_path()` 执行 UTF-8 流的读取规则，返回拥有的 UTF-16 路径、末个同键表项及全部匹配编号。`query_path()` 查询已经转换的 UTF-16 路径。NULL、空路径和无效二进制编码分别保留状态，不做大小写或目录前缀归一化。使用借用视图期间，索引、源表和描述必须保持有效且不变。
 
@@ -141,7 +141,7 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `parse_embedded_reference()` 将 `nwd:///文件#资源` 拆成文件名和 `nwd:` 资源块名，保留 NUL、UTF-16 代理码点和多个 `#` 的读取规则。`expand_embedded_reference_path()` 用明确的当前文件名展开本地占位符。`EmbeddedResourceIndex(document.chunks())` 在明确选定的容器内返回首个匹配块和全部重复块号，再调用 `read_resource()` 获取原始字节，不按同名资源跨文件合并。资源索引借用目录名字，目录需保持有效且不变；匹配编号视图则依赖索引的有效期。
 
-`load_project()` 自动关联 JSON 材质文件项和外部几何描述。`TextureFile.reference` 和 `Project.external_geometry_files` 提供原始路径、读取路径、引用表条目、容器文件、资源块身份及失败诊断。相同源的查询结果与资源缓冲会共享；空映射目标不会自动退回原路径。调用方显式 `remaps` 仍可覆盖文件位置，保存映射的身份保持可查。`resolve_external_geometry=false` 可禁用外部几何文件定位；找到文件不代表 RCS/RCP 或其他插件坐标已解码。
+`load_project()` 自动关联 JSON 材质文件项和外部几何描述。`TextureFile.reference` 和 `Project.external_geometry_files` 提供原始路径、读取路径、引用表条目、容器文件、资源块身份及失败诊断。相同源的查询结果与资源缓冲会共享；空映射目标不会自动退回原路径。调用方显式 `remaps` 仍可覆盖文件位置，保存映射的身份保持可查。对已解析到的 `.rcs` 文件，项目加载器默认共享只读 RCS 映射，并用外部几何 Schema 的唯一 `int32 index` 字段关联 voxel 描述；`ExternalGeometryFile::rcs_voxel` 是 RCS 描述表索引，`rcs` 与点数据视图共享映射生命周期。`load_external_rcs=false` 可关闭该步骤，`max_external_rcs_voxels` 限制索引规模。加载状态保存在 `content_status`，未解析引用、索引问题和未支持的外部格式会加入 `warnings` 并使 `Project.complete` 为 false。关联只保留点云数据与外部几何记录身份；调用方仍需依据模型实例和项目上下文处理坐标变换。RCP 及其他插件格式尚未解码。
 
 文件搜索采用调用方配置和库的目录查找策略，尚未完整复现产品的交互搜索、下载、取消及版本相关后处理。ACP 编码模式、异常 JSON 边界、插件协议和旧 Protein 的完整材质语义仍有兼容限制。
 
@@ -964,7 +964,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
 - 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；`301–425` 的新增分支主要经过边界测试，缺少充分的真实文件验证，不能据此推断整文件兼容性。验证项为 `SavedItem.type == 58`，通过 `selection.path_links` 返回路径编号。
 - NWD/NWC 保存项的显式 PathLink 支持分区绑定；NWF 保存项支持引用出现绑定及选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值。部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
-- 外部 RCS 等几何返回描述、schema字段、包围盒和源路径，尚不提供点云坐标。
+- 外部 `.rcs` 路径成功解析时，项目加载器通过 Schema 的唯一 `int32 index` 关联 RCS voxel；RCP 容器、其他插件几何和坐标变换上下文仍未完整支持。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置，以及跨文件部分 Appearance 的最终字段合成语义仍未完整支持；原始覆盖层和字段标志已保留。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
 - 纹理映射向量和方向枚举尚未全部赋予通用语义；部分布局缺少非空原生样本验证。

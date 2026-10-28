@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "xref_string.hpp"
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <set>
@@ -214,6 +215,11 @@ class Loader {
   std::map<std::pair<std::string, Id>,
            std::shared_ptr<const std::vector<uint8_t>>>
       resource_cache;
+  struct RcsCacheEntry {
+    std::shared_ptr<const RcsReader> reader;
+    std::string diagnostic;
+  };
+  std::map<std::string, RcsCacheEntry> external_rcs_cache;
   FileContext &file_context(const std::filesystem::path &file) {
     auto k = key(file);
     auto found = file_contexts.find(k);
@@ -447,7 +453,118 @@ class Loader {
             continue;
           auto reference = file_reference(sid, external->source_path, 0,
                                           external->null_strings[2]);
-          out.external_geometry_files.push_back({sid, mid, gid, reference});
+          ExternalGeometryFile entry;
+          entry.source = sid;
+          entry.model = mid;
+          entry.geometry = gid;
+          entry.reference = reference;
+          if (!options.load_external_rcs) {
+            entry.content_status =
+                ExternalGeometryFile::ContentStatus::disabled;
+            entry.diagnostic = "external geometry loading is disabled";
+            missing("external geometry loading disabled: " +
+                    external->source_path);
+          } else if (reference->status != "resolved") {
+            entry.content_status =
+                ExternalGeometryFile::ContentStatus::unresolved;
+            entry.diagnostic = reference->diagnostic;
+            missing("external geometry reference " + reference->status +
+                    ": " + external->source_path);
+          } else {
+            std::string extension = reference->file.extension().string();
+            std::transform(extension.begin(), extension.end(),
+                           extension.begin(), [](unsigned char c) {
+                             return static_cast<char>(std::tolower(c));
+                           });
+            std::string saved_extension;
+            const auto separator = external->source_path.find_last_of("/\\");
+            const auto dot = external->source_path.find_last_of('.');
+            if (dot != std::string::npos &&
+                (separator == std::string::npos || dot > separator))
+              saved_extension = external->source_path.substr(dot);
+            std::transform(saved_extension.begin(), saved_extension.end(),
+                           saved_extension.begin(), [](unsigned char c) {
+                             return static_cast<char>(std::tolower(c));
+                           });
+            if (extension != ".rcs" && saved_extension != ".rcs") {
+              entry.content_status =
+                  ExternalGeometryFile::ContentStatus::unsupported;
+              entry.diagnostic = "external geometry resource is not RCS";
+              missing("unsupported external geometry resource: " +
+                      external->loader + "/" + external->format + ": " +
+                      external->source_path);
+            } else {
+              const auto cache_key = key(reference->file);
+              auto [it, inserted] =
+                  external_rcs_cache.try_emplace(cache_key);
+              if (inserted) {
+                try {
+                  it->second.reader = std::make_shared<const RcsReader>(
+                      reference->file, options.max_external_rcs_voxels);
+                } catch (const std::exception &e) {
+                  it->second.diagnostic = e.what();
+                }
+              }
+              entry.rcs = it->second.reader;
+              if (!entry.rcs) {
+                entry.content_status =
+                    ExternalGeometryFile::ContentStatus::failed;
+                entry.diagnostic = it->second.diagnostic;
+                missing("external RCS could not be indexed: " +
+                        external->source_path + ": " + entry.diagnostic);
+              } else {
+                std::optional<int32_t> descriptor_index;
+                bool ambiguous_index = false;
+                unsigned index_fields = 0;
+                if (external->schema < source.scene->schemas.size()) {
+                  const auto &fields =
+                      source.scene->schemas[external->schema].root.children;
+                  const auto count =
+                      std::min(fields.size(), external->properties.children.size());
+                  for (size_t i = 0; i < count; ++i) {
+                    if (fields[i].name != "index")
+                      continue;
+                    if (++index_fields > 1) {
+                      ambiguous_index = true;
+                      break;
+                    }
+                    if (fields[i].type == 2 &&
+                        external->properties.children[i].type == 2)
+                      descriptor_index =
+                          external->properties.children[i].integer;
+                  }
+                }
+                const auto &voxels = entry.rcs->index().voxels;
+                if (ambiguous_index) {
+                  entry.content_status = ExternalGeometryFile::ContentStatus::
+                      descriptor_index_ambiguous;
+                  entry.diagnostic = "schema contains multiple index fields";
+                } else if (!descriptor_index) {
+                  entry.content_status = ExternalGeometryFile::ContentStatus::
+                      descriptor_index_missing;
+                  entry.diagnostic =
+                      "RCS descriptor index is absent or not an int32 field";
+                } else if (*descriptor_index < 0 ||
+                           static_cast<uint64_t>(*descriptor_index) >=
+                               voxels.size()) {
+                  entry.content_status = ExternalGeometryFile::ContentStatus::
+                      descriptor_index_invalid;
+                  entry.diagnostic =
+                      "RCS descriptor index is outside the voxel table";
+                } else {
+                  entry.rcs_voxel =
+                      static_cast<Id>(*descriptor_index);
+                  entry.content_status =
+                      ExternalGeometryFile::ContentStatus::loaded;
+                }
+                if (entry.content_status !=
+                    ExternalGeometryFile::ContentStatus::loaded)
+                  missing("external RCS descriptor association failed: " +
+                          external->source_path + ": " + entry.diagnostic);
+              }
+            }
+          }
+          out.external_geometry_files.push_back(std::move(entry));
         }
       }
     }
@@ -863,7 +980,10 @@ class Loader {
     auto nwf = out.sources[sid].nwf;
     if (scene) {
       for (const auto &w : scene->warnings)
-        out.warnings.push_back(utf8(file) + ": " + w);
+        if (w.find("external geometry descriptors retained; point/mesh "
+                   "coordinates not decoded from external descriptors") ==
+            std::string::npos)
+          out.warnings.push_back(utf8(file) + ": " + w);
       bool found = false;
       for (size_t i = 0; i < scene->models.size(); ++i) {
         const auto &m = scene->models[i];
@@ -877,12 +997,13 @@ class Loader {
         n.name = m.name;
         n.status = "loaded";
         out.nodes.push_back(std::move(n));
-        for (const auto &g : m.geometries)
-          if (g.external) {
-            missing("external point/mesh coordinates unavailable: " +
-                    g.external->source_path);
-            break;
-          }
+        if (!options.resolve_external_geometry)
+          for (const auto &g : m.geometries)
+            if (g.external) {
+              missing("external geometry resolution disabled: " +
+                      g.external->source_path);
+              break;
+            }
       }
       if (!found)
         missing("referenced partition not found: " + partition + " in " +

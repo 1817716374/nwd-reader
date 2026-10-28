@@ -3224,10 +3224,12 @@ struct ProjectOptions {
   bool load_textures = true;
   uint32_t max_reference_depth = 32;
   bool resolve_external_geometry =
-      true; // locate files; plugin decoding separate
+      true; // locate files and, when enabled, index external RCS resources
   FileProtocolContext protein_protocols{};
   // Explicit URL-classifier profile; independent of file wire version.
   FileUrlGeneration protein_url_generation = FileUrlGeneration::v2026;
+  bool load_external_rcs = true;
+  uint64_t max_external_rcs_voxels = 1000000;
 };
 struct ProjectSource {
   std::filesystem::path path;
@@ -3430,6 +3432,22 @@ struct ProjectFileReference {
 struct ExternalGeometryFile {
   Id source = none, model = none, geometry = none;
   std::shared_ptr<const ProjectFileReference> reference;
+  std::shared_ptr<const RcsReader> rcs; // shared read-only mapping per file
+  Id rcs_voxel = none; // valid only when content_status == loaded
+  // A loaded RCS reader can still be present when a voxel index is missing or
+  // invalid, so callers can inspect the whole external resource.
+  enum class ContentStatus {
+    not_applicable,
+    disabled,
+    unresolved,
+    loaded,
+    descriptor_index_missing,
+    descriptor_index_ambiguous,
+    descriptor_index_invalid,
+    unsupported,
+    failed
+  } content_status = ContentStatus::not_applicable;
+  std::string diagnostic;
 };
 struct TextureFile {
   Id source = none, model = none, asset = none;

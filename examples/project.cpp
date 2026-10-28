@@ -1,11 +1,28 @@
 #include <nwd/reader.hpp>
 #include <iostream>
+static const char *content_status(
+    nwd::ExternalGeometryFile::ContentStatus status) {
+  using Status = nwd::ExternalGeometryFile::ContentStatus;
+  switch (status) {
+  case Status::not_applicable: return "not_applicable";
+  case Status::disabled: return "disabled";
+  case Status::unresolved: return "unresolved";
+  case Status::loaded: return "loaded";
+  case Status::descriptor_index_missing: return "descriptor_index_missing";
+  case Status::descriptor_index_ambiguous:
+    return "descriptor_index_ambiguous";
+  case Status::descriptor_index_invalid: return "descriptor_index_invalid";
+  case Status::unsupported: return "unsupported";
+  case Status::failed: return "failed";
+  }
+  return "unknown";
+}
 static int run(const std::filesystem::path &file) {
   try {
     nwd::ProjectOptions options;
     options.reader.threads = 8;
     // options.search_paths.push_back(texture_directory);
-    // options.remaps.emplace_back(original_name,local_file);
+    // options.remaps.emplace_back(original_name, local_file);
     auto project = nwd::load_project(file, options);
     for (const auto &w : project.warnings)
       std::cerr << w << '\n';
@@ -76,10 +93,19 @@ static int run(const std::filesystem::path &file) {
                   << t.enabled_path;
       std::cout << '\n';
     }
-    for (const auto &g : project.external_geometry_files)
+    for (const auto &g : project.external_geometry_files) {
       std::cout << "external source/model/geometry " << g.source << '/'
                 << g.model << '/' << g.geometry << ": " << g.reference->status
-                << '\n';
+                << ", content " << content_status(g.content_status);
+      if (g.rcs && g.rcs_voxel != nwd::none) {
+        const auto &voxel = g.rcs->index().voxels.at(g.rcs_voxel);
+        std::cout << ", RCS voxel " << g.rcs_voxel << ", "
+                  << voxel.point_count << " points";
+      }
+      if (!g.diagnostic.empty())
+        std::cout << ", " << g.diagnostic;
+      std::cout << '\n';
+    }
     return project.complete ? 0 : 3;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';
