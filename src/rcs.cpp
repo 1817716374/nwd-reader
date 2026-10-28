@@ -1,0 +1,283 @@
+#include "nwd/reader.hpp"
+#include <bit>
+#include <cstring>
+#include <limits>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace nwd {
+namespace {
+constexpr uint64_t header_bytes = 0x1812d;
+constexpr uint64_t chunk_count_offset = 0x129;
+constexpr uint64_t chunk_table_offset = 0x12d;
+constexpr uint64_t chunk_entry_bytes = 24;
+constexpr uint64_t voxel_count_bytes = 8;
+constexpr uint64_t voxel_record_bytes = RcsVoxelDescriptor::wire_size;
+constexpr uint32_t point_record_bytes = 16;
+
+void range(std::span<const uint8_t> bytes, uint64_t offset, uint64_t size,
+           const char *what) {
+  if (offset > bytes.size() || size > bytes.size() - offset)
+    throw Error(std::string("RCS ") + what + " outside file");
+}
+
+uint32_t u32(std::span<const uint8_t> bytes, uint64_t offset) {
+  range(bytes, offset, 4, "u32");
+  return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
+         (uint32_t(bytes[offset + 2]) << 16) |
+         (uint32_t(bytes[offset + 3]) << 24);
+}
+
+uint64_t u64(std::span<const uint8_t> bytes, uint64_t offset) {
+  return uint64_t(u32(bytes, offset)) | (uint64_t(u32(bytes, offset + 4)) << 32);
+}
+
+double f64(std::span<const uint8_t> bytes, uint64_t offset) {
+  return std::bit_cast<double>(u64(bytes, offset));
+}
+
+uint64_t sum_words(std::span<const uint8_t> file, uint64_t offset,
+                   uint64_t count) {
+  uint64_t sum = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    uint64_t value = u32(file, offset + i * 4);
+    if (value > std::numeric_limits<uint64_t>::max() - sum)
+      throw Error("RCS descriptor count overflow");
+    sum += value;
+  }
+  return sum;
+}
+
+const RcsChunk *first_chunk(const RcsFileIndex &index, uint32_t id) {
+  for (const auto &chunk : index.chunks)
+    if (chunk.id == id)
+      return &chunk;
+  return nullptr;
+}
+} // namespace
+
+RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
+                            uint64_t max_voxels) {
+  range(file, 0, header_bytes, "fixed header");
+  if (std::memcmp(file.data(), "ADOCT", 5) != 0)
+    throw Error("RCS magic is not ADOCT");
+
+  RcsFileIndex result;
+  result.version_major = u32(file, 8);
+  result.version_minor = u32(file, 12);
+  if (!((result.version_major == 3 && result.version_minor >= 1) ||
+        (result.version_major == 4 && result.version_minor == 0)))
+    throw Error("unsupported RCS file version");
+
+  uint32_t chunk_count = u32(file, chunk_count_offset);
+  if (chunk_count > 0x1000)
+    throw Error("RCS chunk count exceeds native limit");
+  uint64_t table_size = uint64_t(chunk_count) * chunk_entry_bytes;
+  range(file.first(static_cast<size_t>(header_bytes)), chunk_table_offset,
+        table_size, "chunk table");
+  result.chunks.reserve(chunk_count);
+  for (uint32_t i = 0; i < chunk_count; ++i) {
+    uint64_t at = chunk_table_offset + uint64_t(i) * chunk_entry_bytes;
+    RcsChunk chunk{u32(file, at), u32(file, at + 4), u64(file, at + 8),
+                   u64(file, at + 16)};
+    range(file, chunk.offset, chunk.size, "chunk");
+    result.chunks.push_back(chunk);
+  }
+
+  const RcsChunk *voxel_chunk = first_chunk(result, 2);
+  const RcsChunk *point_chunk = first_chunk(result, 1);
+  if (!voxel_chunk || !point_chunk)
+    throw Error("RCS voxel or point-data chunk is missing");
+  if (voxel_chunk->size < voxel_count_bytes)
+    throw Error("RCS voxel chunk has no descriptor count");
+  uint64_t count = u64(file, voxel_chunk->offset);
+  if (count > max_voxels || count > std::numeric_limits<size_t>::max())
+    throw Error("RCS voxel descriptor count exceeds configured limit");
+  if (count > (std::numeric_limits<uint64_t>::max() - voxel_count_bytes) /
+                  voxel_record_bytes)
+    throw Error("RCS voxel descriptor table size overflow");
+  uint64_t descriptor_bytes = voxel_count_bytes + count * voxel_record_bytes;
+  if (descriptor_bytes > voxel_chunk->size)
+    throw Error("RCS voxel descriptor table exceeds its chunk");
+
+  result.voxels.reserve(static_cast<size_t>(count));
+  uint64_t segment_offset = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    const uint64_t at = voxel_chunk->offset + voxel_count_bytes +
+                        i * voxel_record_bytes;
+    RcsVoxelDescriptor voxel;
+    voxel.record_offset = at;
+    for (uint64_t j = 0; j < 6; ++j) {
+      voxel.primary_bounds[j] = f64(file, at + j * 8);
+      voxel.secondary_bounds[j] = f64(file, at + 0x30 + j * 8);
+    }
+    voxel.unknown_word_60 = u32(file, at + 0x60);
+    voxel.point_count = u32(file, at + 0x64);
+    voxel.data_span_bytes = u32(file, at + 0x68);
+    for (uint64_t j = 0; j < voxel.auxiliary_counts.size(); ++j)
+      voxel.auxiliary_counts[j] = u32(file, at + 0x6c + j * 4);
+    for (uint64_t j = 0; j < voxel.lod_point_counts.size(); ++j)
+      voxel.lod_point_counts[j] = u32(file, at + 0xcc + j * 4);
+    for (uint64_t j = 0; j < voxel.unknown_tail.size(); ++j)
+      voxel.unknown_tail[j] = u32(file, at + 0x14c + j * 4);
+
+    uint64_t aux_count = sum_words(file, at + 0x6c, 24);
+    uint64_t lod_count = sum_words(file, at + 0xcc, 32);
+    if (lod_count != voxel.point_count)
+      throw Error("RCS voxel LOD counts do not match descriptor point count");
+    uint64_t prefix_items = aux_count + lod_count;
+    if (prefix_items > (std::numeric_limits<uint64_t>::max() -
+                        uint64_t(lod_count) * point_record_bytes) /
+                           4)
+      throw Error("RCS voxel point span overflow");
+    uint64_t derived_span = prefix_items * 4 + lod_count * point_record_bytes;
+    if (derived_span != voxel.data_span_bytes)
+      throw Error("RCS voxel data span does not match count tables");
+    if (segment_offset > point_chunk->size ||
+        derived_span > point_chunk->size - segment_offset)
+      throw Error("RCS voxel data segments exceed point-data chunk");
+    if (point_chunk->offset > std::numeric_limits<uint64_t>::max() -
+                                  segment_offset - prefix_items * 4)
+      throw Error("RCS point-data file offset overflow");
+    voxel.point_data_offset =
+        point_chunk->offset + segment_offset + prefix_items * 4;
+    uint64_t point_bytes = lod_count * point_record_bytes;
+    range(file, voxel.point_data_offset, point_bytes, "voxel point records");
+    segment_offset += derived_span;
+    result.voxels.push_back(std::move(voxel));
+  }
+  return result;
+}
+
+RcsRawPoint decode_rcs_point(std::span<const uint8_t> file,
+                             const RcsVoxelDescriptor &voxel,
+                             uint32_t point_index) {
+  if (point_index >= voxel.point_count)
+    throw Error("RCS point index outside voxel");
+  const uint64_t delta = uint64_t(point_index) * point_record_bytes;
+  if (voxel.point_data_offset > std::numeric_limits<uint64_t>::max() - delta)
+    throw Error("RCS point offset overflow");
+  uint64_t offset = voxel.point_data_offset + delta;
+  range(file, offset, point_record_bytes, "raw point");
+  RcsRawPoint point;
+  point.raw_position_word = u64(file, offset);
+  point.raw_attribute_word = u64(file, offset + 8);
+  const uint64_t packed = point.raw_position_word;
+  const std::array<uint32_t, 3> quantized{
+      static_cast<uint32_t>(packed & 0x3ffff),
+      static_cast<uint32_t>((packed >> 18) & 0x3ffff),
+      static_cast<uint32_t>((packed >> 36) & 0x3ffff)};
+  for (size_t axis = 0; axis < 3; ++axis)
+    point.position[axis] =
+        voxel.primary_bounds[axis] +
+        static_cast<double>(static_cast<float>(quantized[axis])) * 0.001;
+  point.lidar_classification = static_cast<uint8_t>((packed >> 54) & 0xff);
+  point.deleted = (packed >> 63) != 0;
+  for (size_t i = 0; i < point.rgba.size(); ++i)
+    point.rgba[i] = file[offset + 8 + i];
+  point.normal = static_cast<uint16_t>((point.raw_attribute_word >> 32) & 0x3fff);
+  point.primitive_classification =
+      static_cast<uint8_t>((point.raw_attribute_word >> 46) & 0x0f);
+  return point;
+}
+
+struct RcsReader::Impl {
+  const uint8_t *data = nullptr;
+  size_t size = 0;
+  RcsFileIndex index;
+#ifdef _WIN32
+  HANDLE file = INVALID_HANDLE_VALUE;
+  HANDLE mapping = nullptr;
+#else
+  int file = -1;
+#endif
+
+  ~Impl() {
+#ifdef _WIN32
+    if (data)
+      UnmapViewOfFile(data);
+    if (mapping)
+      CloseHandle(mapping);
+    if (file != INVALID_HANDLE_VALUE)
+      CloseHandle(file);
+#else
+    if (data)
+      munmap(const_cast<uint8_t *>(data), size);
+    if (file >= 0)
+      close(file);
+#endif
+  }
+
+  void open(const std::filesystem::path &path) {
+#ifdef _WIN32
+    file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+      throw Error("cannot open RCS file");
+    LARGE_INTEGER length{};
+    if (!GetFileSizeEx(file, &length) || length.QuadPart <= 0 ||
+        static_cast<uint64_t>(length.QuadPart) >
+            std::numeric_limits<size_t>::max())
+      throw Error("invalid RCS file size");
+    size = static_cast<size_t>(length.QuadPart);
+    mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!mapping)
+      throw Error("cannot map RCS file");
+    data = static_cast<const uint8_t *>(
+        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
+    if (!data)
+      throw Error("cannot map RCS file view");
+#else
+    file = ::open(path.c_str(), O_RDONLY);
+    if (file < 0)
+      throw Error("cannot open RCS file");
+    struct stat info {};
+    if (fstat(file, &info) != 0 || info.st_size <= 0 ||
+        static_cast<uint64_t>(info.st_size) >
+            std::numeric_limits<size_t>::max())
+      throw Error("invalid RCS file size");
+    size = static_cast<size_t>(info.st_size);
+    void *view = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, file, 0);
+    if (view == MAP_FAILED)
+      throw Error("cannot map RCS file");
+    data = static_cast<const uint8_t *>(view);
+#endif
+  }
+};
+
+RcsReader::RcsReader(const std::filesystem::path &path, uint64_t max_voxels) {
+  auto impl = std::make_shared<Impl>();
+  impl->open(path);
+  impl->index = read_rcs_index({impl->data, impl->size}, max_voxels);
+  impl_ = std::move(impl);
+}
+
+const RcsFileIndex &RcsReader::index() const noexcept { return impl_->index; }
+
+std::span<const uint8_t> RcsReader::raw_points(uint32_t voxel_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  uint64_t size = uint64_t(voxel.point_count) * point_record_bytes;
+  range({impl_->data, impl_->size}, voxel.point_data_offset, size,
+        "voxel point records");
+  return {impl_->data + voxel.point_data_offset, static_cast<size_t>(size)};
+}
+
+RcsRawPoint RcsReader::point(uint32_t voxel_index,
+                             uint32_t point_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  return decode_rcs_point({impl_->data, impl_->size},
+                          impl_->index.voxels[voxel_index], point_index);
+}
+} // namespace nwd

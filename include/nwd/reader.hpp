@@ -195,6 +195,57 @@ struct ExternalGeometry {
   std::array<float, 6> bounds{};
   std::array<bool, 3> null_strings{}; // loader, format, saved source path
 };
+// Read-only index for Autodesk Reality Capture Scan (RCS) files. The parsed
+// descriptor retains all wire fields, including values not yet semantically
+// identified.
+struct RcsChunk {
+  uint32_t id = 0, flags = 0;
+  uint64_t offset = 0, size = 0;
+};
+struct RcsVoxelDescriptor {
+  static constexpr size_t wire_size = 0x170;
+  std::array<double, 6> primary_bounds{}; // min XYZ, max XYZ
+  std::array<double, 6> secondary_bounds{}; // source values, semantics partial
+  uint32_t unknown_word_60 = 0;
+  uint32_t point_count = 0; // sum of the 32 saved LOD counts
+  uint32_t data_span_bytes = 0;
+  std::array<uint32_t, 24> auxiliary_counts{}; // raw table at +0x6c
+  std::array<uint32_t, 32> lod_point_counts{}; // raw table at +0xcc
+  std::array<uint32_t, 9> unknown_tail{}; // raw table at +0x14c
+  uint64_t record_offset = 0; // file offset
+  uint64_t point_data_offset = 0; // file offset of 16-byte raw points
+};
+struct RcsRawPoint {
+  std::array<double, 3> position{};
+  std::array<uint8_t, 4> rgba{};
+  uint8_t lidar_classification = 0;
+  bool deleted = false;
+  uint16_t normal = 0; // packed 14-bit source value
+  uint8_t primitive_classification = 0;
+  uint64_t raw_position_word = 0, raw_attribute_word = 0;
+};
+struct RcsFileIndex {
+  uint32_t version_major = 0, version_minor = 0;
+  std::vector<RcsChunk> chunks; // order and duplicate IDs preserved
+  std::vector<RcsVoxelDescriptor> voxels;
+};
+RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
+                            uint64_t max_voxels = 1000000);
+RcsRawPoint decode_rcs_point(std::span<const uint8_t> file,
+                             const RcsVoxelDescriptor &voxel,
+                             uint32_t point_index);
+class RcsReader {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit RcsReader(const std::filesystem::path &,
+                     uint64_t max_voxels = 1000000);
+  const RcsFileIndex &index() const noexcept;
+  // Borrowed bytes remain valid while this reader (or a copy) is alive.
+  std::span<const uint8_t> raw_points(uint32_t voxel_index) const;
+  RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
+};
 struct CoordinateQuantization {
   float saved_precision = 0;
   std::array<float, 6> bounds{}; // lower XYZ, upper XYZ, without repair
