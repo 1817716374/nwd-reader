@@ -3191,6 +3191,13 @@ struct AppliedAppearance {
   Id node = none, instance = none;
   ProjectAppearance appearance;
 };
+struct ProjectAppearanceStack {
+  ProjectAppearance base;
+  // Raw NWF override records, ordered from the innermost referenced NWF to
+  // the outermost. Each layer keeps its own source/model identity and flags;
+  // callers can compose only the fields selected by that Appearance.flags.
+  std::span<const AppliedAppearance> overrides;
+};
 struct AppliedTransform {
   Id owner = none, node = none, instance = none;
   std::array<double, 16> matrix{}; // meters; applied in the owner NWF frame
@@ -3378,7 +3385,14 @@ struct TextureFile {
 struct Project {
   std::vector<ProjectSource> sources; // each canonical file parsed once
   std::vector<ProjectNode> nodes; // each reference occurrence stays distinct
-  std::vector<AppliedAppearance> appearance_overrides; // sorted (node,instance)
+  // Outermost override that selects a material (flags bit 1), sorted by
+  // (node,instance), preserving the legacy material-override projection.
+  // Inspect appearance_override_layers / appearance_stack() for all fields.
+  std::vector<AppliedAppearance> appearance_overrides;
+  // All selected appearance layers, sorted by (node,instance) and retained in
+  // application order within each pair. Unlike appearance_overrides, this
+  // includes partial overlays without pretending they are complete values.
+  std::vector<AppliedAppearance> appearance_override_layers;
   std::vector<AppliedTransform>
       transform_overrides; // sorted (owner,node,instance)
   std::vector<TextureSpaceAssignment> texture_space_assignments;
@@ -3402,7 +3416,12 @@ std::array<double, 16> nwf_transform_matrix(const NwfTransformOverride &);
 std::array<double, 16> reference_placement_matrix(const Model &,
                                                   const NwfReference &,
                                                   uint32_t parent_units);
+// Returns the outermost override selecting a material (flags bit 1), or the
+// model's base appearance. It does not merge partial fields.
 ProjectAppearance effective_appearance(const Project &, Id node, Id instance);
+// Base appearance plus every raw override, from inner to outer. The span is
+// borrowed from Project and remains valid until its layer vector is modified.
+ProjectAppearanceStack appearance_stack(const Project &, Id node, Id instance);
 const Model &appearance_arena(const Project &, ProjectAppearance);
 std::array<double, 16> project_world_matrix(const Project &, Id node,
                                             Id instance); // output meters

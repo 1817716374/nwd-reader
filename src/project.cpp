@@ -167,7 +167,7 @@ class Loader {
   Project out;
   std::map<std::string, Id> cache;
   std::set<std::string> active;
-  std::map<std::pair<Id, Id>, ProjectAppearance> overrides;
+  std::map<std::pair<Id, Id>, std::vector<ProjectAppearance>> overrides;
   std::map<std::tuple<Id, Id, Id>, Matrix> transform_overrides;
   std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>
       texture_cache;
@@ -688,12 +688,9 @@ class Loader {
     }
     for (const auto &selection : data->appearance_overrides)
       for (auto id : selection.paths) {
-        if (!(data->appearance_values.appearances.at(selection.appearance)
-                  .flags &
-              1)) {
-          missing("NWF partial material override unsupported");
-          continue;
-        }
+        require(selection.appearance <
+                    data->appearance_values.appearances.size(),
+                "NWF appearance override identity");
         if (id == none || id == 0)
           continue;
         require(id < mapping.size(), "NWF selection ID bounds");
@@ -707,8 +704,8 @@ class Loader {
             auto p = paths.back();
             paths.pop_back();
             for (auto instance : indices.at(node).instances(p))
-              overrides[{node, instance}] = {source_id, none,
-                                             selection.appearance};
+              overrides[{node, instance}].push_back(
+                  {source_id, none, selection.appearance});
             auto children = indices.at(node).children(p);
             paths.insert(paths.end(), children.begin(), children.end());
           }
@@ -961,26 +958,25 @@ class Loader {
       if (n.model == none)
         continue;
       const auto &m = model(node);
-      std::set<std::tuple<Id, Id, Id>> appearances;
-      std::vector<uint8_t> used(m.appearances.size());
       auto it = overrides.lower_bound({node, 0});
       for (Id i = 0; i < m.instances.size(); ++i) {
+        ProjectAppearance selected{n.source, n.model,
+                                   m.instances[i].appearance};
         if (it != overrides.end() && it->first == std::pair{node, i}) {
-          const auto &ref = it->second;
-          if (ref.appearance != none)
-            appearances.emplace(ref.source, ref.model, ref.appearance);
+          for (const auto layer : it->second) {
+            const auto &appearance =
+                appearance_arena(out, layer).appearances.at(layer.appearance);
+            if (appearance.flags & 32)
+              selected = layer;
+          }
           ++it;
-        } else if (m.instances[i].appearance != none)
-          used.at(m.instances[i].appearance) = 1;
-      }
-      for (Id i = 0; i < used.size(); ++i)
-        if (used[i])
-          appearances.emplace(n.source, n.model, i);
-      for (auto [sid, mid, aid] : appearances) {
-        const auto &arena = appearance_arena(out, {sid, mid, aid});
-        auto asset = arena.appearances.at(aid).asset;
+        }
+        if (selected.appearance == none)
+          continue;
+        const auto &arena = appearance_arena(out, selected);
+        const auto asset = arena.appearances.at(selected.appearance).asset;
         if (asset != none)
-          active_assets.emplace(sid, mid, asset);
+          active_assets.emplace(selected.source, selected.model, asset);
       }
     }
     std::map<const ObjectGraph *, ProteinGraphIndex> protein_indices;
@@ -1174,8 +1170,22 @@ public:
       external_files();
     if (options.load_textures)
       textures();
-    for (const auto &[key, value] : overrides)
-      out.appearance_overrides.push_back({key.first, key.second, value});
+    for (const auto &[key, layers] : overrides) {
+      require(!layers.empty(), "empty NWF appearance layer stack");
+      std::optional<ProjectAppearance> material_override;
+      for (const auto layer : layers) {
+        const auto &appearance =
+            appearance_arena(out, layer).appearances.at(layer.appearance);
+        if (appearance.flags & 1)
+          material_override = layer;
+      }
+      if (material_override)
+        out.appearance_overrides.push_back(
+            {key.first, key.second, *material_override});
+      for (const auto layer : layers)
+        out.appearance_override_layers.push_back(
+            {key.first, key.second, layer});
+    }
     for (const auto &[key, value] : transform_overrides) {
       const auto [owner, node, instance] = key;
       out.transform_overrides.push_back({owner, node, instance, value});
@@ -1303,6 +1313,26 @@ ProjectAppearance effective_appearance(const Project &p, Id node, Id instance) {
       it->instance == instance)
     return it->appearance;
   return {n.source, n.model, m.instances[instance].appearance};
+}
+ProjectAppearanceStack appearance_stack(const Project &p, Id node,
+                                        Id instance) {
+  const auto &n = p.nodes.at(node);
+  const auto &source = p.sources.at(n.source);
+  detail::require(bool(source.scene) && n.model != none,
+                  "project node is not a model");
+  const auto &m = source.scene->models.at(n.model);
+  detail::require(instance < m.instances.size(), "instance bounds");
+  const auto first = std::lower_bound(
+      p.appearance_override_layers.begin(), p.appearance_override_layers.end(),
+      std::pair{node, instance}, [](const AppliedAppearance &a, const auto &b) {
+        return std::pair{a.node, a.instance} < b;
+      });
+  auto last = first;
+  while (last != p.appearance_override_layers.end() && last->node == node &&
+         last->instance == instance)
+    ++last;
+  return {{n.source, n.model, m.instances[instance].appearance},
+          std::span<const AppliedAppearance>(first, last)};
 }
 Matrix project_world_matrix(const Project &p, Id node, Id instance) {
   const auto &n = p.nodes.at(node);
