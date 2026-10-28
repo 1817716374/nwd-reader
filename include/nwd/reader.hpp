@@ -338,6 +338,103 @@ public:
   RcsOtherDataValue other_data_value(uint32_t field_index) const;
   RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
 };
+// RCP files observed so far are ZIP containers. This reader preserves central
+// directory order and duplicate member names; raw_compressed_entry() is a
+// borrowed view of the exact member payload, while read_entry() validates and
+// decodes stored/DEFLATE members on demand. Unsupported compression methods
+// remain available as raw bytes.
+struct RcpArchiveEntry {
+  std::string name; // exact saved name bytes; UTF-8 flag is not normalized
+  uint16_t version_made_by = 0, version_needed = 0;
+  uint16_t flags = 0, compression_method = 0;
+  uint32_t crc32 = 0;
+  uint64_t compressed_size = 0, uncompressed_size = 0;
+  uint64_t local_header_offset = 0, payload_offset = 0;
+  uint32_t disk_number_start = 0, external_attributes = 0;
+  bool zip64_sizes = false, zip64_offset = false, directory = false;
+  std::vector<uint8_t> central_extra, central_comment, local_extra;
+};
+struct RcpArchiveOptions {
+  uint64_t max_entries = 100000;
+  uint64_t max_entry_bytes = 1ull << 30;
+  uint64_t max_total_uncompressed_bytes = 4ull << 30;
+};
+class RcpReader {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit RcpReader(const std::filesystem::path &,
+                     RcpArchiveOptions = {});
+  std::span<const uint8_t> raw_archive() const noexcept;
+  std::span<const RcpArchiveEntry> entries() const noexcept;
+  std::span<const uint8_t> raw_compressed_entry(uint32_t entry_index) const;
+  std::vector<uint8_t> read_entry(uint32_t entry_index) const;
+};
+enum class RcpXmlNodeKind { element, text, comment, instruction };
+struct RcpXmlAttribute {
+  std::string name, value;
+};
+struct RcpXmlNode {
+  RcpXmlNodeKind kind = RcpXmlNodeKind::element;
+  Id parent = none, first_child = none, next_sibling = none;
+  uint64_t byte_offset = 0;
+  std::string name, value;
+  std::vector<RcpXmlAttribute> attributes;
+};
+struct RcpXmlOptions {
+  uint64_t max_bytes = 64ull << 20, max_text_bytes = 256ull << 20;
+  uint32_t max_nodes = 2000000, max_attributes = 2000000,
+           max_depth = 512;
+};
+// Bounded, non-validating XML view for RCP project members. The ordered tree
+// retains unknown names, attributes, comments and processing instructions.
+// DTDs/external entities are not loaded. Element names and values are exact
+// decoded UTF-8; this class does not infer project semantics.
+class RcpXmlDocument {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit RcpXmlDocument(std::span<const uint8_t>, RcpXmlOptions = {});
+  std::span<const RcpXmlNode> nodes() const noexcept;
+  Id root() const noexcept;
+  std::optional<std::string_view> attribute(Id element,
+                                            std::string_view name) const;
+  std::vector<Id> elements_named(std::string_view name) const;
+  std::string text_content(Id element, uint64_t max_bytes = 16ull << 20) const;
+};
+enum class RcpIdentityLinkStatus { missing_id, no_match, unique, ambiguous };
+struct RcpProjectVoxelTreeRuntime {
+  Id xml_node = none;
+  std::optional<std::string_view> id, node_name, group, path, relative_path,
+      num_points;
+  std::array<std::optional<std::string_view>, 3> translation, rotation, scale;
+  RcpIdentityLinkStatus scan_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> scan_index;
+};
+struct RcpProjectScan {
+  Id xml_node = none;
+  std::optional<std::string_view> id, title, virtual_scan, visible,
+      isolate_visible;
+  RcpIdentityLinkStatus runtime_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> voxel_tree_runtime_index;
+};
+// Source-named fields retain their raw strings. Scan links use only exact IDs;
+// missing or duplicate links are reported without title/path guessing.
+class RcpProjectDocument {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit RcpProjectDocument(std::span<const uint8_t>,
+                               RcpXmlOptions = {});
+  const RcpXmlDocument &xml() const noexcept;
+  std::optional<std::string_view> project_uuid() const noexcept;
+  std::span<const RcpProjectVoxelTreeRuntime>
+  voxel_tree_runtime() const noexcept;
+  std::span<const RcpProjectScan> scans() const noexcept;
+};
 struct CoordinateQuantization {
   float saved_precision = 0;
   std::array<float, 6> bounds{}; // lower XYZ, upper XYZ, without repair
