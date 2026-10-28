@@ -217,12 +217,15 @@ struct RcsVoxelDescriptor {
 };
 struct RcsRawPoint {
   std::array<double, 3> position{};
-  std::array<uint8_t, 4> rgba{};
+  std::array<uint8_t, 4> rgba{}; // rgba[3] is also the saved intensity byte
   uint8_t lidar_classification = 0;
   bool deleted = false;
-  uint16_t normal = 0; // packed 14-bit source value
+  uint16_t normal = 0; // packed 14-bit NormalUtils table index
   uint8_t primitive_classification = 0;
   uint64_t raw_position_word = 0, raw_attribute_word = 0;
+
+  // Native intensity output uses this saved byte unchanged when enabled.
+  uint8_t raw_intensity() const noexcept { return rgba[3]; }
 };
 struct RcsFileIndex {
   uint32_t version_major = 0, version_minor = 0;

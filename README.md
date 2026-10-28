@@ -133,7 +133,7 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；外部 RCS/RCP 或插件几何本体仍可能不可用，场景会报告警告。`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
 
-`RcsReader` 独立读取 Autodesk RCS 点云文件，以只读内存映射访问文件数据。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`point(voxel, index)` 解出坐标、RGBA、分类及保留的原始属性字。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向；静态查找表只初始化一次，不增加点记录读取开销。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。当前已核对 RCS 3.2 布局；版本门控也接受 RCS 3.1 以上 3.x 和 4.0，但其他版本尚未由真实文件验证。RCP 容器与 NWD 外部描述到 RCS 点云的自动连接尚未实现。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
+`RcsReader` 独立读取 Autodesk RCS 点云文件，以只读内存映射访问文件数据。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`point(voxel, index)` 解出坐标、四通道字节、分类及保留的原始属性字。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取；原生输出在相关选项关闭时写 0。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向；静态查找表只初始化一次，不增加点记录读取开销。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。当前已核对 RCS 3.2 布局；版本门控也接受 RCS 3.1 以上 3.x 和 4.0，但其他版本尚未由真实文件验证。RCP 容器与 NWD 外部描述到 RCS 点云的自动连接尚未实现。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
 
 `ExternalReferenceIndex(table)` 一次建立可复用的路径索引。`resolve()` 检查精确保存字节并保留重复项歧义；`resolve_read_path()` 执行 UTF-8 流的读取规则，返回拥有的 UTF-16 路径、末个同键表项及全部匹配编号。`query_path()` 查询已经转换的 UTF-16 路径。NULL、空路径和无效二进制编码分别保留状态，不做大小写或目录前缀归一化。使用借用视图期间，索引、源表和描述必须保持有效且不变。
 

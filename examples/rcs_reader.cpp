@@ -22,7 +22,9 @@ int main(int argc, char **argv) {
                 << " points; first XYZ = " << point.position[0] << ", "
                 << point.position[1] << ", " << point.position[2]
                 << "; first normal = " << normal[0] << ", " << normal[1]
-                << ", " << normal[2] << '\n';
+                << ", " << normal[2]
+                << "; raw intensity = " << unsigned(point.raw_intensity())
+                << '\n';
     }
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count
