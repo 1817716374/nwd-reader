@@ -718,7 +718,7 @@ if (inherited.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
-`ProteinSchemaGlobalRegistry` builds a bounded, immutable lookup index for one explicit manager and its Namespace. Namespace entries and pending creators remain separate tables; lookup checks Namespace first, and a matching null-Core row prevents pending fallback. An incomplete Namespace or pending table, duplicate key, unknown Core, or unresolved creator returns `unresolved` instead of guessing. The registry copies UID bytes (including embedded NULs), supports the two reader byte-comparison profiles, and returns the caller's manager, Namespace, object, creator and definition-scope IDs separately. This is a lookup index; recursive registration, Namespace adoption/disposal and object creation remain separate operations.
+`ProteinSchemaGlobalRegistry` builds a bounded, immutable lookup index for one explicit manager and its Namespace. Namespace entries and pending creators remain separate tables; lookup checks Namespace first, and a matching null-Core row prevents pending fallback. An incomplete Namespace or pending table, duplicate key, unknown Core, or unresolved creator returns `unresolved` instead of guessing. The registry copies UID bytes (including embedded NULs), supports the two reader byte-comparison profiles, and returns the caller's manager, Namespace, object, creator and definition-scope IDs separately. `adopt_pending()` returns a new registry only when the pending creator, object and definition IDs match and the UID is still absent from the complete Namespace; the new snapshot contains the Namespace object and no longer contains that creator. `dispose_pending()` removes only the explicitly named creator, even if a same-UID Namespace object shadows lookup. Both operations report ownership changes separately; the input snapshot remains unchanged.
 
 ```cpp
 nwd::ProteinSchemaGlobalRegistryInput input;
@@ -732,7 +732,14 @@ auto found = registry.lookup(uid);
 if (found.status == nwd::ProteinSchemaGlobalLookupStatus::namespace_object) {
     // found.object and found.definition retain caller-supplied identities.
 }
+auto adopted = registry.adopt_pending(uid, creator_id, object_id, definition_id);
+if (adopted.status == nwd::ProteinSchemaGlobalRegistryUpdateStatus::adopted &&
+    adopted.registry) {
+    registry = *adopted.registry;
+}
 ```
+
+These per-manager transitions provide the ownership bookkeeping for the global registrar. Parent recursion, assettype factory calls, actual wrapper/Core allocation and destruction, compatibility merge execution and wire-record-to-manager mapping remain separate parsing stages.
 
 `ProteinSchemaDefinitionLoadOptions` 限制输入数、事件数、累计声明、保留的属性历史和缓存值，并提供单定义与继承深度上限。输入必须是尚未执行显式父属性合并或加载期改写的局部索引，已有 XML 值不会重新解析。索引及副本维持所有文档/值的寿命，结果可并发只读查询。
 

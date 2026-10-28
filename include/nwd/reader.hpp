@@ -1702,6 +1702,15 @@ struct ProteinSchemaGlobalLookup {
   Id manager = none, name_space = none;
   Id entry = none, creator = none, object = none, definition = none;
 };
+enum class ProteinSchemaGlobalRegistryUpdateStatus {
+  adopted,
+  disposed,
+  already_in_namespace,
+  creator_missing,
+  identity_mismatch,
+  unresolved
+};
+struct ProteinSchemaGlobalRegistryUpdateResult;
 // Immutable per-manager view. Namespace and pending-creator indexes remain
 // separate; a namespace hit with null Core suppresses pending fallback. Input
 // UID bytes are copied, including embedded NULs. Lookup is O(log N), preserving
@@ -1709,6 +1718,7 @@ struct ProteinSchemaGlobalLookup {
 class ProteinSchemaGlobalRegistry {
   struct Impl;
   std::shared_ptr<const Impl> impl;
+  explicit ProteinSchemaGlobalRegistry(std::shared_ptr<const Impl>);
 public:
   explicit ProteinSchemaGlobalRegistry(
       const ProteinSchemaGlobalRegistryInput &,
@@ -1716,6 +1726,23 @@ public:
   Id manager_identity() const noexcept;
   Id namespace_identity() const noexcept;
   ProteinSchemaGlobalLookup lookup(std::string_view uid) const;
+  // Moves only the named, known pending creator/object into this manager's
+  // complete Namespace. All supplied identities must match the pending row.
+  ProteinSchemaGlobalRegistryUpdateResult adopt_pending(
+      std::string_view uid, Id creator, Id object, Id definition) const;
+  // Disposes only the named creator identity. Namespace lookup shadowing does
+  // not redirect disposal to another object with the same UID.
+  ProteinSchemaGlobalRegistryUpdateResult dispose_pending(
+      std::string_view uid, Id creator) const;
+};
+struct ProteinSchemaGlobalRegistryUpdateResult {
+  std::optional<ProteinSchemaGlobalRegistry> registry;
+  ProteinSchemaGlobalRegistryUpdateStatus status =
+      ProteinSchemaGlobalRegistryUpdateStatus::unresolved;
+  Id manager = none, name_space = none, creator = none, object = none,
+     definition = none;
+  bool namespace_inserted = false, creator_consumed = false,
+       owner_released = false;
 };
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.

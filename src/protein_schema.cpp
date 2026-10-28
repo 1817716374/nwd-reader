@@ -2911,6 +2911,7 @@ struct ProteinSchemaGlobalRegistry::Impl {
       ProteinSchemaIterationProfile::reader_2026;
   bool namespace_complete = true, pending_complete = true;
   uint64_t max_uid_bytes = 0;
+  uint32_t max_entries = 0;
   std::vector<NamespaceRow> namespace_rows;
   std::vector<CreatorRow> creators;
 
@@ -2959,6 +2960,7 @@ ProteinSchemaGlobalRegistry::ProteinSchemaGlobalRegistry(
   result->namespace_complete = input.namespace_complete;
   result->pending_complete = input.pending_complete;
   result->max_uid_bytes = options.max_uid_bytes;
+  result->max_entries = options.max_entries;
   uint64_t bytes = 0;
   auto charge_uid = [&](std::string_view uid) {
     detail::require(bytes <= options.max_uid_bytes &&
@@ -3033,10 +3035,11 @@ ProteinSchemaGlobalRegistry::lookup(std::string_view uid) const {
     return result;
   const auto [creator_row, creator_found, creator_duplicate] =
       impl->find(impl->creators, uid);
-  if (!creator_found)
+  if (!creator_found) {
     if (impl->pending_complete)
       result.status = Status::missing;
-  return result;
+    return result;
+  }
   if (creator_duplicate)
     return result;
   result.entry = creator_row->input;
@@ -3055,6 +3058,132 @@ ProteinSchemaGlobalRegistry::lookup(std::string_view uid) const {
   }
   if (creator_row->core == Core::present && creator_row->definition != none)
     result.status = Status::pending_object;
+  return result;
+}
+ProteinSchemaGlobalRegistry::ProteinSchemaGlobalRegistry(
+    std::shared_ptr<const Impl> value)
+    : impl(std::move(value)) {}
+ProteinSchemaGlobalRegistryUpdateResult
+ProteinSchemaGlobalRegistry::adopt_pending(std::string_view uid, Id creator,
+                                           Id object, Id definition) const {
+  using Status = ProteinSchemaGlobalLookupStatus;
+  using Update = ProteinSchemaGlobalRegistryUpdateStatus;
+  ProteinSchemaGlobalRegistryUpdateResult result;
+  result.registry = *this;
+  result.manager = impl->manager;
+  result.name_space = impl->name_space;
+  result.creator = creator;
+  result.object = object;
+  result.definition = definition;
+  const auto found = lookup(uid);
+  if (found.status == Status::namespace_object ||
+      found.status == Status::namespace_null_core) {
+    result.status = Update::already_in_namespace;
+    result.object = found.object;
+    result.definition = found.definition;
+    return result;
+  }
+  if (found.status == Status::missing ||
+      found.status == Status::pending_empty_creator) {
+    result.status = Update::creator_missing;
+    return result;
+  }
+  if (found.status != Status::pending_object) {
+    result.status = Update::unresolved;
+    return result;
+  }
+  result.creator = found.creator;
+  result.object = found.object;
+  result.definition = found.definition;
+  if (creator == none || object == none || definition == none ||
+      found.creator != creator || found.object != object ||
+      found.definition != definition || impl->manager == none ||
+      impl->name_space == none) {
+    result.status = Update::identity_mismatch;
+    return result;
+  }
+  const auto [creator_row, creator_found, creator_duplicate] =
+      impl->find(impl->creators, uid);
+  if (!creator_found || creator_duplicate ||
+      creator_row->input != found.entry) {
+    result.status = Update::unresolved;
+    return result;
+  }
+  detail::require(impl->namespace_rows.size() < impl->max_entries,
+                  "Protein Schema global registry namespace entry limit");
+  detail::require(impl->namespace_rows.size() < none,
+                  "Protein Schema global registry namespace identity limit");
+  auto next = std::make_shared<Impl>(*impl);
+  const auto namespace_input = static_cast<Id>(next->namespace_rows.size());
+  next->namespace_rows.push_back({std::string(uid), namespace_input, object,
+                                  definition,
+                                  ProteinSchemaGlobalCoreStatus::present});
+  const auto creator_input = creator_row->input;
+  const auto erase =
+      std::find_if(next->creators.begin(), next->creators.end(),
+                   [&](const auto &row) { return row.input == creator_input; });
+  detail::require(erase != next->creators.end(),
+                  "Protein Schema global registry creator disappeared");
+  next->creators.erase(erase);
+  const auto by_uid = [&](const auto &a, const auto &b) {
+    if (next->less(a.uid, b.uid))
+      return true;
+    if (next->less(b.uid, a.uid))
+      return false;
+    return a.input < b.input;
+  };
+  std::sort(next->namespace_rows.begin(), next->namespace_rows.end(), by_uid);
+  result.registry = ProteinSchemaGlobalRegistry(std::move(next));
+  result.status = Update::adopted;
+  result.namespace_inserted = true;
+  result.creator_consumed = true;
+  return result;
+}
+ProteinSchemaGlobalRegistryUpdateResult
+ProteinSchemaGlobalRegistry::dispose_pending(std::string_view uid,
+                                             Id creator) const {
+  using Creator = ProteinSchemaGlobalCreatorStatus;
+  using Update = ProteinSchemaGlobalRegistryUpdateStatus;
+  ProteinSchemaGlobalRegistryUpdateResult result;
+  result.registry = *this;
+  result.manager = impl->manager;
+  result.name_space = impl->name_space;
+  result.creator = creator;
+  const auto [creator_row, creator_found, creator_duplicate] =
+      impl->find(impl->creators, uid);
+  if (!creator_found) {
+    result.status =
+        impl->pending_complete ? Update::creator_missing : Update::unresolved;
+    return result;
+  }
+  if (creator_duplicate || creator_row->state == Creator::unresolved) {
+    result.status = Update::unresolved;
+    return result;
+  }
+  result.creator = creator_row->creator;
+  result.object = creator_row->object;
+  result.definition = creator_row->definition;
+  if (creator == none || creator_row->creator != creator) {
+    result.status = Update::identity_mismatch;
+    return result;
+  }
+  if (creator_row->state == Creator::owns_object &&
+      creator_row->object == none) {
+    result.status = Update::unresolved;
+    return result;
+  }
+  auto next = std::make_shared<Impl>(*impl);
+  const auto creator_input = creator_row->input;
+  const auto erase =
+      std::find_if(next->creators.begin(), next->creators.end(),
+                   [&](const auto &row) { return row.input == creator_input; });
+  detail::require(erase != next->creators.end(),
+                  "Protein Schema global registry creator disappeared");
+  next->creators.erase(erase);
+  result.owner_released = creator_row->state == Creator::owns_object;
+  result.creator_consumed = true;
+  result.registry = ProteinSchemaGlobalRegistry(std::move(next));
+  result.status = Update::disposed;
   return result;
 }
 struct ProteinSchemaPropertyState::Impl {
