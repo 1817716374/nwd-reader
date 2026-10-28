@@ -235,6 +235,32 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
     segment_offset += derived_span;
     result.voxels.push_back(std::move(voxel));
   }
+
+  if (const RcsChunk *timestamp_chunk = first_chunk(result, 13)) {
+    if (timestamp_chunk->size < 4)
+      throw Error("RCS timestamp chunk has no point count");
+    result.has_timestamp_chunk = true;
+    result.timestamp_count = u32(file, timestamp_chunk->offset);
+    uint64_t point_total = 0;
+    for (const auto &voxel : result.voxels) {
+      if (voxel.point_count >
+          std::numeric_limits<uint64_t>::max() - point_total)
+        throw Error("RCS timestamp point count overflow");
+      point_total += voxel.point_count;
+    }
+    result.timestamp_count_matches_points = result.timestamp_count == point_total;
+    if (point_total >
+        (std::numeric_limits<uint64_t>::max() - 4) / sizeof(double))
+      throw Error("RCS timestamp data size overflow");
+    const uint64_t timestamp_bytes = point_total * sizeof(double);
+    if (timestamp_bytes > timestamp_chunk->size - 4)
+      throw Error("RCS timestamp values exceed their chunk");
+    uint64_t timestamp_offset = timestamp_chunk->offset + 4;
+    for (auto &voxel : result.voxels) {
+      voxel.timestamp_data_offset = timestamp_offset;
+      timestamp_offset += uint64_t(voxel.point_count) * sizeof(double);
+    }
+  }
   return result;
 }
 
@@ -406,6 +432,34 @@ RcsReader::raw_umbrella_octree_levels() const {
     offset += size;
   }
   return result;
+}
+
+std::span<const uint8_t>
+RcsReader::raw_timestamps(uint32_t voxel_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  if (!impl_->index.has_timestamp_chunk)
+    return {};
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  const uint64_t size = uint64_t(voxel.point_count) * sizeof(double);
+  range({impl_->data, impl_->size}, voxel.timestamp_data_offset, size,
+        "voxel timestamps");
+  return {impl_->data + voxel.timestamp_data_offset,
+          static_cast<size_t>(size)};
+}
+
+double RcsReader::timestamp(uint32_t voxel_index,
+                            uint32_t point_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  if (!impl_->index.has_timestamp_chunk)
+    throw Error("RCS timestamp chunk is absent");
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  if (point_index >= voxel.point_count)
+    throw Error("RCS timestamp point index outside voxel");
+  const uint64_t offset = voxel.timestamp_data_offset +
+                          uint64_t(point_index) * sizeof(double);
+  return f64({impl_->data, impl_->size}, offset);
 }
 
 RcsRawPoint RcsReader::point(uint32_t voxel_index,

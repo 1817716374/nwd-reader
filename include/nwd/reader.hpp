@@ -215,6 +215,7 @@ struct RcsVoxelDescriptor {
   std::array<uint32_t, 9> unknown_tail{}; // raw table at +0x14c
   uint64_t record_offset = 0; // file offset
   uint64_t point_data_offset = 0; // file offset of 16-byte raw points
+  uint64_t timestamp_data_offset = 0; // file offset of point-aligned doubles
 };
 struct RcsRawPoint {
   std::array<double, 3> position{};
@@ -241,6 +242,9 @@ struct RcsFileIndex {
   std::array<uint32_t, umbrella_octree_level_count> umbrella_octree_counts{};
   uint64_t umbrella_octree_records_offset = 0; // first record, after 32 counts
   uint64_t umbrella_octree_record_count = 0;
+  bool has_timestamp_chunk = false;
+  uint64_t timestamp_count = 0;
+  bool timestamp_count_matches_points = false;
 };
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                             uint64_t max_voxels = 1000000);
@@ -270,6 +274,10 @@ public:
   std::array<std::span<const uint8_t>,
              RcsFileIndex::umbrella_octree_level_count>
   raw_umbrella_octree_levels() const;
+  // Point-aligned raw IEEE-754 doubles from chunk 13; units/context are not
+  // inferred. Returns an empty span when chunk 13 is absent.
+  std::span<const uint8_t> raw_timestamps(uint32_t voxel_index) const;
+  double timestamp(uint32_t voxel_index, uint32_t point_index) const;
   RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
 };
 struct CoordinateQuantization {

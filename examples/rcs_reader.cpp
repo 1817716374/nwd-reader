@@ -15,9 +15,14 @@ int main(int argc, char **argv) {
     for (size_t level = 0; level < umbrella_levels.size(); ++level)
       umbrella_entries += index.umbrella_octree_counts[level];
     uint64_t point_count = 0;
+    uint64_t timestamp_count = 0;
     for (uint32_t i = 0; i < index.voxels.size(); ++i) {
       const auto &voxel = index.voxels[i];
       point_count += voxel.point_count;
+      if (index.has_timestamp_chunk) {
+        const auto timestamps = reader.raw_timestamps(i);
+        timestamp_count += timestamps.size() / sizeof(double);
+      }
       const auto auxiliary_tables = reader.raw_auxiliary_tables(i);
       uint64_t auxiliary_items = 0;
       for (size_t table = 0; table < auxiliary_tables.size(); ++table)
@@ -42,7 +47,8 @@ int main(int argc, char **argv) {
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count
               << " points, " << umbrella_entries
-              << " opaque umbrella octree records\n";
+              << " opaque umbrella octree records, " << timestamp_count
+              << " point timestamps\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
