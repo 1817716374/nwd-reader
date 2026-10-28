@@ -1,5 +1,6 @@
 #include "nwd/reader.hpp"
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #ifdef _WIN32
@@ -23,6 +24,9 @@ constexpr uint64_t chunk_entry_bytes = 24;
 constexpr uint64_t voxel_count_bytes = 8;
 constexpr uint64_t voxel_record_bytes = RcsVoxelDescriptor::wire_size;
 constexpr uint32_t point_record_bytes = 16;
+constexpr uint32_t normal_grid_width = 52;
+constexpr uint32_t normal_face_entries = normal_grid_width * normal_grid_width;
+constexpr uint32_t normal_entry_count = 6 * normal_face_entries;
 
 void range(std::span<const uint8_t> bytes, uint64_t offset, uint64_t size,
            const char *what) {
@@ -43,6 +47,54 @@ uint64_t u64(std::span<const uint8_t> bytes, uint64_t offset) {
 
 double f64(std::span<const uint8_t> bytes, uint64_t offset) {
   return std::bit_cast<double>(u64(bytes, offset));
+}
+
+const std::array<std::array<float, 3>, normal_entry_count> &rcs_normal_table() {
+  static const auto table = [] {
+    std::array<std::array<float, 3>, normal_entry_count> result{};
+    std::array<float, 26> tangent{};
+    constexpr float pi = 3.1415927410125732421875f;
+    for (uint32_t i = 0; i < tangent.size(); ++i) {
+      const float half_degree_sample = static_cast<float>(i) + 0.5f;
+      tangent[i] = std::tan(half_degree_sample * pi / 104.0f);
+    }
+
+    for (uint32_t face = 0; face < 6; ++face) {
+      for (uint32_t row = 0; row < normal_grid_width; ++row) {
+        const bool row_positive = row >= 26;
+        const uint32_t row_magnitude = row_positive ? row - 26 : 25 - row;
+        const float outer = tangent[row_magnitude];
+        for (uint32_t column = 0; column < normal_grid_width; ++column) {
+          const bool column_positive = column >= 26;
+          const uint32_t column_magnitude =
+              column_positive ? column - 26 : 25 - column;
+          const float inner = tangent[column_magnitude];
+          const float norm = std::sqrt(outer * outer + inner * inner + 1.0f);
+          const float axis = 1.0f / norm;
+          float row_component = outer / norm;
+          float column_component = inner / norm;
+          if (!row_positive)
+            row_component = -row_component;
+          if (!column_positive)
+            column_component = -column_component;
+
+          std::array<float, 3> normal{};
+          switch (face) {
+          case 0: normal = {axis, column_component, row_component}; break;
+          case 1: normal = {-axis, column_component, row_component}; break;
+          case 2: normal = {column_component, axis, row_component}; break;
+          case 3: normal = {column_component, -axis, row_component}; break;
+          case 4: normal = {column_component, row_component, axis}; break;
+          default: normal = {column_component, row_component, -axis}; break;
+          }
+          result[face * normal_face_entries + row * normal_grid_width +
+                 column] = normal;
+        }
+      }
+    }
+    return result;
+  }();
+  return table;
 }
 
 uint64_t sum_words(std::span<const uint8_t> file, uint64_t offset,
@@ -156,6 +208,12 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
     result.voxels.push_back(std::move(voxel));
   }
   return result;
+}
+
+std::array<float, 3> decode_rcs_normal(uint16_t normal_index) {
+  if (normal_index >= normal_entry_count)
+    return {};
+  return rcs_normal_table()[normal_index];
 }
 
 RcsRawPoint decode_rcs_point(std::span<const uint8_t> file,

@@ -17,9 +17,12 @@ int main(int argc, char **argv) {
       if (voxel.point_count == 0)
         continue;
       const auto point = reader.point(i, 0);
+      const auto normal = nwd::decode_rcs_normal(point.normal);
       std::cout << "voxel " << i << ": " << voxel.point_count
                 << " points; first XYZ = " << point.position[0] << ", "
-                << point.position[1] << ", " << point.position[2] << '\n';
+                << point.position[1] << ", " << point.position[2]
+                << "; first normal = " << normal[0] << ", " << normal[1]
+                << ", " << normal[2] << '\n';
     }
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count

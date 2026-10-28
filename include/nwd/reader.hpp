@@ -231,6 +231,9 @@ struct RcsFileIndex {
 };
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                             uint64_t max_voxels = 1000000);
+// Decode the packed 14-bit RCS normal table index. Freedom 2026 has 16,224
+// entries; larger values return the native zero-vector fallback.
+std::array<float, 3> decode_rcs_normal(uint16_t normal_index);
 RcsRawPoint decode_rcs_point(std::span<const uint8_t> file,
                              const RcsVoxelDescriptor &voxel,
                              uint32_t point_index);
