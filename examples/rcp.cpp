@@ -72,6 +72,13 @@ int main(int argc, char **argv) {
       std::cout << '\n';
       std::cout << "  VoxelTreeRunTime records="
                 << project.voxel_tree_runtime().size() << '\n';
+      std::cout << "  Region layers=" << project.region_layers().size()
+                << '\n';
+      for (const auto &layer : project.region_layers())
+        std::cout << "    layer=" << layer.id.value_or(std::string_view{})
+                  << " name=" << layer.name.value_or(std::string_view{})
+                  << " index=" << layer.index.value_or(std::string_view{})
+                  << " default=" << layer.default_layer << '\n';
       const auto runtime = project.voxel_tree_runtime();
       const auto external_files = reader.external_rcs_files();
       for (uint32_t runtime_index = 0; runtime_index < runtime.size();
@@ -128,6 +135,15 @@ int main(int argc, char **argv) {
         print_vector_fields("Eye", view.camera_eye);
         print_vector_fields("Center", view.camera_center);
         print_vector_fields("Up", view.camera_up);
+        for (const auto &status : view.default_region_status) {
+          std::cout << "      default-region="
+                    << status.id.value_or(std::string_view{}) << " visible="
+                    << status.visible.value_or(std::string_view{}) << " link="
+                    << status_name(status.region_link);
+          if (status.region_layer_index)
+            std::cout << ':' << *status.region_layer_index;
+          std::cout << '\n';
+        }
         for (const auto &scan : view.scan_locations) {
           std::cout << "      scan=" << scan.id.value_or(std::string_view{})
                     << " visible="

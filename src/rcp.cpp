@@ -843,6 +843,7 @@ struct RcpProjectDocument::Impl {
   std::vector<RcpProjectScan> scans;
   std::vector<RcpProjectShot> shots;
   std::vector<RcpProjectGroup> groups;
+  std::vector<RcpProjectRegionLayer> region_layers;
   std::vector<RcpProjectViewState> navigator_view_states;
   std::vector<RcpProjectSavedView> saved_view_states;
   Impl(std::span<const uint8_t> bytes, RcpXmlOptions options)
@@ -850,6 +851,37 @@ struct RcpProjectDocument::Impl {
     const auto root = xml.root();
     if (const auto project_id = rcp_child_element(xml, root, "ProjectId"))
       project_uuid = xml.attribute(*project_id, "UUID");
+    if (const auto point_cloud =
+            rcp_child_element(xml, root, "PointCloudSegmentList")) {
+      if (const auto manager =
+              rcp_child_element(xml, *point_cloud, "RegionManager")) {
+        const auto append_region_layers = [&](Id container, bool is_default) {
+          for (const auto node : rcp_child_elements(xml, container, "Layer")) {
+            RcpProjectRegionLayer record;
+            record.xml_node = node;
+            record.id = xml.attribute(node, "Id");
+            record.name = xml.attribute(node, "Name");
+            record.index = xml.attribute(node, "Index");
+            record.visible = xml.attribute(node, "Visible");
+            record.locked = xml.attribute(node, "Locked");
+            record.removed = xml.attribute(node, "Removed");
+            record.default_layer = is_default;
+            if (const auto color = rcp_child_element(xml, node, "Color"))
+              record.color_node = *color;
+            if (const auto bounds =
+                    rcp_child_element(xml, node, "SelectionBounds"))
+              record.selection_bounds_node = *bounds;
+            region_layers.push_back(std::move(record));
+          }
+        };
+        if (const auto default_layer =
+                rcp_child_element(xml, *manager, "DefaultLayer"))
+          append_region_layers(*default_layer, true);
+        if (const auto region_array =
+                rcp_child_element(xml, *manager, "RegionArray"))
+          append_region_layers(*region_array, false);
+      }
+    }
     if (const auto nodes = rcp_child_element(xml, root, "Nodes"))
       for (const auto node :
            rcp_child_elements(xml, *nodes, "VoxelTreeRunTime")) {
@@ -935,9 +967,31 @@ struct RcpProjectDocument::Impl {
           record.clipping_boundaries_node = *child;
         if (const auto child = rcp_child_element(xml, node, "Regions"))
           record.regions_node = *child;
+        if (record.regions_node != none) {
+          record.regions_isolated =
+              xml.attribute(record.regions_node, "Isolated");
+          for (const auto status :
+               rcp_child_elements(xml, record.regions_node, "Status")) {
+            RcpProjectRegionStatus region_status;
+            region_status.xml_node = status;
+            region_status.id = xml.attribute(status, "ID");
+            region_status.visible = xml.attribute(status, "Visible");
+            record.regions.push_back(std::move(region_status));
+          }
+        }
         if (const auto child =
                 rcp_child_element(xml, node, "DefaultRegionStatus"))
           record.default_region_status_node = *child;
+        if (record.default_region_status_node != none) {
+          for (const auto status : rcp_child_elements(
+                   xml, record.default_region_status_node, "Status")) {
+            RcpProjectRegionStatus region_status;
+            region_status.xml_node = status;
+            region_status.id = xml.attribute(status, "ID");
+            region_status.visible = xml.attribute(status, "Visible");
+            record.default_region_status.push_back(std::move(region_status));
+          }
+        }
         if (const auto child = rcp_child_element(xml, node, "ScanLocations")) {
           record.scan_locations_node = *child;
           for (const auto status :
@@ -959,6 +1013,8 @@ struct RcpProjectDocument::Impl {
         runtime, [](const auto &record) { return record.id; });
     const auto scan_index =
         rcp_identity_index(scans, [](const auto &record) { return record.id; });
+    const auto region_layer_index = rcp_identity_index(
+        region_layers, [](const auto &record) { return record.id; });
     rcp_link_identities(
         runtime, runtime_index, scan_index,
         [](const auto &record) { return record.id; },
@@ -1021,6 +1077,20 @@ struct RcpProjectDocument::Impl {
             view.scan_locations[i].scan_link = status;
             view.scan_locations[i].scan_index = target;
           });
+      const auto link_region_statuses = [&](auto &statuses) {
+        const auto source_index = rcp_identity_index(
+            statuses, [](const auto &record) { return record.id; });
+        rcp_link_identities(
+            statuses, source_index, region_layer_index,
+            [](const auto &record) { return record.id; },
+            [&](uint32_t i, RcpIdentityLinkStatus status,
+                std::optional<uint32_t> target) {
+              statuses[i].region_link = status;
+              statuses[i].region_layer_index = target;
+            });
+      };
+      link_region_statuses(view.default_region_status);
+      link_region_statuses(view.regions);
     }
   }
 };
@@ -1046,6 +1116,10 @@ std::span<const RcpProjectShot> RcpProjectDocument::shots() const noexcept {
 }
 std::span<const RcpProjectGroup> RcpProjectDocument::groups() const noexcept {
   return impl_->groups;
+}
+std::span<const RcpProjectRegionLayer>
+RcpProjectDocument::region_layers() const noexcept {
+  return impl_->region_layers;
 }
 std::span<const RcpProjectViewState>
 RcpProjectDocument::navigator_view_states() const noexcept {

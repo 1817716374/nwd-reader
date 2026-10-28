@@ -462,14 +462,28 @@ struct RcpProjectVector3 {
   std::array<std::optional<std::string_view>, 3> lowercase_xyz{},
       uppercase_xyz{};
 };
+struct RcpProjectRegionLayer {
+  Id xml_node = none;
+  std::optional<std::string_view> id, name, index, visible, locked, removed;
+  bool default_layer = false;
+  Id color_node = none, selection_bounds_node = none;
+};
+struct RcpProjectRegionStatus {
+  Id xml_node = none;
+  std::optional<std::string_view> id, visible;
+  RcpIdentityLinkStatus region_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> region_layer_index;
+};
 struct RcpProjectSavedView {
   Id xml_node = none;
   std::optional<std::string_view> id, title, fov, point_size, shading_mode;
   RcpProjectVector3 camera_eye, camera_center, camera_up;
+  std::optional<std::string_view> regions_isolated;
   Id camera_node = none, limit_box_node = none, clipping_boundaries_node = none,
      regions_node = none, default_region_status_node = none,
      scan_locations_node = none, background_color_node = none;
   std::vector<RcpProjectViewScanStatus> scan_locations;
+  std::vector<RcpProjectRegionStatus> default_region_status, regions;
 };
 // Source-named project records are projections of the generic XML tree: raw
 // field strings are preserved without numeric/unit normalization. Exact IDs
@@ -490,6 +504,7 @@ public:
   std::span<const RcpProjectScan> scans() const noexcept;
   std::span<const RcpProjectShot> shots() const noexcept;
   std::span<const RcpProjectGroup> groups() const noexcept;
+  std::span<const RcpProjectRegionLayer> region_layers() const noexcept;
   std::span<const RcpProjectViewState> navigator_view_states() const noexcept;
   std::span<const RcpProjectSavedView> saved_view_states() const noexcept;
 };
