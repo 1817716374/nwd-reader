@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -26,6 +27,7 @@ constexpr uint64_t umbrella_octree_header_bytes = 0x80;
 constexpr uint64_t voxel_record_bytes = RcsVoxelDescriptor::wire_size;
 constexpr uint64_t umbrella_octree_record_bytes =
     RcsFileIndex::umbrella_octree_record_size;
+constexpr uint64_t other_data_record_header_bytes = 8;
 constexpr uint32_t point_record_bytes = 16;
 constexpr uint32_t normal_grid_width = 52;
 constexpr uint32_t normal_face_entries = normal_grid_width * normal_grid_width;
@@ -118,10 +120,58 @@ const RcsChunk *first_chunk(const RcsFileIndex &index, uint32_t id) {
       return &chunk;
   return nullptr;
 }
+
+struct RcsOtherDataNativeLayout {
+  RcsOtherDataSemantic semantic = RcsOtherDataSemantic::unknown;
+  RcsOtherDataValueKind kind = RcsOtherDataValueKind::opaque;
+  uint32_t value_size = 0;
+  uint32_t object_offset = 0;
+};
+
+RcsOtherDataNativeLayout other_data_value_layout(int32_t code) {
+  switch (code) {
+  case 100:
+    return {RcsOtherDataSemantic::normalize_intensity,
+            RcsOtherDataValueKind::boolean, 1, 0x570};
+  case 301:
+    return {RcsOtherDataSemantic::unknown, RcsOtherDataValueKind::boolean, 1,
+            0x584};
+  case 101:
+    return {RcsOtherDataSemantic::max_intensity,
+            RcsOtherDataValueKind::float32, 4, 0x574};
+  case 102:
+    return {RcsOtherDataSemantic::min_intensity,
+            RcsOtherDataValueKind::float32, 4, 0x578};
+  case 201:
+    return {RcsOtherDataSemantic::range_image_width,
+            RcsOtherDataValueKind::int32, 4, 0x580};
+  case 202:
+    return {RcsOtherDataSemantic::range_image_height,
+            RcsOtherDataValueKind::int32, 4, 0x57c};
+  case 302:
+    return {RcsOtherDataSemantic::lidar_classification_type_bitmap,
+            RcsOtherDataValueKind::boolean_array_256, 256, 0x585};
+  case 203:
+    return {RcsOtherDataSemantic::range_image_horizontal_start_angle,
+            RcsOtherDataValueKind::float64, 8, 0x698};
+  case 204:
+    return {RcsOtherDataSemantic::range_image_horizontal_end_angle,
+            RcsOtherDataValueKind::float64, 8, 0x6a0};
+  case 205:
+    return {RcsOtherDataSemantic::range_image_vertical_start_angle,
+            RcsOtherDataValueKind::float64, 8, 0x6a8};
+  case 206:
+    return {RcsOtherDataSemantic::range_image_vertical_end_angle,
+            RcsOtherDataValueKind::float64, 8, 0x6b0};
+  default:
+    return {};
+  }
+}
 } // namespace
 
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
-                            uint64_t max_voxels) {
+                            uint64_t max_voxels,
+                            uint64_t max_other_data_fields) {
   range(file, 0, header_bytes, "fixed header");
   if (std::memcmp(file.data(), "ADOCT", 5) != 0)
     throw Error("RCS magic is not ADOCT");
@@ -146,6 +196,43 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                    u64(file, at + 16)};
     range(file, chunk.offset, chunk.size, "chunk");
     result.chunks.push_back(chunk);
+  }
+
+  if (const RcsChunk *other_data_chunk = first_chunk(result, 11)) {
+    if (other_data_chunk->size < 4)
+      throw Error("RCS other-data chunk has no field count");
+    result.has_other_data_chunk = true;
+    result.other_data_count =
+        std::bit_cast<int32_t>(u32(file, other_data_chunk->offset));
+    uint64_t cursor = other_data_chunk->offset + 4;
+    const int32_t native_count = result.other_data_count;
+    if (native_count > 0) {
+      const uint64_t count = static_cast<uint32_t>(native_count);
+      if (count > max_other_data_fields ||
+          count > std::numeric_limits<size_t>::max())
+        throw Error("RCS other-data field count exceeds configured limit");
+      result.other_data_fields.reserve(static_cast<size_t>(count));
+      const uint64_t chunk_end =
+          other_data_chunk->offset + other_data_chunk->size;
+      for (uint64_t i = 0; i < count; ++i) {
+        if (cursor > chunk_end ||
+            other_data_record_header_bytes > chunk_end - cursor)
+          throw Error("RCS other-data record header exceeds its chunk");
+        const uint64_t record_offset = cursor;
+        const int32_t code = std::bit_cast<int32_t>(u32(file, cursor));
+        const uint32_t payload_size = u32(file, cursor + 4);
+        cursor += other_data_record_header_bytes;
+        if (payload_size > chunk_end - cursor)
+          throw Error("RCS other-data payload exceeds its chunk");
+        const auto native = other_data_value_layout(code);
+        result.other_data_fields.push_back(
+            {code, payload_size, record_offset, cursor, native.semantic,
+             native.kind, native.value_size, native.object_offset,
+             native.value_size != 0 && payload_size == native.value_size});
+        cursor += payload_size;
+      }
+    }
+    result.other_data_records_end_offset = cursor;
   }
 
   if (const RcsChunk *umbrella_chunk = first_chunk(result, 3)) {
@@ -366,10 +453,12 @@ struct RcsReader::Impl {
   }
 };
 
-RcsReader::RcsReader(const std::filesystem::path &path, uint64_t max_voxels) {
+RcsReader::RcsReader(const std::filesystem::path &path, uint64_t max_voxels,
+                     uint64_t max_other_data_fields) {
   auto impl = std::make_shared<Impl>();
   impl->open(path);
-  impl->index = read_rcs_index({impl->data, impl->size}, max_voxels);
+  impl->index = read_rcs_index({impl->data, impl->size}, max_voxels,
+                               max_other_data_fields);
   impl_ = std::move(impl);
 }
 
@@ -460,6 +549,53 @@ double RcsReader::timestamp(uint32_t voxel_index,
   const uint64_t offset = voxel.timestamp_data_offset +
                           uint64_t(point_index) * sizeof(double);
   return f64({impl_->data, impl_->size}, offset);
+}
+
+std::span<const uint8_t> RcsReader::raw_other_data_chunk() const {
+  const RcsChunk *chunk = first_chunk(impl_->index, 11);
+  if (!chunk)
+    return {};
+  range({impl_->data, impl_->size}, chunk->offset, chunk->size,
+        "other-data chunk");
+  return {impl_->data + chunk->offset, static_cast<size_t>(chunk->size)};
+}
+
+std::span<const uint8_t>
+RcsReader::raw_other_data_payload(uint32_t field_index) const {
+  if (field_index >= impl_->index.other_data_fields.size())
+    throw Error("RCS other-data field index outside record table");
+  const auto &field = impl_->index.other_data_fields[field_index];
+  range({impl_->data, impl_->size}, field.payload_offset, field.payload_size,
+        "other-data payload");
+  return {impl_->data + field.payload_offset,
+          static_cast<size_t>(field.payload_size)};
+}
+
+RcsOtherDataValue RcsReader::other_data_value(uint32_t field_index) const {
+  if (field_index >= impl_->index.other_data_fields.size())
+    throw Error("RCS other-data field index outside record table");
+  const auto &field = impl_->index.other_data_fields[field_index];
+  if (field.native_value_kind == RcsOtherDataValueKind::opaque)
+    throw Error("RCS other-data field has no known native value type");
+  if (!field.payload_size_matches_native)
+    throw Error("RCS other-data payload width does not match native value");
+  const auto payload = raw_other_data_payload(field_index);
+  switch (field.native_value_kind) {
+  case RcsOtherDataValueKind::boolean:
+    return payload[0] != 0;
+  case RcsOtherDataValueKind::float32:
+    return std::bit_cast<float>(u32({impl_->data, impl_->size},
+                                    field.payload_offset));
+  case RcsOtherDataValueKind::int32:
+    return std::bit_cast<int32_t>(u32({impl_->data, impl_->size},
+                                       field.payload_offset));
+  case RcsOtherDataValueKind::boolean_array_256:
+    return payload;
+  case RcsOtherDataValueKind::float64:
+    return f64({impl_->data, impl_->size}, field.payload_offset);
+  case RcsOtherDataValueKind::opaque: break;
+  }
+  throw Error("RCS other-data field has no known native value type");
 }
 
 RcsRawPoint RcsReader::point(uint32_t voxel_index,

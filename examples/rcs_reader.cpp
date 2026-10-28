@@ -1,6 +1,8 @@
 #include <nwd/reader.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <variant>
 
 int main(int argc, char **argv) {
   if (argc != 2) {
@@ -16,6 +18,9 @@ int main(int argc, char **argv) {
       umbrella_entries += index.umbrella_octree_counts[level];
     uint64_t point_count = 0;
     uint64_t timestamp_count = 0;
+    uint64_t other_data_payload_bytes = 0;
+    for (uint32_t i = 0; i < index.other_data_fields.size(); ++i)
+      other_data_payload_bytes += reader.raw_other_data_payload(i).size();
     for (uint32_t i = 0; i < index.voxels.size(); ++i) {
       const auto &voxel = index.voxels[i];
       point_count += voxel.point_count;
@@ -47,8 +52,33 @@ int main(int argc, char **argv) {
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count
               << " points, " << umbrella_entries
-              << " opaque umbrella octree records, " << timestamp_count
+              << " opaque umbrella octree records, "
+              << index.other_data_fields.size() << " chunk-11 fields ("
+              << other_data_payload_bytes << " raw payload bytes), "
+              << timestamp_count
               << " point timestamps\n";
+    for (uint32_t i = 0; i < index.other_data_fields.size(); ++i) {
+      const auto &field = index.other_data_fields[i];
+      if (field.native_value_kind == nwd::RcsOtherDataValueKind::opaque ||
+          !field.payload_size_matches_native)
+        continue;
+      const auto value = reader.other_data_value(i);
+      std::cout << "chunk 11 code " << field.code << " value ";
+      if (const auto *boolean = std::get_if<bool>(&value))
+        std::cout << (*boolean ? "true" : "false");
+      else if (const auto *float_value = std::get_if<float>(&value))
+        std::cout << *float_value;
+      else if (const auto *int_value = std::get_if<int32_t>(&value))
+        std::cout << *int_value;
+      else if (const auto *double_value = std::get_if<double>(&value))
+        std::cout << *double_value;
+      else if (const auto *bitmap =
+                   std::get_if<std::span<const uint8_t>>(&value))
+        std::cout << std::count_if(bitmap->begin(), bitmap->end(),
+                                   [](uint8_t byte) { return byte != 0; })
+                  << " of 256 bitmap entries set";
+      std::cout << '\n';
+    }
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

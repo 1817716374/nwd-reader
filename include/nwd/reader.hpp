@@ -217,6 +217,40 @@ struct RcsVoxelDescriptor {
   uint64_t point_data_offset = 0; // file offset of 16-byte raw points
   uint64_t timestamp_data_offset = 0; // file offset of point-aligned doubles
 };
+enum class RcsOtherDataValueKind : uint8_t {
+  opaque,
+  boolean,
+  float32,
+  int32,
+  boolean_array_256,
+  float64
+};
+enum class RcsOtherDataSemantic : uint8_t {
+  unknown,
+  normalize_intensity,
+  max_intensity,
+  min_intensity,
+  range_image_width,
+  range_image_height,
+  range_image_horizontal_start_angle,
+  range_image_horizontal_end_angle,
+  range_image_vertical_start_angle,
+  range_image_vertical_end_angle,
+  lidar_classification_type_bitmap
+};
+struct RcsOtherDataField {
+  int32_t code = 0;
+  uint32_t payload_size = 0;
+  uint64_t record_offset = 0;
+  uint64_t payload_offset = 0;
+  RcsOtherDataSemantic semantic = RcsOtherDataSemantic::unknown;
+  RcsOtherDataValueKind native_value_kind = RcsOtherDataValueKind::opaque;
+  uint32_t native_value_size = 0; // fixed native read width; 0 for unknown codes
+  uint32_t native_object_offset = 0; // Freedom 2026 target member; 0 if unknown
+  bool payload_size_matches_native = false;
+};
+using RcsOtherDataValue =
+    std::variant<bool, float, int32_t, double, std::span<const uint8_t>>;
 struct RcsRawPoint {
   std::array<double, 3> position{};
   // Saved byte order is retained verbatim; native RGBA output swaps lanes 1/2.
@@ -245,9 +279,14 @@ struct RcsFileIndex {
   bool has_timestamp_chunk = false;
   uint64_t timestamp_count = 0;
   bool timestamp_count_matches_points = false;
+  bool has_other_data_chunk = false;
+  int32_t other_data_count = 0; // raw chunk header, signed natively
+  uint64_t other_data_records_end_offset = 0;
+  std::vector<RcsOtherDataField> other_data_fields;
 };
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
-                            uint64_t max_voxels = 1000000);
+                            uint64_t max_voxels = 1000000,
+                            uint64_t max_other_data_fields = 1000000);
 // Decode the packed 14-bit RCS normal table index. Freedom 2026 has 16,224
 // entries; larger values return the native zero-vector fallback.
 std::array<float, 3> decode_rcs_normal(uint16_t normal_index);
@@ -260,7 +299,8 @@ class RcsReader {
 
 public:
   explicit RcsReader(const std::filesystem::path &,
-                     uint64_t max_voxels = 1000000);
+                     uint64_t max_voxels = 1000000,
+                     uint64_t max_other_data_fields = 1000000);
   const RcsFileIndex &index() const noexcept;
   // Borrowed bytes remain valid while this reader (or a copy) is alive.
   std::span<const uint8_t> raw_points(uint32_t voxel_index) const;
@@ -278,6 +318,13 @@ public:
   // inferred. Returns an empty span when chunk 13 is absent.
   std::span<const uint8_t> raw_timestamps(uint32_t voxel_index) const;
   double timestamp(uint32_t voxel_index, uint32_t point_index) const;
+  // Borrowed chunk 11 bytes and field payloads. Unknown data remains raw.
+  std::span<const uint8_t> raw_other_data_chunk() const;
+  std::span<const uint8_t>
+  raw_other_data_payload(uint32_t field_index) const;
+  // Code 302 returns a borrowed span of 256 saved bytes; unknown codes and
+  // mismatched native widths throw for typed access.
+  RcsOtherDataValue other_data_value(uint32_t field_index) const;
   RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
 };
 struct CoordinateQuantization {
