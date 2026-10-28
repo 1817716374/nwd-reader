@@ -707,6 +707,17 @@ if (gate.applicable && gate.accepted) {
 }
 ```
 
+`child.with_inherited_parent(parent)` 在此之后可用于局部状态继承：它复用索引的活动容器与父别名规则，同时将父级当前属性状态带到新行。父级独有属性保留当前文本/POD 覆盖、约束、Choice 和共享字段来源；子级同名属性保留子级当前值，并按 `parent.flags | (child.flags & 0x180)` 更新当前 flags。调用会保留子状态身份并服从 `ProteinSchemaDefinitionOptions` 的历史/深度限制。它只完成此作用域的继承，不执行 UID namespace 注册、递归父登记、对象创建或释放。
+
+```cpp
+auto child_with_parent = child_state.with_inherited_parent(parent_state);
+auto inherited = child_with_parent.find_actual("ParentProperty");
+if (inherited.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
+    auto current = child_with_parent.property(inherited.property);
+    // 使用 current.text_value(), pod_bits(), constraint() 或 choice_table()。
+}
+```
+
 `ProteinSchemaDefinitionLoadOptions` 限制输入数、事件数、累计声明、保留的属性历史和缓存值，并提供单定义与继承深度上限。输入必须是尚未执行显式父属性合并或加载期改写的局部索引，已有 XML 值不会重新解析。索引及副本维持所有文档/值的寿命，结果可并发只读查询。
 
 每个加载索引是独立作用域；不同文件、库或模型图中的同名 UID 不会自动合并。Base 文件与归档加载、自动 NWD 库/图作用域构造、完整全局注册兼容性仍需单独接入。

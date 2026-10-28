@@ -1119,6 +1119,14 @@ public:
   ProteinSchemaDefinitionLookup find_actual(std::string_view) const;
   ProteinSchemaDefinitionLookup find(std::string_view) const;
   ProteinSchemaPropertyState property(Id row) const;
+  // Applies the indexed container/alias inheritance rules, then carries each
+  // active parent's and child's current property state onto the resulting row.
+  // Preserves this scope identity and shared field suppliers/overlays; requires
+  // both definitions to be ready. Flags on same-name child rows use the native
+  // parent | (child & 0x180) merge.
+  ProteinSchemaDefinitionState with_inherited_parent(
+      const ProteinSchemaDefinitionState &,
+      ProteinSchemaDefinitionOptions = {}) const;
   // Requires the same target identity at row, not a same-name foreign property.
   ProteinSchemaDefinitionState with_property(Id row, const ProteinSchemaPropertyState &) const;
   ProteinSchemaVersionRead read_version(ProteinSchemaComparisonOptions = {}) const;

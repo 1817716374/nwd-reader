@@ -3251,6 +3251,21 @@ ProteinSchemaPropertyCopyResult ProteinSchemaPropertyState::copied_from(
 // Internal batch writer. Sparse entries hold indexed-row owners, never states.
 struct ProteinSchemaStateAccess {
   static ProteinSchemaPropertyState
+  rebind(const ProteinSchemaPropertyState &source,
+         const ProteinSchemaDefinitionIndex &index, Id row) {
+    using PropertyImpl = ProteinSchemaPropertyState::Impl;
+    auto result = std::make_shared<PropertyImpl>(*source.impl);
+    result->identity = std::make_shared<const PropertyImpl::Seed>(index, row);
+    return ProteinSchemaPropertyState(std::move(result));
+  }
+  static ProteinSchemaPropertyState
+  inherited_flags(const ProteinSchemaPropertyState &source, uint32_t flags) {
+    using PropertyImpl = ProteinSchemaPropertyState::Impl;
+    auto result = std::make_shared<PropertyImpl>(*source.impl);
+    result->flags_override = flags;
+    return ProteinSchemaPropertyState(std::move(result));
+  }
+  static ProteinSchemaPropertyState
   pod_written(const ProteinSchemaPropertyState &target, size_t offset,
               uint32_t bits) {
     using Impl = ProteinSchemaPropertyState::Impl;
@@ -3908,6 +3923,65 @@ ProteinSchemaDefinitionState ProteinSchemaDefinitionState::with_property(
                   "Protein Schema definition state target identity mismatch");
   auto result = std::make_shared<Impl>(*impl);
   result->updates.insert_or_assign(row, value);
+  return ProteinSchemaDefinitionState(std::move(result));
+}
+ProteinSchemaDefinitionState
+ProteinSchemaDefinitionState::with_inherited_parent(
+    const ProteinSchemaDefinitionState &parent,
+    ProteinSchemaDefinitionOptions options) const {
+  using Lookup = ProteinSchemaDefinitionLookupStatus;
+  const auto inherited_index =
+      impl->index.with_inherited_parent(parent.impl->index, options);
+  auto result = std::make_shared<Impl>(*impl);
+  result->index = inherited_index;
+  result->original = inherited_index;
+
+  // The index operation fixes row identity/container migration. Rebind the
+  // current property field owners separately so sparse writes and parent
+  // overlays remain current without materializing or copying their payloads.
+  std::map<std::string_view, ProteinSchemaPropertyState, std::less<>> current;
+  for (const auto container : {ProteinSchemaPropertyContainer::ordinary,
+                               ProteinSchemaPropertyContainer::iterator_data,
+                               ProteinSchemaPropertyContainer::readonly_data}) {
+    for (const Id parent_row : parent.definition().container(container)) {
+      const auto source = parent.property(parent_row);
+      const auto name = source.target().id;
+      const auto target_lookup = inherited_index.find_actual(name);
+      detail::require(target_lookup.status == Lookup::found,
+                      "Protein Schema inherited row lookup changed");
+      auto existing = current.find(name);
+      if (existing != current.end()) {
+        const auto flags = source.flags() | (existing->second.flags() & 0x180);
+        existing->second =
+            ProteinSchemaStateAccess::inherited_flags(existing->second, flags);
+        continue;
+      }
+
+      const auto child_lookup = impl->index.find_actual(name);
+      detail::require(child_lookup.status != Lookup::unresolved,
+                      "Protein Schema child inheritance lookup unresolved");
+      const bool child_exists = child_lookup.status == Lookup::found;
+      const auto &base =
+          child_exists ? property(child_lookup.property) : source;
+      auto rebound = ProteinSchemaStateAccess::rebind(base, inherited_index,
+                                                      target_lookup.property);
+      if (child_exists) {
+        const auto flags = source.flags() | (base.flags() & 0x180);
+        rebound = ProteinSchemaStateAccess::inherited_flags(rebound, flags);
+      }
+      current.emplace(name, std::move(rebound));
+    }
+  }
+  detail::require(result->updates.size() <= options.max_property_history &&
+                      current.size() <=
+                          options.max_property_history - result->updates.size(),
+                  "Protein Schema inherited state history limit");
+  for (auto &[name, value] : current) {
+    const auto found = inherited_index.find_actual(name);
+    detail::require(found.status == Lookup::found,
+                    "Protein Schema inherited state row missing");
+    result->updates.insert_or_assign(found.property, std::move(value));
+  }
   return ProteinSchemaDefinitionState(std::move(result));
 }
 ProteinSchemaVersionRead ProteinSchemaDefinitionState::read_version(
