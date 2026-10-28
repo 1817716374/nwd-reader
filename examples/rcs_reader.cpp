@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
     for (uint32_t i = 0; i < index.voxels.size(); ++i) {
       const auto &voxel = index.voxels[i];
       point_count += voxel.point_count;
-      if (index.has_timestamp_chunk) {
+      if (index.has_timestamp_chunk && index.timestamp_values_complete) {
         const auto timestamps = reader.raw_timestamps(i);
         timestamp_count += timestamps.size() / sizeof(double);
       }
@@ -59,8 +59,12 @@ int main(int argc, char **argv) {
               << raw_chunk_table_bytes << " raw chunk-table bytes, "
               << index.other_data_fields.size() << " chunk-11 fields ("
               << other_data_payload_bytes << " raw payload bytes), "
-              << timestamp_count
-              << " point timestamps\n";
+              << timestamp_count << " point timestamps";
+    if (index.has_timestamp_chunk && !index.timestamp_values_complete)
+      std::cout << " (incomplete payload: " << index.timestamp_payload_bytes
+                << '/' << index.timestamp_expected_bytes
+                << " bytes; raw chunk retained)";
+    std::cout << '\n';
     for (uint32_t i = 0; i < index.other_data_fields.size(); ++i) {
       const auto &field = index.other_data_fields[i];
       if (field.native_value_kind == nwd::RcsOtherDataValueKind::opaque ||

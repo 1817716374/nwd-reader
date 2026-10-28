@@ -133,7 +133,7 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
 
-`RcsReader` 以只读内存映射读取 Autodesk RCS 点云。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`raw_auxiliary_tables(voxel)` 一次返回24张辅助表的零拷贝字节视图（每条记录为小端 u32，条目语义保留为不透明数据），`raw_umbrella_octree_levels()` 返回 chunk 3 的32层级、每条72字节的零拷贝记录视图，`raw_timestamps(voxel)` 返回 chunk 13 中与该 voxel 点序对齐的原始 double 字节，`timestamp(voxel, point)` 按需解码单个值；首个计数字段保留在 `index()`，是否匹配点总数也显式提供，时间单位和基准未推定。chunk 11 的计数和 TLV 字段记录在 `index().other_data_fields` 中索引，`raw_other_data_payload(field)` 零拷贝返回各字段原始字节；`raw_other_data_chunk()` 可取得完整块，`other_data_value(field)` 按需返回识别出的 bool、float、int、double 或 256 字节分类位图。已识别的语义包括强度归一化、最大/最小强度、range-image 尺寸与角度范围、lidar classification 类型位图，以及代码301的陆地扫描分类列表状态（原生语义名 `hasClassificationListInTerrestrialScan`）。目标成员偏移来自 Freedom 2026 运行时，字段名称由原生符号交叉验证。`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。当前实样验证的是 RCS 3.2；版本门控也接受 RCS 3.1 以上 3.x 和 4.0，但其他版本尚未由真实文件验证。RCP 容器及其自动关联仍未实现。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
+`RcsReader` 以只读内存映射读取 Autodesk RCS 点云。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`raw_auxiliary_tables(voxel)` 一次返回24张辅助表的零拷贝字节视图（每条记录为小端 u32，条目语义保留为不透明数据），`raw_umbrella_octree_levels()` 返回 chunk 3 的32层级、每条72字节的零拷贝记录视图，`raw_timestamps(voxel)` 返回 chunk 13 中与该 voxel 点序对齐的原始 double 字节，`timestamp(voxel, point)` 按需解码单个值；首个计数字段保留在 `index()`，是否匹配点总数也显式提供，时间单位和基准未推定。若 chunk 13 的 payload 短于逐点映射所需长度，`index()` 会报告实际与期望字节数；几何和其它 chunk 仍可读取，逐点时间戳访问会明确报错，原始 timestamp chunk 可通过 `raw_chunk()` 取得。chunk 11 的计数和 TLV 字段记录在 `index().other_data_fields` 中索引，`raw_other_data_payload(field)` 零拷贝返回各字段原始字节；`raw_other_data_chunk()` 可取得完整块，`other_data_value(field)` 按需返回识别出的 bool、float、int、double 或 256 字节分类位图。已识别的语义包括强度归一化、最大/最小强度、range-image 尺寸与角度范围、lidar classification 类型位图，以及代码301的陆地扫描分类列表状态（原生语义名 `hasClassificationListInTerrestrialScan`）。目标成员偏移来自 Freedom 2026 运行时，字段名称由原生符号交叉验证。`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。读取器接受 RCS 3.x（次版本不低于1）和 4.0 的版本标识；版本门控不等同于覆盖所有版本布局。RCP 容器解析目前不在此读取器中。使用示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
 
 `RcsReader::raw_chunk(table_index)` 可按原始目录序号零拷贝取得任意完整 chunk，包括未知 chunk 和未解析尾随字节；相同 ID 的重复 chunk 仍可分别读取。chunk 13 的首个 32 位值按原样保留，Freedom 2026 原生解析器不使用它推算逐 voxel 时间范围；时间单位和纪元尚未确认。
 
@@ -959,17 +959,17 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 以下内容仍存在限制：
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
-- LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持 encoding0 编码密钥、encoding1 密钥标识、任意起始页和非顺序页链。归档内不属于根页链的独立物理页、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、插件图像 codec 和复杂别名分支尚未完整覆盖。旧密钥与非顺序页链缺少充分的原生实样覆盖。
+- LightWorks支持Blowfish/AES128、zlib及无加密/无压缩组合，支持 encoding0 编码密钥、encoding1 密钥标识、任意起始页和非顺序页链。归档内不属于根页链的独立物理页、未见内置类型与特殊值类型明确返回部分解析。部分标志语义、插件图像 codec 和复杂别名分支尚未完整覆盖。
 - 未知SQLite虚拟表等布局明确返回部分解析或错误；发布对象上的非法属性存储标志返回错误。新增版本分支不代表所有导出器均已覆盖。
 - 图纸、现代灯光、空间树和SQLite记录已有读取接口，但部分枚举标志、数据库应用BLOB与模型关系、图纸来源与引用节点关系仍未完整解释。
-- 数据库链接的非空配置已通过独立算法向量及记录测试，仍缺少非空原生样本验证。轴线的部分标志与参数保持源值；GUID 仓库尚未完成到模型对象的身份绑定。
+- 数据库链接的部分配置和轴线字段仍保留源值；GUID 仓库尚未完成到模型对象的身份绑定。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
-- 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；`301–425` 的新增分支主要经过边界测试，缺少充分的真实文件验证，不能据此推断整文件兼容性。验证项为 `SavedItem.type == 58`，通过 `selection.path_links` 返回路径编号。
+- 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；可通过 `SavedItem.type == 58` 和 `selection.path_links` 访问碰撞选择路径。
 - NWD/NWC 保存项的显式 PathLink 支持分区绑定；NWF 保存项支持引用出现绑定及选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值。部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
 - 外部 `.rcs` 路径成功解析时，项目加载器通过 Schema 的唯一 `int32 index` 关联 RCS voxel；RCP 容器、其他插件几何和坐标变换上下文仍未完整支持。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置，以及跨文件部分 Appearance 的最终字段合成语义仍未完整支持；原始覆盖层和字段标志已保留。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
-- 纹理映射向量和方向枚举尚未全部赋予通用语义；部分布局缺少非空原生样本验证。
+- 纹理映射向量和方向枚举尚未全部赋予通用语义。
 - 某些复杂联合树需要额外的 GUID 或校验值才能消歧；未知 schema、对象类型或资产变体可能无法解析。
 
 `Project.complete` 表示本次加载范围内未检测到缺失或不支持项，不代表所有格式变体均受支持，也不代表整个文件已经完全解析。调用方应同时检查 `warnings`、引用节点状态、`placement_supported`、纹理和产品块状态。设置 `load_textures = false` 时，完整状态不包含纹理检查；关闭 `reader.products` 时，不检查尚未读取的产品块。

@@ -339,13 +339,16 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
     if (point_total >
         (std::numeric_limits<uint64_t>::max() - 4) / sizeof(double))
       throw Error("RCS timestamp data size overflow");
-    const uint64_t timestamp_bytes = point_total * sizeof(double);
-    if (timestamp_bytes > timestamp_chunk->size - 4)
-      throw Error("RCS timestamp values exceed their chunk");
-    uint64_t timestamp_offset = timestamp_chunk->offset + 4;
-    for (auto &voxel : result.voxels) {
-      voxel.timestamp_data_offset = timestamp_offset;
-      timestamp_offset += uint64_t(voxel.point_count) * sizeof(double);
+    result.timestamp_expected_bytes = point_total * sizeof(double);
+    result.timestamp_payload_bytes = timestamp_chunk->size - 4;
+    result.timestamp_values_complete =
+        result.timestamp_payload_bytes >= result.timestamp_expected_bytes;
+    if (result.timestamp_values_complete) {
+      uint64_t timestamp_offset = timestamp_chunk->offset + 4;
+      for (auto &voxel : result.voxels) {
+        voxel.timestamp_data_offset = timestamp_offset;
+        timestamp_offset += uint64_t(voxel.point_count) * sizeof(double);
+      }
     }
   }
   return result;
@@ -537,6 +540,8 @@ RcsReader::raw_timestamps(uint32_t voxel_index) const {
     throw Error("RCS voxel index outside descriptor table");
   if (!impl_->index.has_timestamp_chunk)
     return {};
+  if (!impl_->index.timestamp_values_complete)
+    throw Error("RCS timestamp values are incomplete; raw chunk is available");
   const auto &voxel = impl_->index.voxels[voxel_index];
   const uint64_t size = uint64_t(voxel.point_count) * sizeof(double);
   range({impl_->data, impl_->size}, voxel.timestamp_data_offset, size,
@@ -551,6 +556,8 @@ double RcsReader::timestamp(uint32_t voxel_index,
     throw Error("RCS voxel index outside descriptor table");
   if (!impl_->index.has_timestamp_chunk)
     throw Error("RCS timestamp chunk is absent");
+  if (!impl_->index.timestamp_values_complete)
+    throw Error("RCS timestamp values are incomplete; raw chunk is available");
   const auto &voxel = impl_->index.voxels[voxel_index];
   if (point_index >= voxel.point_count)
     throw Error("RCS timestamp point index outside voxel");

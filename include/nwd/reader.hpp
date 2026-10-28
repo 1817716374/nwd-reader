@@ -281,6 +281,9 @@ struct RcsFileIndex {
   uint64_t timestamp_count =
       0; // raw chunk 13 header; native ignores it when placing values
   bool timestamp_count_matches_points = false;
+  uint64_t timestamp_payload_bytes = 0; // available after the chunk header
+  uint64_t timestamp_expected_bytes = 0; // sum(point_count * sizeof(double))
+  bool timestamp_values_complete = false;
   bool has_other_data_chunk = false;
   int32_t other_data_count = 0; // raw chunk header, signed natively
   uint64_t other_data_records_end_offset = 0;
@@ -321,7 +324,9 @@ public:
              RcsFileIndex::umbrella_octree_level_count>
   raw_umbrella_octree_levels() const;
   // Point-aligned raw IEEE-754 doubles from chunk 13; units/context are not
-  // inferred. Returns an empty span when chunk 13 is absent.
+  // inferred. Returns empty when absent and throws when the chunk does not
+  // contain a complete point-aligned payload. Incomplete raw bytes remain
+  // available through raw_chunk().
   std::span<const uint8_t> raw_timestamps(uint32_t voxel_index) const;
   double timestamp(uint32_t voxel_index, uint32_t point_index) const;
   // Borrowed chunk 11 bytes and field payloads. Unknown data remains raw.
