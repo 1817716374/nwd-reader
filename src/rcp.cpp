@@ -132,27 +132,27 @@ std::string zip_decode_cp437(std::span<const uint8_t> bytes) {
   return result;
 }
 std::optional<std::string>
-zip_unicode_path(std::span<const uint8_t> extra,
-                 std::span<const uint8_t> raw_name) {
+zip_unicode_extra(std::span<const uint8_t> extra,
+                  std::span<const uint8_t> raw_text, uint16_t wanted_id) {
   std::optional<std::string> result;
   uint64_t at = 0;
   while (at < extra.size()) {
     detail::require(extra.size() - at >= 4,
-                    "truncated RCP ZIP Unicode path extra field");
+                    "truncated RCP ZIP Unicode text extra field");
     const auto id = zip_u16(extra, at);
     const auto size = zip_u16(extra, at + 2);
     at += 4;
     detail::require(size <= extra.size() - at,
-                    "truncated RCP ZIP Unicode path payload");
+                    "truncated RCP ZIP Unicode text payload");
     const auto field = extra.subspan(static_cast<size_t>(at), size);
-    if (id == 0x7075 && size >= 5 && field[0] == 1 &&
-        zip_u32(field, 1) == zip_crc32(raw_name)) {
-      const std::string_view name(
+    if (id == wanted_id && size >= 5 && field[0] == 1 &&
+        zip_u32(field, 1) == zip_crc32(raw_text)) {
+      const std::string_view text(
           reinterpret_cast<const char *>(field.data() + 5), size - 5);
-      if (zip_valid_utf8(name)) {
-        if (result && *result != name)
+      if (zip_valid_utf8(text)) {
+        if (result && *result != text)
           return std::nullopt;
-        result = std::string(name);
+        result = std::string(text);
       }
     }
     at += size;
@@ -175,7 +175,7 @@ bool zip_has_extra(std::span<const uint8_t> extra, uint16_t wanted) {
   }
   return false;
 }
-std::pair<std::string, RcpNameEncoding>
+std::pair<std::string, RcpTextEncoding>
 zip_decode_name(std::span<const uint8_t> raw_name, uint16_t flags,
                 std::span<const uint8_t> central_extra,
                 std::span<const uint8_t> local_extra) {
@@ -183,18 +183,37 @@ zip_decode_name(std::span<const uint8_t> raw_name, uint16_t flags,
                              raw_name.size());
   if (flags & 0x0800) {
     detail::require(zip_valid_utf8(raw), "invalid UTF-8 RCP ZIP filename");
-    return {std::string(raw), RcpNameEncoding::utf8_flag};
+    return {std::string(raw), RcpTextEncoding::utf8_flag};
   }
-  if (auto name = zip_unicode_path(central_extra, raw_name))
-    return {std::move(*name), RcpNameEncoding::unicode_path_extra};
-  if (auto name = zip_unicode_path(local_extra, raw_name))
-    return {std::move(*name), RcpNameEncoding::unicode_path_extra};
+  if (auto name = zip_unicode_extra(central_extra, raw_name, 0x7075))
+    return {std::move(*name), RcpTextEncoding::unicode_path_extra};
+  if (auto name = zip_unicode_extra(local_extra, raw_name, 0x7075))
+    return {std::move(*name), RcpTextEncoding::unicode_path_extra};
   const bool unknown_legacy_encoding =
       zip_has_extra(central_extra, 0x0008) ||
       zip_has_extra(local_extra, 0x0008);
   return {zip_decode_cp437(raw_name),
-          unknown_legacy_encoding ? RcpNameEncoding::unknown_legacy_encoding
-                                  : RcpNameEncoding::cp437};
+          unknown_legacy_encoding ? RcpTextEncoding::unknown_legacy_encoding
+                                  : RcpTextEncoding::cp437};
+}
+std::pair<std::string, RcpTextEncoding>
+zip_decode_comment(std::span<const uint8_t> raw_comment, uint16_t flags,
+                   std::span<const uint8_t> central_extra) {
+  const char *raw_data = raw_comment.empty()
+                             ? ""
+                             : reinterpret_cast<const char *>(raw_comment.data());
+  const std::string_view raw(raw_data, raw_comment.size());
+  if (flags & 0x0800) {
+    detail::require(zip_valid_utf8(raw),
+                    "invalid UTF-8 RCP ZIP comment");
+    return {std::string(raw), RcpTextEncoding::utf8_flag};
+  }
+  if (auto comment = zip_unicode_extra(central_extra, raw_comment, 0x6375))
+    return {std::move(*comment), RcpTextEncoding::unicode_comment_extra};
+  const bool unknown_legacy_encoding = zip_has_extra(central_extra, 0x0008);
+  return {zip_decode_cp437(raw_comment),
+          unknown_legacy_encoding ? RcpTextEncoding::unknown_legacy_encoding
+                                  : RcpTextEncoding::cp437};
 }
 struct ZipDirectory {
   uint64_t entries = 0, size = 0, offset = 0;
@@ -586,6 +605,10 @@ struct RcpReader::Impl {
                                           entry.local_extra);
       entry.name = std::move(decoded_name.first);
       entry.name_encoding = decoded_name.second;
+      auto decoded_comment = zip_decode_comment(
+          entry.central_comment, entry.flags, entry.central_extra);
+      entry.comment = std::move(decoded_comment.first);
+      entry.comment_encoding = decoded_comment.second;
       entry.directory = !entry.name.empty() &&
                         (entry.name.back() == '/' || entry.name.back() == '\\');
       zip_range(bytes, entry.payload_offset, entry.compressed_size,
