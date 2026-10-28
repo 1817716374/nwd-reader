@@ -483,6 +483,9 @@ struct RcpProjectSavedView {
   Id xml_node = none;
   std::optional<std::string_view> id, title, fov, point_size, shading_mode;
   RcpProjectVector3 camera_eye, camera_center, camera_up;
+  std::optional<std::string_view> limit_box_visible, limit_box_node_name,
+      limit_box_first_time;
+  std::vector<RcpProjectVector3> limit_box_vertices;
   std::optional<std::string_view> regions_isolated;
   Id camera_node = none, limit_box_node = none, clipping_boundaries_node = none,
      regions_node = none, default_region_status_node = none,

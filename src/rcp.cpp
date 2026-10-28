@@ -787,18 +787,22 @@ rcp_vector_fields(const RcpXmlDocument &xml, Id parent, std::string_view name) {
   }
   return out;
 }
-RcpProjectVector3 rcp_project_vector3(const RcpXmlDocument &xml, Id parent,
-                                     std::string_view name) {
+RcpProjectVector3 rcp_project_vector3_node(const RcpXmlDocument &xml,
+                                           Id node) {
   RcpProjectVector3 out;
-  if (const auto child = rcp_child_element(xml, parent, name)) {
-    constexpr std::string_view lowercase[] = {"x", "y", "z"};
-    constexpr std::string_view uppercase[] = {"X", "Y", "Z"};
-    for (size_t i = 0; i < 3; ++i) {
-      out.lowercase_xyz[i] = xml.attribute(*child, lowercase[i]);
-      out.uppercase_xyz[i] = xml.attribute(*child, uppercase[i]);
-    }
+  constexpr std::string_view lowercase[] = {"x", "y", "z"};
+  constexpr std::string_view uppercase[] = {"X", "Y", "Z"};
+  for (size_t i = 0; i < 3; ++i) {
+    out.lowercase_xyz[i] = xml.attribute(node, lowercase[i]);
+    out.uppercase_xyz[i] = xml.attribute(node, uppercase[i]);
   }
   return out;
+}
+RcpProjectVector3 rcp_project_vector3(const RcpXmlDocument &xml, Id parent,
+                                     std::string_view name) {
+  if (const auto child = rcp_child_element(xml, parent, name))
+    return rcp_project_vector3_node(xml, *child);
+  return {};
 }
 template <class Records, class GetId>
 std::unordered_map<std::string_view, std::vector<uint32_t>>
@@ -969,8 +973,16 @@ struct RcpProjectDocument::Impl {
           record.camera_center = rcp_project_vector3(xml, *child, "Center");
           record.camera_up = rcp_project_vector3(xml, *child, "Up");
         }
-        if (const auto child = rcp_child_element(xml, node, "LimitBox"))
+        if (const auto child = rcp_child_element(xml, node, "LimitBox")) {
           record.limit_box_node = *child;
+          record.limit_box_visible = xml.attribute(*child, "Visible");
+          record.limit_box_node_name = xml.attribute(*child, "NodeName");
+          record.limit_box_first_time = xml.attribute(*child, "FirstTime");
+          for (const auto vertex :
+               rcp_child_elements(xml, *child, "Vertex"))
+            record.limit_box_vertices.push_back(
+                rcp_project_vector3_node(xml, vertex));
+        }
         if (const auto child =
                 rcp_child_element(xml, node, "ClippingBoundaries"))
           record.clipping_boundaries_node = *child;

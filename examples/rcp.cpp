@@ -144,6 +144,11 @@ int main(int argc, char **argv) {
         print_vector_fields("Eye", view.camera_eye);
         print_vector_fields("Center", view.camera_center);
         print_vector_fields("Up", view.camera_up);
+        std::cout << "      LimitBox vertices=" << view.limit_box_vertices.size()
+                  << '\n';
+        if (!view.limit_box_vertices.empty())
+          print_vector_fields("LimitBox.Vertex[0]",
+                              view.limit_box_vertices.front());
         for (const auto &status : view.default_region_status) {
           std::cout << "      default-region="
                     << status.id.value_or(std::string_view{}) << " visible="
