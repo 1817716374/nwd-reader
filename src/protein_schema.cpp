@@ -2891,6 +2891,172 @@ ProteinSchemaCommonRegistrationCheck protein_schema_check_common_registration(
   result.accepted = accepted;
   return result;
 }
+struct ProteinSchemaGlobalRegistry::Impl {
+  struct NamespaceRow {
+    std::string uid;
+    Id input = none, object = none, definition = none;
+    ProteinSchemaGlobalCoreStatus core =
+        ProteinSchemaGlobalCoreStatus::unresolved;
+  };
+  struct CreatorRow {
+    std::string uid;
+    Id input = none, creator = none, object = none, definition = none;
+    ProteinSchemaGlobalCreatorStatus state =
+        ProteinSchemaGlobalCreatorStatus::unresolved;
+    ProteinSchemaGlobalCoreStatus core =
+        ProteinSchemaGlobalCoreStatus::unresolved;
+  };
+  Id manager = none, name_space = none;
+  ProteinSchemaIterationProfile profile =
+      ProteinSchemaIterationProfile::reader_2026;
+  bool namespace_complete = true, pending_complete = true;
+  uint64_t max_uid_bytes = 0;
+  std::vector<NamespaceRow> namespace_rows;
+  std::vector<CreatorRow> creators;
+
+  bool less(std::string_view a, std::string_view b) const noexcept {
+    if (profile == ProteinSchemaIterationProfile::reader_2026)
+      return a < b;
+    const auto n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i) {
+      const auto x = static_cast<unsigned char>(a[i]);
+      const auto y = static_cast<unsigned char>(b[i]);
+      if (x != y)
+        return (x ^ 0x80u) < (y ^ 0x80u);
+    }
+    return a.size() < b.size();
+  }
+  template <class Rows>
+  auto find(const Rows &rows, std::string_view uid) const {
+    const auto it =
+        std::lower_bound(rows.begin(), rows.end(), uid,
+                         [&](const auto &row, std::string_view key) {
+                           return less(row.uid, key);
+                         });
+    const bool matched =
+        it != rows.end() && !less(uid, it->uid) && !less(it->uid, uid);
+    const bool duplicate = matched && std::next(it) != rows.end() &&
+                           !less(uid, std::next(it)->uid) &&
+                           !less(std::next(it)->uid, uid);
+    return std::tuple{it, matched, duplicate};
+  }
+};
+ProteinSchemaGlobalRegistry::ProteinSchemaGlobalRegistry(
+    const ProteinSchemaGlobalRegistryInput &input,
+    ProteinSchemaGlobalRegistryOptions options) {
+  detail::require(input.profile == ProteinSchemaIterationProfile::reader_2017 ||
+                      input.profile ==
+                          ProteinSchemaIterationProfile::reader_2026,
+                  "Protein Schema global registry profile");
+  detail::require(input.namespace_entries.size() <= options.max_entries &&
+                      input.pending_creators.size() <=
+                          options.max_entries - input.namespace_entries.size(),
+                  "Protein Schema global registry entry limit");
+  auto result = std::make_shared<Impl>();
+  result->manager = input.manager;
+  result->name_space = input.name_space;
+  result->profile = input.profile;
+  result->namespace_complete = input.namespace_complete;
+  result->pending_complete = input.pending_complete;
+  result->max_uid_bytes = options.max_uid_bytes;
+  uint64_t bytes = 0;
+  auto charge_uid = [&](std::string_view uid) {
+    detail::require(bytes <= options.max_uid_bytes &&
+                        uid.size() <= options.max_uid_bytes - bytes,
+                    "Protein Schema global registry UID byte limit");
+    bytes += uid.size();
+  };
+  result->namespace_rows.reserve(input.namespace_entries.size());
+  for (size_t i = 0; i < input.namespace_entries.size(); ++i) {
+    const auto &entry = input.namespace_entries[i];
+    charge_uid(entry.uid);
+    result->namespace_rows.push_back({std::string(entry.uid),
+                                      static_cast<Id>(i), entry.object,
+                                      entry.definition, entry.core});
+  }
+  result->creators.reserve(input.pending_creators.size());
+  for (size_t i = 0; i < input.pending_creators.size(); ++i) {
+    const auto &entry = input.pending_creators[i];
+    charge_uid(entry.uid);
+    result->creators.push_back({std::string(entry.uid), static_cast<Id>(i),
+                                entry.creator, entry.object, entry.definition,
+                                entry.state, entry.core});
+  }
+  const auto by_uid = [&](const auto &a, const auto &b) {
+    if (result->less(a.uid, b.uid))
+      return true;
+    if (result->less(b.uid, a.uid))
+      return false;
+    return a.input < b.input;
+  };
+  std::sort(result->namespace_rows.begin(), result->namespace_rows.end(),
+            by_uid);
+  std::sort(result->creators.begin(), result->creators.end(), by_uid);
+  impl = std::move(result);
+}
+Id ProteinSchemaGlobalRegistry::manager_identity() const noexcept {
+  return impl->manager;
+}
+Id ProteinSchemaGlobalRegistry::namespace_identity() const noexcept {
+  return impl->name_space;
+}
+ProteinSchemaGlobalLookup
+ProteinSchemaGlobalRegistry::lookup(std::string_view uid) const {
+  using Core = ProteinSchemaGlobalCoreStatus;
+  using Creator = ProteinSchemaGlobalCreatorStatus;
+  using Status = ProteinSchemaGlobalLookupStatus;
+  ProteinSchemaGlobalLookup result;
+  result.manager = impl->manager;
+  result.name_space = impl->name_space;
+  if (uid.size() > impl->max_uid_bytes)
+    return result;
+  const auto [namespace_row, namespace_found, namespace_duplicate] =
+      impl->find(impl->namespace_rows, uid);
+  if (namespace_found) {
+    if (namespace_duplicate || namespace_row->object == none)
+      return result;
+    result.entry = namespace_row->input;
+    result.object = namespace_row->object;
+    result.definition = namespace_row->definition;
+    if (namespace_row->core == Core::null_core) {
+      result.status = Status::namespace_null_core;
+      return result;
+    }
+    if (namespace_row->core == Core::present &&
+        namespace_row->definition != none) {
+      result.status = Status::namespace_object;
+      return result;
+    }
+    return result;
+  }
+  if (!impl->namespace_complete)
+    return result;
+  const auto [creator_row, creator_found, creator_duplicate] =
+      impl->find(impl->creators, uid);
+  if (!creator_found)
+    if (impl->pending_complete)
+      result.status = Status::missing;
+  return result;
+  if (creator_duplicate)
+    return result;
+  result.entry = creator_row->input;
+  result.creator = creator_row->creator;
+  result.object = creator_row->object;
+  result.definition = creator_row->definition;
+  if (creator_row->state == Creator::empty) {
+    result.status = Status::pending_empty_creator;
+    return result;
+  }
+  if (creator_row->state != Creator::owns_object || creator_row->object == none)
+    return result;
+  if (creator_row->core == Core::null_core) {
+    result.status = Status::pending_null_core;
+    return result;
+  }
+  if (creator_row->core == Core::present && creator_row->definition != none)
+    result.status = Status::pending_object;
+  return result;
+}
 struct ProteinSchemaPropertyState::Impl {
   struct Seed {
     ProteinSchemaDefinitionIndex definition;

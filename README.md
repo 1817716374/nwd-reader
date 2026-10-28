@@ -718,6 +718,22 @@ if (inherited.status == nwd::ProteinSchemaDefinitionLookupStatus::found) {
 }
 ```
 
+`ProteinSchemaGlobalRegistry` builds a bounded, immutable lookup index for one explicit manager and its Namespace. Namespace entries and pending creators remain separate tables; lookup checks Namespace first, and a matching null-Core row prevents pending fallback. An incomplete Namespace or pending table, duplicate key, unknown Core, or unresolved creator returns `unresolved` instead of guessing. The registry copies UID bytes (including embedded NULs), supports the two reader byte-comparison profiles, and returns the caller's manager, Namespace, object, creator and definition-scope IDs separately. This is a lookup index; recursive registration, Namespace adoption/disposal and object creation remain separate operations.
+
+```cpp
+nwd::ProteinSchemaGlobalRegistryInput input;
+input.manager = manager_id;
+input.name_space = namespace_id;
+input.profile = nwd::ProteinSchemaIterationProfile::reader_2026;
+input.namespace_entries = namespace_entries;
+input.pending_creators = pending_creators;
+nwd::ProteinSchemaGlobalRegistry registry(input);
+auto found = registry.lookup(uid);
+if (found.status == nwd::ProteinSchemaGlobalLookupStatus::namespace_object) {
+    // found.object and found.definition retain caller-supplied identities.
+}
+```
+
 `ProteinSchemaDefinitionLoadOptions` 限制输入数、事件数、累计声明、保留的属性历史和缓存值，并提供单定义与继承深度上限。输入必须是尚未执行显式父属性合并或加载期改写的局部索引，已有 XML 值不会重新解析。索引及副本维持所有文档/值的寿命，结果可并发只读查询。
 
 每个加载索引是独立作用域；不同文件、库或模型图中的同名 UID 不会自动合并。Base 文件与归档加载、自动 NWD 库/图作用域构造、完整全局注册兼容性仍需单独接入。

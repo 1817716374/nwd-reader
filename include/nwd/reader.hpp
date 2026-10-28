@@ -1657,6 +1657,66 @@ struct ProteinSchemaCommonRegistrationCheck {
 };
 ProteinSchemaCommonRegistrationCheck protein_schema_check_common_registration(
     const ProteinSchemaDefinitionState &);
+enum class ProteinSchemaGlobalCoreStatus { present, null_core, unresolved };
+struct ProteinSchemaGlobalNamespaceEntry {
+  std::string_view uid;
+  Id object = none; // manager/object identity supplied by the owning reader
+  ProteinSchemaGlobalCoreStatus core = ProteinSchemaGlobalCoreStatus::unresolved;
+  Id definition = none; // caller's schema-scope identity when known
+};
+enum class ProteinSchemaGlobalCreatorStatus { owns_object, empty, unresolved };
+struct ProteinSchemaGlobalPendingCreatorEntry {
+  std::string_view uid;
+  Id creator = none; // creator identity; distinct from object and UID
+  ProteinSchemaGlobalCreatorStatus state =
+      ProteinSchemaGlobalCreatorStatus::unresolved;
+  Id object = none;
+  ProteinSchemaGlobalCoreStatus core = ProteinSchemaGlobalCoreStatus::unresolved;
+  Id definition = none;
+};
+struct ProteinSchemaGlobalRegistryInput {
+  Id manager = none;
+  Id name_space = none;
+  ProteinSchemaIterationProfile profile =
+      ProteinSchemaIterationProfile::reader_2026;
+  std::span<const ProteinSchemaGlobalNamespaceEntry> namespace_entries;
+  std::span<const ProteinSchemaGlobalPendingCreatorEntry> pending_creators;
+  bool namespace_complete = true, pending_complete = true;
+};
+struct ProteinSchemaGlobalRegistryOptions {
+  uint32_t max_entries = 1000000;
+  uint64_t max_uid_bytes = 64ull << 20;
+};
+enum class ProteinSchemaGlobalLookupStatus {
+  namespace_object,
+  namespace_null_core,
+  pending_object,
+  pending_empty_creator,
+  pending_null_core,
+  missing,
+  unresolved
+};
+struct ProteinSchemaGlobalLookup {
+  ProteinSchemaGlobalLookupStatus status =
+      ProteinSchemaGlobalLookupStatus::unresolved;
+  Id manager = none, name_space = none;
+  Id entry = none, creator = none, object = none, definition = none;
+};
+// Immutable per-manager view. Namespace and pending-creator indexes remain
+// separate; a namespace hit with null Core suppresses pending fallback. Input
+// UID bytes are copied, including embedded NULs. Lookup is O(log N), preserving
+// the selected reader's UTF-8 byte comparator; IDs are opaque caller identities.
+class ProteinSchemaGlobalRegistry {
+  struct Impl;
+  std::shared_ptr<const Impl> impl;
+public:
+  explicit ProteinSchemaGlobalRegistry(
+      const ProteinSchemaGlobalRegistryInput &,
+      ProteinSchemaGlobalRegistryOptions = {});
+  Id manager_identity() const noexcept;
+  Id namespace_identity() const noexcept;
+  ProteinSchemaGlobalLookup lookup(std::string_view uid) const;
+};
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
 // No shader-role inference or runtime conversion to JSON is performed.
