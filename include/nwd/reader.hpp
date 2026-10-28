@@ -458,9 +458,14 @@ struct RcpProjectViewScanStatus {
   RcpIdentityLinkStatus scan_link = RcpIdentityLinkStatus::missing_id;
   std::optional<uint32_t> scan_index;
 };
+struct RcpProjectVector3 {
+  std::array<std::optional<std::string_view>, 3> lowercase_xyz{},
+      uppercase_xyz{};
+};
 struct RcpProjectSavedView {
   Id xml_node = none;
   std::optional<std::string_view> id, title, fov, point_size, shading_mode;
+  RcpProjectVector3 camera_eye, camera_center, camera_up;
   Id camera_node = none, limit_box_node = none, clipping_boundaries_node = none,
      regions_node = none, default_region_status_node = none,
      scan_locations_node = none, background_color_node = none;

@@ -787,6 +787,19 @@ rcp_vector_fields(const RcpXmlDocument &xml, Id parent, std::string_view name) {
   }
   return out;
 }
+RcpProjectVector3 rcp_project_vector3(const RcpXmlDocument &xml, Id parent,
+                                     std::string_view name) {
+  RcpProjectVector3 out;
+  if (const auto child = rcp_child_element(xml, parent, name)) {
+    constexpr std::string_view lowercase[] = {"x", "y", "z"};
+    constexpr std::string_view uppercase[] = {"X", "Y", "Z"};
+    for (size_t i = 0; i < 3; ++i) {
+      out.lowercase_xyz[i] = xml.attribute(*child, lowercase[i]);
+      out.uppercase_xyz[i] = xml.attribute(*child, uppercase[i]);
+    }
+  }
+  return out;
+}
 template <class Records, class GetId>
 std::unordered_map<std::string_view, std::vector<uint32_t>>
 rcp_identity_index(const Records &records, GetId get_id) {
@@ -909,8 +922,12 @@ struct RcpProjectDocument::Impl {
         record.fov = xml.attribute(node, "FOV");
         record.point_size = xml.attribute(node, "PointSize");
         record.shading_mode = xml.attribute(node, "ShadingMode");
-        if (const auto child = rcp_child_element(xml, node, "Camera"))
+        if (const auto child = rcp_child_element(xml, node, "Camera")) {
           record.camera_node = *child;
+          record.camera_eye = rcp_project_vector3(xml, *child, "Eye");
+          record.camera_center = rcp_project_vector3(xml, *child, "Center");
+          record.camera_up = rcp_project_vector3(xml, *child, "Up");
+        }
         if (const auto child = rcp_child_element(xml, node, "LimitBox"))
           record.limit_box_node = *child;
         if (const auto child =

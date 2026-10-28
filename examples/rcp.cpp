@@ -22,6 +22,22 @@ std::string_view status_name(nwd::RcpIdentityLinkStatus status) {
   }
   return "unknown";
 }
+void print_vector_fields(std::string_view label,
+                         const nwd::RcpProjectVector3 &fields) {
+  std::cout << "      " << label << " xyz=(";
+  for (size_t i = 0; i < fields.lowercase_xyz.size(); ++i) {
+    if (i)
+      std::cout << ',';
+    std::cout << fields.lowercase_xyz[i].value_or(std::string_view{});
+  }
+  std::cout << ") XYZ=(";
+  for (size_t i = 0; i < fields.uppercase_xyz.size(); ++i) {
+    if (i)
+      std::cout << ',';
+    std::cout << fields.uppercase_xyz[i].value_or(std::string_view{});
+  }
+  std::cout << ")\n";
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -109,6 +125,9 @@ int main(int argc, char **argv) {
                   << view.title.value_or(std::string_view{}) << " fov="
                   << view.fov.value_or(std::string_view{}) << " scans="
                   << view.scan_locations.size() << '\n';
+        print_vector_fields("Eye", view.camera_eye);
+        print_vector_fields("Center", view.camera_center);
+        print_vector_fields("Up", view.camera_up);
         for (const auto &scan : view.scan_locations) {
           std::cout << "      scan=" << scan.id.value_or(std::string_view{})
                     << " visible="
