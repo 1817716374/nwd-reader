@@ -2838,6 +2838,59 @@ std::span<const ProteinSchemaCommonRequirement>
 ProteinSchemaDefinitionLoadIndex::common_requirements() const noexcept {
   return impl->requirements;
 }
+ProteinSchemaCommonRegistrationCheck protein_schema_check_common_registration(
+    const ProteinSchemaDefinitionState &state) {
+  using Status = ProteinSchemaCommonRequirementStatus;
+  ProteinSchemaCommonRegistrationCheck result;
+  if (state.definition().uid() != "CommonSchema")
+    return result;
+  result.applicable = true;
+  static constexpr std::pair<std::string_view, uint32_t> expected[]{
+      {"BaseSchema", 8},
+      {"SchemaVersion", 2},
+      {"AssetLibID", 0},
+      {"assettype", 2},
+      {"localtype", 2},
+      {"localname", 2},
+      {"UIName", 8},
+      {"keyword", 12},
+      {"category", 12},
+      {"description", 8},
+      {"thumbnail", 12},
+      {"Hidden", 8},
+      {"VersionGUID", 8},
+      {"version", 0},
+      {"revision", 0},
+      {"UIDefinition", 2},
+      {"AdvancedUIDefinition", 2}};
+  result.requirements.reserve(17);
+  bool accepted = true;
+  for (const auto &[name, required_flags] : expected) {
+    ProteinSchemaCommonRequirement requirement;
+    requirement.name = name;
+    requirement.required_flags = required_flags;
+    const auto found = state.find_actual(name);
+    requirement.property = found.property;
+    switch (found.status) {
+    case ProteinSchemaDefinitionLookupStatus::found:
+      requirement.status =
+          (state.property(found.property).flags() & 14) == required_flags
+              ? Status::matched
+              : Status::flags_mismatch;
+      break;
+    case ProteinSchemaDefinitionLookupStatus::missing:
+      requirement.status = Status::missing;
+      break;
+    case ProteinSchemaDefinitionLookupStatus::unresolved:
+      requirement.status = Status::unresolved;
+      break;
+    }
+    accepted &= requirement.status == Status::matched;
+    result.requirements.push_back(requirement);
+  }
+  result.accepted = accepted;
+  return result;
+}
 struct ProteinSchemaPropertyState::Impl {
   struct Seed {
     ProteinSchemaDefinitionIndex definition;

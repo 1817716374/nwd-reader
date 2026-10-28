@@ -1580,7 +1580,12 @@ struct ProteinSchemaDefinitionLoadEvent {
 struct ProteinSchemaDefinitionLoadCycle {
   std::vector<Id> records; // cycle members in Base-following order; no closing repeat
 };
-enum class ProteinSchemaCommonRequirementStatus { matched, missing, flags_mismatch };
+enum class ProteinSchemaCommonRequirementStatus {
+  matched,
+  missing,
+  flags_mismatch,
+  unresolved
+};
 struct ProteinSchemaCommonRequirement {
   Id record = none, property = none;
   std::string_view name;
@@ -1634,6 +1639,16 @@ public:
   // Empty unless the canonical CommonSchema reached the ready namespace.
   std::span<const ProteinSchemaCommonRequirement> common_requirements() const noexcept;
 };
+// The global registrar's CommonSchema gate reads current property flags. It is
+// separate from the load-time requirements snapshot and does not imply that the
+// definition was accepted by the remaining recursive registration steps.
+struct ProteinSchemaCommonRegistrationCheck {
+  bool applicable = false; // UID must exactly equal "CommonSchema"
+  std::vector<ProteinSchemaCommonRequirement> requirements;
+  bool accepted = false; // true only when all 17 current-state checks match
+};
+ProteinSchemaCommonRegistrationCheck protein_schema_check_common_registration(
+    const ProteinSchemaDefinitionState &);
 // Index one immutable graph once. It must outlive the index and returned views.
 // Connection slots and URI ordinals retain their original property scope.
 // No shader-role inference or runtime conversion to JSON is performed.

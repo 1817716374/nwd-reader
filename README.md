@@ -698,6 +698,15 @@ for (auto id : definition.iteration(order)) {
 
 `status()` 描述批内依赖是否就绪、仍有等待项或存在未决语义。已知空 Base 拒绝允许处理后续输入，因此依赖就绪不代表所有输入都接受，调用方仍须检查每条记录。局部声明接受未决、CommonSchema 版本读取未决或不兼容值接口会停止后续登记推断，保留输入和已处理前缀；与加载门槛无关的未知候选数值仍按其投影状态保留。此时未命中的 UID 查询为 `unresolved`。`common_requirements()` 对已就绪的规范 CommonSchema 返回 17 项实际名称与 `flags & 0xe` 检查，别名不代替必需属性；这不等于完整全局注册或兼容性已经通过。
 
+`protein_schema_check_common_registration(state)` 将同一组 17 项门槛应用于 `ProteinSchemaDefinitionState` 的**当前**属性及 flags。仅 UID 精确为 `CommonSchema` 时 `applicable` 为 true；缺失属性、flags 不匹配和定义未决分别保留在 `requirements` 中。`accepted` 只表示这 17 项检查全部通过，不表示递归父注册、目标 UID 查找、兼容合并或新对象创建成功。与 `common_requirements()` 的加载快照不同，后续 `with_property()` 写入的 flags 会影响此检查。
+
+```cpp
+auto gate = nwd::protein_schema_check_common_registration(current_state);
+if (gate.applicable && gate.accepted) {
+    // 17 项当前状态检查通过；仍需执行其余全局注册步骤。
+}
+```
+
 `ProteinSchemaDefinitionLoadOptions` 限制输入数、事件数、累计声明、保留的属性历史和缓存值，并提供单定义与继承深度上限。输入必须是尚未执行显式父属性合并或加载期改写的局部索引，已有 XML 值不会重新解析。索引及副本维持所有文档/值的寿命，结果可并发只读查询。
 
 每个加载索引是独立作用域；不同文件、库或模型图中的同名 UID 不会自动合并。Base 文件与归档加载、自动 NWD 库/图作用域构造、完整全局注册兼容性仍需单独接入。
