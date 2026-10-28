@@ -420,8 +420,33 @@ struct RcpProjectScan {
   RcpIdentityLinkStatus runtime_link = RcpIdentityLinkStatus::missing_id;
   std::optional<uint32_t> voxel_tree_runtime_index;
 };
-// Source-named fields retain their raw strings. Scan links use only exact IDs;
-// missing or duplicate links are reported without title/path guessing.
+struct RcpProjectGroup {
+  Id xml_node = none;
+  std::optional<std::string_view> id;
+};
+struct RcpProjectShot {
+  Id xml_node = none;
+  std::optional<std::string_view> id, name, point_cloud_id, has_intensity,
+      path, relative_path, raw_scan_path, relative_raw_scan_path, type;
+  RcpIdentityLinkStatus runtime_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> voxel_tree_runtime_index;
+  RcpIdentityLinkStatus group_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> group_index;
+};
+struct RcpProjectViewState {
+  Id xml_node = none;
+  std::optional<std::string_view> id, title;
+  RcpIdentityLinkStatus saved_view_link = RcpIdentityLinkStatus::missing_id;
+  std::optional<uint32_t> saved_view_index;
+};
+struct RcpProjectSavedView {
+  Id xml_node = none;
+  std::optional<std::string_view> id, title;
+};
+// Source-named project records are projections of the generic XML tree: raw
+// field strings are preserved without numeric/unit normalization. Exact IDs
+// link runtime/Scan, shot/runtime, shot/group and navigator/saved-view records
+// only when unique. Other project fields remain accessible from xml() by node.
 class RcpProjectDocument {
   struct Impl;
   std::shared_ptr<const Impl> impl_;
@@ -434,6 +459,56 @@ public:
   std::span<const RcpProjectVoxelTreeRuntime>
   voxel_tree_runtime() const noexcept;
   std::span<const RcpProjectScan> scans() const noexcept;
+  std::span<const RcpProjectShot> shots() const noexcept;
+  std::span<const RcpProjectGroup> groups() const noexcept;
+  std::span<const RcpProjectViewState> navigator_view_states() const noexcept;
+  std::span<const RcpProjectSavedView> saved_view_states() const noexcept;
+};
+struct RcpPathRemap {
+  std::string saved_path; // exact XML path text; no case/path normalization
+  std::filesystem::path local_path;
+};
+struct RcpProjectOptions {
+  RcpArchiveOptions archive;
+  RcpXmlOptions xml;
+  std::optional<uint32_t> xml_member_index; // required if XML member is ambiguous
+  std::vector<std::filesystem::path> search_paths;
+  std::vector<RcpPathRemap> remaps;
+  bool load_external_rcs = true;
+  uint64_t max_rcs_voxels = 1000000;
+  uint64_t max_rcs_other_data_fields = 1000000;
+};
+enum class RcpExternalRcsStatus {
+  disabled,
+  missing_path,
+  missing,
+  ambiguous,
+  loaded,
+  invalid
+};
+struct RcpExternalRcsFile {
+  uint32_t runtime_index = 0;
+  RcpExternalRcsStatus status = RcpExternalRcsStatus::missing_path;
+  std::optional<std::string_view> saved_relative_path, saved_path;
+  std::filesystem::path resolved_path; // candidate retained even if RCS is invalid
+  std::string diagnostic;
+  std::shared_ptr<const RcsReader> rcs; // shared mapping for duplicate references
+};
+// Loads one RCP project XML and resolves its external RCS paths. Explicit
+// remaps win; otherwise RelativePath is tested beside the RCP, then saved
+// absolute Path, then caller search directories. Search collisions are
+// ambiguous. Each runtime occurrence remains distinct; identical resolved
+// files share the same RcsReader mapping.
+class RcpProjectReader {
+  struct Impl;
+  std::shared_ptr<const Impl> impl_;
+
+public:
+  explicit RcpProjectReader(const std::filesystem::path &,
+                            RcpProjectOptions = {});
+  const RcpReader &archive() const noexcept;
+  const RcpProjectDocument &project() const noexcept;
+  std::span<const RcpExternalRcsFile> external_rcs_files() const noexcept;
 };
 struct CoordinateQuantization {
   float saved_precision = 0;

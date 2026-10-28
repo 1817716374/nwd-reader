@@ -1,42 +1,24 @@
-# RCP Reader
+# RCP project reader
 
-`RcpReader` opens an RCP archive with a read-only memory map and indexes its
-ZIP central directory. Entries remain in saved order, so duplicate names stay
-distinct. The archive and compressed member bytes can be borrowed without a
-copy. `read_entry()` decodes stored and DEFLATE members on demand and validates
-their CRC. ZIP64 member sizes and offsets are supported.
+`RcpReader` maps an RCP archive read-only and indexes ZIP/ZIP64 members in saved order. Duplicate member names remain distinct. Raw archive and compressed member spans avoid copies. `read_entry()` decodes stored and DEFLATE members on demand and verifies size and CRC. Encrypted and unsupported compression methods remain available as raw bytes.
+
+`RcpXmlDocument` provides a bounded ordered XML tree. It retains unknown elements, attributes, comments, processing instructions and decoded text. DTDs and external entities are not loaded.
+
+`RcpProjectDocument` exposes project, point-cloud runtime, Scan, ShotInfo, GroupInfo and saved-view records. It preserves source strings for paths, transforms, IDs, titles and other fields. Exact unique IDs link runtime records to Scan records, ShotInfo records to point-cloud runtime and GroupInfo records, and navigator view entries to full saved-view records. Missing IDs, absent matches and duplicate identities have explicit statuses. Other project data remains accessible from the XML tree by node ID; coordinate units and rotation conventions are not inferred.
+
+`RcpProjectReader` selects the XML member automatically when there is exactly one, or accepts an explicit member index. It resolves RCS files using exact `RcpPathRemap` entries first, then `RelativePath` beside the RCP, an absolute saved `Path`, caller-provided search directories, and filename fallback within those directories. Ambiguous matches are reported without choosing one. Missing and invalid files have separate statuses and diagnostics. External loading can be disabled. Each runtime occurrence remains distinct; repeated references to one canonical path share a read-only `RcsReader` mapping.
 
 ```cpp
 #include <nwd/reader.hpp>
 
-nwd::RcpReader archive("project.rcp");
-for (uint32_t i = 0; i < archive.entries().size(); ++i) {
-  const auto &entry = archive.entries()[i];
-  if (entry.name.ends_with(".xml")) {
-    auto bytes = archive.read_entry(i);
-    nwd::RcpProjectDocument project(bytes);
-    for (const auto &item : project.voxel_tree_runtime()) {
-      // item.relative_path and item.scan_index preserve source identity.
-    }
+nwd::RcpProjectOptions options;
+options.search_paths.emplace_back("external-resources");
+nwd::RcpProjectReader project("survey.rcp", options);
+for (const auto &reference : project.external_rcs_files()) {
+  if (reference.status == nwd::RcpExternalRcsStatus::loaded) {
+    // reference.rcs exposes the mapped RCS data.
   }
 }
 ```
 
-`RcpXmlDocument` exposes an ordered XML tree with element/attribute lookup and
-text extraction. It retains unknown elements and attributes, comments, and
-processing instructions under configurable byte, node, attribute, and depth
-limits. DTDs and external entities are not loaded.
-
-`RcpProjectDocument` provides source-named fields for the project UUID,
-`VoxelTreeRunTime`, and `Scan` records. Translation, rotation, scale, path,
-point-count, and visibility values remain their saved strings; coordinate
-units and rotation conventions are not inferred. Runtime records and Scan
-records are linked only when their IDs match exactly and uniquely. Missing or
-duplicate identities have explicit statuses. All other XML remains
-accessible by source node ID through `xml()`.
-
-The reader decodes stored and DEFLATE compression. Encrypted members and
-unknown compression methods are not decoded, but their raw compressed bytes
-remain available. Automatic lookup of external RCS paths is not part of
-`RcpReader`; callers can use the retained `RelativePath` values to locate those
-files and open them with `RcsReader`.
+The library preserves project XML fields that do not yet have semantic projections. It does not assign meaning to unknown fields or infer world-coordinate composition. See also [the RCP example](../examples/rcp.cpp).

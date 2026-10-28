@@ -4,6 +4,7 @@
 #include "expat/lib/expat.h"
 #include <climits>
 #include <cstring>
+#include <map>
 #include <limits>
 #include <zlib.h>
 #ifdef _WIN32
@@ -583,6 +584,19 @@ std::optional<Id> rcp_child_element(const RcpXmlDocument &xml, Id parent,
       return child;
   return std::nullopt;
 }
+std::vector<Id> rcp_child_elements(const RcpXmlDocument &xml, Id parent,
+                                  std::string_view name) {
+  std::vector<Id> result;
+  const auto nodes = xml.nodes();
+  if (parent >= nodes.size())
+    return result;
+  for (Id child = nodes[parent].first_child; child != none;
+       child = nodes[child].next_sibling)
+    if (nodes[child].kind == RcpXmlNodeKind::element &&
+        nodes[child].name == name)
+      result.push_back(child);
+  return result;
+}
 std::optional<std::string_view> rcp_child_value(const RcpXmlDocument &xml,
                                                Id parent,
                                                std::string_view name) {
@@ -640,12 +654,18 @@ struct RcpProjectDocument::Impl {
   std::optional<std::string_view> project_uuid;
   std::vector<RcpProjectVoxelTreeRuntime> runtime;
   std::vector<RcpProjectScan> scans;
+  std::vector<RcpProjectShot> shots;
+  std::vector<RcpProjectGroup> groups;
+  std::vector<RcpProjectViewState> navigator_view_states;
+  std::vector<RcpProjectSavedView> saved_view_states;
   Impl(std::span<const uint8_t> bytes, RcpXmlOptions options)
       : xml(bytes, options) {
-    const auto project_ids = xml.elements_named("ProjectId");
-    if (project_ids.size() == 1)
-      project_uuid = xml.attribute(project_ids.front(), "UUID");
-    for (const auto node : xml.elements_named("VoxelTreeRunTime")) {
+    const auto root = xml.root();
+    if (const auto project_id = rcp_child_element(xml, root, "ProjectId"))
+      project_uuid = xml.attribute(*project_id, "UUID");
+    if (const auto nodes = rcp_child_element(xml, root, "Nodes"))
+      for (const auto node :
+           rcp_child_elements(xml, *nodes, "VoxelTreeRunTime")) {
       RcpProjectVoxelTreeRuntime record;
       record.xml_node = node;
       record.id = xml.attribute(node, "Id");
@@ -658,17 +678,59 @@ struct RcpProjectDocument::Impl {
       record.rotation = rcp_vector_fields(xml, node, "Rotation");
       record.scale = rcp_vector_fields(xml, node, "Scale");
       runtime.push_back(std::move(record));
+      }
+    if (const auto navigator =
+            rcp_child_element(xml, root, "ProjectNavigator")) {
+      if (const auto scan_container =
+              rcp_child_element(xml, *navigator, "Scans"))
+        for (const auto node :
+             rcp_child_elements(xml, *scan_container, "Scan")) {
+          RcpProjectScan record;
+          record.xml_node = node;
+          record.id = xml.attribute(node, "ID");
+          record.title = xml.attribute(node, "Title");
+          record.virtual_scan = xml.attribute(node, "VirtualScan");
+          record.visible = xml.attribute(node, "Visible");
+          record.isolate_visible = xml.attribute(node, "IsolateVisible");
+          scans.push_back(std::move(record));
+        }
+      if (const auto states = rcp_child_element(xml, *navigator, "States"))
+        for (const auto node :
+             rcp_child_elements(xml, *states, "ViewState")) {
+          RcpProjectViewState record;
+          record.xml_node = node;
+          record.id = xml.attribute(node, "ID");
+          record.title = xml.attribute(node, "Title");
+          navigator_view_states.push_back(std::move(record));
+        }
     }
-    for (const auto node : xml.elements_named("Scan")) {
-      RcpProjectScan record;
-      record.xml_node = node;
-      record.id = xml.attribute(node, "ID");
-      record.title = xml.attribute(node, "Title");
-      record.virtual_scan = xml.attribute(node, "VirtualScan");
-      record.visible = xml.attribute(node, "Visible");
-      record.isolate_visible = xml.attribute(node, "IsolateVisible");
-      scans.push_back(std::move(record));
+    if (const auto project = rcp_child_element(xml, root, "Project")) {
+      for (const auto node : rcp_child_elements(xml, *project, "ShotInfo")) {
+        RcpProjectShot record;
+        record.xml_node = node;
+        record.id = xml.attribute(node, "id");
+        record.name = xml.attribute(node, "name");
+        record.point_cloud_id = xml.attribute(node, "PCPid");
+        record.has_intensity = xml.attribute(node, "HasIntensity");
+        record.path = xml.attribute(node, "path");
+        record.relative_path = xml.attribute(node, "relativePath");
+        record.raw_scan_path = xml.attribute(node, "rawScanPath");
+        record.relative_raw_scan_path =
+            xml.attribute(node, "relativeRawScanPath");
+        record.type = xml.attribute(node, "type");
+        shots.push_back(std::move(record));
+      }
+      if (const auto group_info =
+              rcp_child_element(xml, *project, "GroupInfo"))
+        for (const auto node :
+             rcp_child_elements(xml, *group_info, "GroupInfo"))
+          groups.push_back({node, xml.attribute(node, "id")});
     }
+    if (const auto views = rcp_child_element(xml, root, "ViewStates"))
+      for (const auto node : rcp_child_elements(xml, *views, "ViewState"))
+        saved_view_states.push_back(
+            {node, xml.attribute(node, "ID"), xml.attribute(node, "Title")});
+
     const auto runtime_index = rcp_identity_index(
         runtime, [](const auto &record) { return record.id; });
     const auto scan_index =
@@ -689,6 +751,40 @@ struct RcpProjectDocument::Impl {
           scans[i].runtime_link = status;
           scans[i].voxel_tree_runtime_index = target;
         });
+    const auto shot_index =
+        rcp_identity_index(shots, [](const auto &record) { return record.id; });
+    const auto shot_runtime_index = rcp_identity_index(
+        shots, [](const auto &record) { return record.point_cloud_id; });
+    const auto group_index =
+        rcp_identity_index(groups, [](const auto &record) { return record.id; });
+    const auto navigator_view_index = rcp_identity_index(
+        navigator_view_states, [](const auto &record) { return record.id; });
+    const auto saved_view_index = rcp_identity_index(
+        saved_view_states, [](const auto &record) { return record.id; });
+    rcp_link_identities(
+        shots, shot_runtime_index, runtime_index,
+        [](const auto &record) { return record.point_cloud_id; },
+        [&](uint32_t i, RcpIdentityLinkStatus status,
+            std::optional<uint32_t> target) {
+          shots[i].runtime_link = status;
+          shots[i].voxel_tree_runtime_index = target;
+        });
+    rcp_link_identities(
+        shots, shot_index, group_index,
+        [](const auto &record) { return record.id; },
+        [&](uint32_t i, RcpIdentityLinkStatus status,
+            std::optional<uint32_t> target) {
+          shots[i].group_link = status;
+          shots[i].group_index = target;
+        });
+    rcp_link_identities(
+        navigator_view_states, navigator_view_index, saved_view_index,
+        [](const auto &record) { return record.id; },
+        [&](uint32_t i, RcpIdentityLinkStatus status,
+            std::optional<uint32_t> target) {
+          navigator_view_states[i].saved_view_link = status;
+          navigator_view_states[i].saved_view_index = target;
+        });
   }
 };
 RcpProjectDocument::RcpProjectDocument(std::span<const uint8_t> bytes,
@@ -707,5 +803,283 @@ RcpProjectDocument::voxel_tree_runtime() const noexcept {
 }
 std::span<const RcpProjectScan> RcpProjectDocument::scans() const noexcept {
   return impl_->scans;
+}
+std::span<const RcpProjectShot> RcpProjectDocument::shots() const noexcept {
+  return impl_->shots;
+}
+std::span<const RcpProjectGroup> RcpProjectDocument::groups() const noexcept {
+  return impl_->groups;
+}
+std::span<const RcpProjectViewState>
+RcpProjectDocument::navigator_view_states() const noexcept {
+  return impl_->navigator_view_states;
+}
+std::span<const RcpProjectSavedView>
+RcpProjectDocument::saved_view_states() const noexcept {
+  return impl_->saved_view_states;
+}
+
+namespace {
+bool rcp_xml_name(std::string_view name) {
+  if (name.size() < 4 || name[name.size() - 4] != '.')
+    return false;
+  constexpr std::string_view extension = ".xml";
+  for (size_t i = 0; i < extension.size(); ++i) {
+    auto c = name[name.size() - extension.size() + i];
+    if (c >= 'A' && c <= 'Z')
+      c = static_cast<char>(c - 'A' + 'a');
+    if (c != extension[i])
+      return false;
+  }
+  return true;
+}
+uint32_t rcp_xml_member(const RcpReader &archive,
+                        const RcpProjectOptions &options) {
+  const auto entries = archive.entries();
+  if (options.xml_member_index) {
+    detail::require(*options.xml_member_index < entries.size(),
+                    "RCP project XML member index outside archive");
+    detail::require(!entries[*options.xml_member_index].directory,
+                    "RCP project XML member is a directory");
+    return *options.xml_member_index;
+  }
+  std::optional<uint32_t> result;
+  for (uint32_t i = 0; i < entries.size(); ++i) {
+    if (entries[i].directory || !rcp_xml_name(entries[i].name))
+      continue;
+    detail::require(!result, "RCP archive has multiple XML members");
+    result = i;
+  }
+  detail::require(result.has_value(), "RCP archive has no XML member");
+  return *result;
+}
+RcpProjectDocument rcp_load_project_document(
+    const RcpReader &archive, const RcpProjectOptions &options) {
+  auto bytes = archive.read_entry(rcp_xml_member(archive, options));
+  return RcpProjectDocument(bytes, options.xml);
+}
+std::string rcp_native_separators(std::string_view text) {
+  std::string result(text);
+  std::replace(result.begin(), result.end(), '\\', '/');
+  return result;
+}
+bool rcp_windows_absolute(std::string_view path) {
+  return path.size() >= 3 &&
+         ((path[0] >= 'A' && path[0] <= 'Z') ||
+          (path[0] >= 'a' && path[0] <= 'z')) &&
+         path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+}
+std::optional<std::filesystem::path>
+rcp_absolute_regular_file(const std::filesystem::path &path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec)
+    return std::nullopt;
+  auto absolute = std::filesystem::canonical(path, ec);
+  if (!ec)
+    return absolute;
+  ec.clear();
+  absolute = std::filesystem::absolute(path, ec);
+  if (ec)
+    return path.lexically_normal();
+  return absolute.lexically_normal();
+}
+struct RcpPathResolution {
+  RcpExternalRcsStatus status = RcpExternalRcsStatus::missing;
+  std::filesystem::path path;
+  std::string diagnostic;
+};
+RcpPathResolution rcp_choose_file(
+    std::span<const std::filesystem::path> candidates,
+    std::string_view candidate_description) {
+  std::vector<std::filesystem::path> found;
+  for (const auto &candidate : candidates) {
+    const auto actual = rcp_absolute_regular_file(candidate);
+    if (actual && std::find(found.begin(), found.end(), *actual) == found.end())
+      found.push_back(*actual);
+  }
+  if (found.empty())
+    return {RcpExternalRcsStatus::missing, {},
+            std::string(candidate_description) + " not found"};
+  if (found.size() != 1)
+    return {RcpExternalRcsStatus::ambiguous, {},
+            std::string(candidate_description) + " matched multiple files"};
+  return {RcpExternalRcsStatus::loaded, std::move(found.front()), {}};
+}
+RcpPathResolution rcp_resolve_external(
+    const RcpProjectVoxelTreeRuntime &runtime,
+    const std::filesystem::path &project_directory,
+    std::span<const std::filesystem::path> search_paths,
+    std::span<const RcpPathRemap> remaps) {
+  auto by_saved_path = [&](std::string_view saved) {
+    std::vector<std::filesystem::path> mapped;
+    for (const auto &remap : remaps)
+      if (remap.saved_path == saved)
+        mapped.push_back(remap.local_path);
+    if (mapped.empty())
+      return RcpPathResolution{RcpExternalRcsStatus::missing, {}, {}};
+    auto result = rcp_choose_file(mapped, "explicit RCP path remap");
+    if (result.status == RcpExternalRcsStatus::missing)
+      result.diagnostic = "explicit RCP path remap target is missing";
+    return result;
+  };
+  if (runtime.relative_path && !runtime.relative_path->empty()) {
+    auto mapped = by_saved_path(*runtime.relative_path);
+    if (!mapped.diagnostic.empty() || mapped.status == RcpExternalRcsStatus::loaded ||
+        mapped.status == RcpExternalRcsStatus::ambiguous)
+      return mapped;
+  }
+  if (runtime.path && !runtime.path->empty()) {
+    auto mapped = by_saved_path(*runtime.path);
+    if (!mapped.diagnostic.empty() || mapped.status == RcpExternalRcsStatus::loaded ||
+        mapped.status == RcpExternalRcsStatus::ambiguous)
+      return mapped;
+  }
+
+  if (runtime.relative_path && !runtime.relative_path->empty()) {
+    const auto text = *runtime.relative_path;
+    const std::filesystem::path relative(rcp_native_separators(text));
+    if (relative.is_absolute() || !rcp_windows_absolute(text)) {
+      const std::array candidates{project_directory / relative};
+      auto direct = rcp_choose_file(candidates, "RCP RelativePath");
+      if (direct.status == RcpExternalRcsStatus::loaded)
+        return direct;
+    }
+  }
+  if (runtime.path && !runtime.path->empty()) {
+    const auto text = *runtime.path;
+    const std::filesystem::path saved(rcp_native_separators(text));
+    if (saved.is_absolute()) {
+      const std::array candidates{saved};
+      auto direct = rcp_choose_file(candidates, "RCP absolute Path");
+      if (direct.status == RcpExternalRcsStatus::loaded)
+        return direct;
+    }
+  }
+
+  std::vector<std::filesystem::path> relative_candidates;
+  std::vector<std::filesystem::path> saved_candidates;
+  auto add_search_candidates = [&](std::optional<std::string_view> saved,
+                                   std::vector<std::filesystem::path> &out) {
+    if (!saved || saved->empty())
+      return;
+    const auto text = *saved;
+    const std::filesystem::path path(rcp_native_separators(text));
+    if (path.is_absolute() || rcp_windows_absolute(text))
+      return;
+    for (const auto &root : search_paths)
+      out.push_back(root / path);
+  };
+  add_search_candidates(runtime.relative_path, relative_candidates);
+  if (!relative_candidates.empty()) {
+    auto result = rcp_choose_file(relative_candidates,
+                                  "RCP RelativePath in search directories");
+    if (result.status != RcpExternalRcsStatus::missing)
+      return result;
+  }
+  add_search_candidates(runtime.path, saved_candidates);
+  if (!saved_candidates.empty()) {
+    auto result = rcp_choose_file(saved_candidates,
+                                  "RCP Path in search directories");
+    if (result.status != RcpExternalRcsStatus::missing)
+      return result;
+  }
+
+  auto add_filename_candidates = [&](std::optional<std::string_view> saved,
+                                     std::vector<std::filesystem::path> &out) {
+    if (!saved || saved->empty())
+      return;
+    const std::filesystem::path path(rcp_native_separators(*saved));
+    if (path.filename().empty())
+      return;
+    for (const auto &root : search_paths)
+      out.push_back(root / path.filename());
+  };
+  std::vector<std::filesystem::path> filename_candidates;
+  add_filename_candidates(runtime.relative_path, filename_candidates);
+  add_filename_candidates(runtime.path, filename_candidates);
+  if (!filename_candidates.empty()) {
+    auto result = rcp_choose_file(filename_candidates,
+                                  "RCP external filename fallback");
+    if (result.status != RcpExternalRcsStatus::missing)
+      return result;
+  }
+  return {RcpExternalRcsStatus::missing, {},
+          "RCP external RCS path did not resolve"};
+}
+} // namespace
+
+struct RcpProjectReader::Impl {
+  RcpReader archive;
+  RcpProjectDocument project;
+  std::vector<RcpExternalRcsFile> external;
+  Impl(const std::filesystem::path &path, RcpProjectOptions options)
+      : archive(path, options.archive),
+        project(rcp_load_project_document(archive, options)) {
+    std::error_code ec;
+    auto project_file = std::filesystem::absolute(path, ec);
+    if (ec)
+      project_file = path;
+    const auto directory = project_file.parent_path();
+    std::map<std::filesystem::path, std::shared_ptr<const RcsReader>> cache;
+    const auto runtime = project.voxel_tree_runtime();
+    external.reserve(runtime.size());
+    for (uint32_t i = 0; i < runtime.size(); ++i) {
+      const auto &record = runtime[i];
+      RcpExternalRcsFile file;
+      file.runtime_index = i;
+      file.saved_relative_path = record.relative_path;
+      file.saved_path = record.path;
+      if (!options.load_external_rcs) {
+        file.status = RcpExternalRcsStatus::disabled;
+        file.diagnostic = "external RCS loading disabled by options";
+        external.push_back(std::move(file));
+        continue;
+      }
+      if ((!record.relative_path || record.relative_path->empty()) &&
+          (!record.path || record.path->empty())) {
+        file.status = RcpExternalRcsStatus::missing_path;
+        file.diagnostic = "runtime record has no saved RCS path";
+        external.push_back(std::move(file));
+        continue;
+      }
+      auto resolved = rcp_resolve_external(record, directory,
+                                           options.search_paths,
+                                           options.remaps);
+      file.status = resolved.status;
+      file.resolved_path = std::move(resolved.path);
+      file.diagnostic = std::move(resolved.diagnostic);
+      if (file.status == RcpExternalRcsStatus::loaded) {
+        const auto existing = cache.find(file.resolved_path);
+        if (existing != cache.end())
+          file.rcs = existing->second;
+        else {
+          try {
+            auto mapped = std::make_shared<const RcsReader>(
+                file.resolved_path, options.max_rcs_voxels,
+                options.max_rcs_other_data_fields);
+            cache.emplace(file.resolved_path, mapped);
+            file.rcs = std::move(mapped);
+          } catch (const std::exception &error) {
+            file.status = RcpExternalRcsStatus::invalid;
+            file.diagnostic = std::string("RCS load failed: ") + error.what();
+          }
+        }
+      }
+      external.push_back(std::move(file));
+    }
+  }
+};
+RcpProjectReader::RcpProjectReader(const std::filesystem::path &path,
+                                   RcpProjectOptions options)
+    : impl_(std::make_shared<Impl>(path, std::move(options))) {}
+const RcpReader &RcpProjectReader::archive() const noexcept {
+  return impl_->archive;
+}
+const RcpProjectDocument &RcpProjectReader::project() const noexcept {
+  return impl_->project;
+}
+std::span<const RcpExternalRcsFile>
+RcpProjectReader::external_rcs_files() const noexcept {
+  return impl_->external;
 }
 } // namespace nwd
