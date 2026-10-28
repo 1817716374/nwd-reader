@@ -233,9 +233,14 @@ struct RcsRawPoint {
   }
 };
 struct RcsFileIndex {
+  static constexpr size_t umbrella_octree_level_count = 32;
+  static constexpr size_t umbrella_octree_record_size = 0x48;
   uint32_t version_major = 0, version_minor = 0;
   std::vector<RcsChunk> chunks; // order and duplicate IDs preserved
   std::vector<RcsVoxelDescriptor> voxels;
+  std::array<uint32_t, umbrella_octree_level_count> umbrella_octree_counts{};
+  uint64_t umbrella_octree_records_offset = 0; // first record, after 32 counts
+  uint64_t umbrella_octree_record_count = 0;
 };
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                             uint64_t max_voxels = 1000000);
@@ -260,6 +265,11 @@ public:
   std::array<std::span<const uint8_t>,
              RcsVoxelDescriptor::auxiliary_table_count>
   raw_auxiliary_tables(uint32_t voxel_index) const;
+  // Borrowed opaque 72-byte records grouped by the 32 saved octree levels.
+  // Returns empty spans when chunk 3 is absent; no records are copied.
+  std::array<std::span<const uint8_t>,
+             RcsFileIndex::umbrella_octree_level_count>
+  raw_umbrella_octree_levels() const;
   RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
 };
 struct CoordinateQuantization {

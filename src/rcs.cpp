@@ -22,7 +22,10 @@ constexpr uint64_t chunk_count_offset = 0x129;
 constexpr uint64_t chunk_table_offset = 0x12d;
 constexpr uint64_t chunk_entry_bytes = 24;
 constexpr uint64_t voxel_count_bytes = 8;
+constexpr uint64_t umbrella_octree_header_bytes = 0x80;
 constexpr uint64_t voxel_record_bytes = RcsVoxelDescriptor::wire_size;
+constexpr uint64_t umbrella_octree_record_bytes =
+    RcsFileIndex::umbrella_octree_record_size;
 constexpr uint32_t point_record_bytes = 16;
 constexpr uint32_t normal_grid_width = 52;
 constexpr uint32_t normal_face_entries = normal_grid_width * normal_grid_width;
@@ -143,6 +146,31 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                    u64(file, at + 16)};
     range(file, chunk.offset, chunk.size, "chunk");
     result.chunks.push_back(chunk);
+  }
+
+  if (const RcsChunk *umbrella_chunk = first_chunk(result, 3)) {
+    if (umbrella_chunk->size < umbrella_octree_header_bytes)
+      throw Error("RCS umbrella octree chunk has no level count table");
+    uint64_t record_count = 0;
+    for (uint32_t level = 0;
+         level < result.umbrella_octree_counts.size(); ++level) {
+      const uint32_t count = u32(file, umbrella_chunk->offset + level * 4);
+      result.umbrella_octree_counts[level] = count;
+      if (count > std::numeric_limits<uint64_t>::max() - record_count)
+        throw Error("RCS umbrella octree record count overflow");
+      record_count += count;
+    }
+    if (record_count >
+        (std::numeric_limits<uint64_t>::max() - umbrella_octree_header_bytes) /
+            umbrella_octree_record_bytes)
+      throw Error("RCS umbrella octree data size overflow");
+    const uint64_t records_bytes =
+        record_count * umbrella_octree_record_bytes;
+    if (records_bytes > umbrella_chunk->size - umbrella_octree_header_bytes)
+      throw Error("RCS umbrella octree records exceed their chunk");
+    result.umbrella_octree_records_offset =
+        umbrella_chunk->offset + umbrella_octree_header_bytes;
+    result.umbrella_octree_record_count = record_count;
   }
 
   const RcsChunk *voxel_chunk = first_chunk(result, 2);
@@ -353,6 +381,28 @@ RcsReader::raw_auxiliary_tables(uint32_t voxel_index) const {
     const uint64_t size = uint64_t(voxel.auxiliary_counts[i]) * 4;
     range(file, offset, size, "auxiliary table");
     result[i] = {impl_->data + offset, static_cast<size_t>(size)};
+    offset += size;
+  }
+  return result;
+}
+
+std::array<std::span<const uint8_t>,
+           RcsFileIndex::umbrella_octree_level_count>
+RcsReader::raw_umbrella_octree_levels() const {
+  std::array<std::span<const uint8_t>,
+             RcsFileIndex::umbrella_octree_level_count> result{};
+  const auto &index = impl_->index;
+  if (index.umbrella_octree_record_count == 0)
+    return result;
+
+  uint64_t offset = index.umbrella_octree_records_offset;
+  const std::span<const uint8_t> file{impl_->data, impl_->size};
+  for (size_t level = 0; level < result.size(); ++level) {
+    const uint64_t size =
+        uint64_t(index.umbrella_octree_counts[level]) *
+        RcsFileIndex::umbrella_octree_record_size;
+    range(file, offset, size, "umbrella octree level");
+    result[level] = {impl_->data + offset, static_cast<size_t>(size)};
     offset += size;
   }
   return result;

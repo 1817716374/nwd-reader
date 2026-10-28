@@ -10,6 +10,10 @@ int main(int argc, char **argv) {
   try {
     nwd::RcsReader reader(argv[1]);
     const auto &index = reader.index();
+    const auto umbrella_levels = reader.raw_umbrella_octree_levels();
+    uint64_t umbrella_entries = 0;
+    for (size_t level = 0; level < umbrella_levels.size(); ++level)
+      umbrella_entries += index.umbrella_octree_counts[level];
     uint64_t point_count = 0;
     for (uint32_t i = 0; i < index.voxels.size(); ++i) {
       const auto &voxel = index.voxels[i];
@@ -37,7 +41,8 @@ int main(int argc, char **argv) {
     }
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count
-              << " points\n";
+              << " points, " << umbrella_entries
+              << " opaque umbrella octree records\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
