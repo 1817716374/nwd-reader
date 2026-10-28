@@ -278,7 +278,8 @@ struct RcsFileIndex {
   uint64_t umbrella_octree_records_offset = 0; // first record, after 32 counts
   uint64_t umbrella_octree_record_count = 0;
   bool has_timestamp_chunk = false;
-  uint64_t timestamp_count = 0;
+  uint64_t timestamp_count =
+      0; // raw chunk 13 header; native ignores it when placing values
   bool timestamp_count_matches_points = false;
   bool has_other_data_chunk = false;
   int32_t other_data_count = 0; // raw chunk header, signed natively
@@ -303,6 +304,10 @@ public:
                      uint64_t max_voxels = 1000000,
                      uint64_t max_other_data_fields = 1000000);
   const RcsFileIndex &index() const noexcept;
+  // Borrowed bytes remain valid while this reader (or a copy) is alive.
+  // Select by table index to keep duplicate IDs distinct and preserve fields
+  // the reader does not decode.
+  std::span<const uint8_t> raw_chunk(uint32_t chunk_index) const;
   // Borrowed bytes remain valid while this reader (or a copy) is alive.
   std::span<const uint8_t> raw_points(uint32_t voxel_index) const;
   // Borrowed little-endian u32 records from the 24 auxiliary tables in saved

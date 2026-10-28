@@ -464,6 +464,14 @@ RcsReader::RcsReader(const std::filesystem::path &path, uint64_t max_voxels,
 
 const RcsFileIndex &RcsReader::index() const noexcept { return impl_->index; }
 
+std::span<const uint8_t> RcsReader::raw_chunk(uint32_t chunk_index) const {
+  if (chunk_index >= impl_->index.chunks.size())
+    throw Error("RCS chunk-table index outside chunk table");
+  const auto &chunk = impl_->index.chunks[chunk_index];
+  range({impl_->data, impl_->size}, chunk.offset, chunk.size, "chunk bytes");
+  return {impl_->data + chunk.offset, static_cast<size_t>(chunk.size)};
+}
+
 std::span<const uint8_t> RcsReader::raw_points(uint32_t voxel_index) const {
   if (voxel_index >= impl_->index.voxels.size())
     throw Error("RCS voxel index outside descriptor table");
