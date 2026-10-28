@@ -236,7 +236,8 @@ enum class RcsOtherDataSemantic : uint8_t {
   range_image_horizontal_end_angle,
   range_image_vertical_start_angle,
   range_image_vertical_end_angle,
-  lidar_classification_type_bitmap
+  lidar_classification_type_bitmap,
+  has_classification_list_in_terrestrial_scan
 };
 struct RcsOtherDataField {
   int32_t code = 0;

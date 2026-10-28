@@ -134,8 +134,8 @@ RcsOtherDataNativeLayout other_data_value_layout(int32_t code) {
     return {RcsOtherDataSemantic::normalize_intensity,
             RcsOtherDataValueKind::boolean, 1, 0x570};
   case 301:
-    return {RcsOtherDataSemantic::unknown, RcsOtherDataValueKind::boolean, 1,
-            0x584};
+    return {RcsOtherDataSemantic::has_classification_list_in_terrestrial_scan,
+            RcsOtherDataValueKind::boolean, 1, 0x584};
   case 101:
     return {RcsOtherDataSemantic::max_intensity,
             RcsOtherDataValueKind::float32, 4, 0x574};
