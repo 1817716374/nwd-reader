@@ -331,6 +331,33 @@ std::span<const uint8_t> RcsReader::raw_points(uint32_t voxel_index) const {
   return {impl_->data + voxel.point_data_offset, static_cast<size_t>(size)};
 }
 
+std::array<std::span<const uint8_t>,
+           RcsVoxelDescriptor::auxiliary_table_count>
+RcsReader::raw_auxiliary_tables(uint32_t voxel_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  uint64_t auxiliary_total = 0;
+  for (const uint32_t count : voxel.auxiliary_counts)
+    auxiliary_total += count;
+  const uint64_t prefix_items = auxiliary_total + voxel.point_count;
+  if (prefix_items > std::numeric_limits<uint64_t>::max() / 4 ||
+      voxel.point_data_offset < prefix_items * 4)
+    throw Error("RCS auxiliary table offset underflow");
+  uint64_t offset = voxel.point_data_offset - prefix_items * 4;
+  std::array<std::span<const uint8_t>,
+             RcsVoxelDescriptor::auxiliary_table_count> result{};
+  const std::span<const uint8_t> file{impl_->data, impl_->size};
+  for (size_t i = 0; i < result.size(); ++i) {
+    const uint64_t size = uint64_t(voxel.auxiliary_counts[i]) * 4;
+    range(file, offset, size, "auxiliary table");
+    result[i] = {impl_->data + offset, static_cast<size_t>(size)};
+    offset += size;
+  }
+  return result;
+}
+
 RcsRawPoint RcsReader::point(uint32_t voxel_index,
                              uint32_t point_index) const {
   if (voxel_index >= impl_->index.voxels.size())

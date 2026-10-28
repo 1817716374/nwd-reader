@@ -204,12 +204,13 @@ struct RcsChunk {
 };
 struct RcsVoxelDescriptor {
   static constexpr size_t wire_size = 0x170;
+  static constexpr size_t auxiliary_table_count = 24;
   std::array<double, 6> primary_bounds{}; // min XYZ, max XYZ
   std::array<double, 6> secondary_bounds{}; // source values, semantics partial
   uint32_t unknown_word_60 = 0;
   uint32_t point_count = 0; // sum of the 32 saved LOD counts
   uint32_t data_span_bytes = 0;
-  std::array<uint32_t, 24> auxiliary_counts{}; // raw table at +0x6c
+  std::array<uint32_t, auxiliary_table_count> auxiliary_counts{}; // raw table at +0x6c
   std::array<uint32_t, 32> lod_point_counts{}; // raw table at +0xcc
   std::array<uint32_t, 9> unknown_tail{}; // raw table at +0x14c
   uint64_t record_offset = 0; // file offset
@@ -254,6 +255,11 @@ public:
   const RcsFileIndex &index() const noexcept;
   // Borrowed bytes remain valid while this reader (or a copy) is alive.
   std::span<const uint8_t> raw_points(uint32_t voxel_index) const;
+  // Borrowed little-endian u32 records from the 24 auxiliary tables in saved
+  // descriptor order. Item semantics are opaque; no table bytes are copied.
+  std::array<std::span<const uint8_t>,
+             RcsVoxelDescriptor::auxiliary_table_count>
+  raw_auxiliary_tables(uint32_t voxel_index) const;
   RcsRawPoint point(uint32_t voxel_index, uint32_t point_index) const;
 };
 struct CoordinateQuantization {

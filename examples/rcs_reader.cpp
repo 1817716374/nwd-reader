@@ -14,13 +14,18 @@ int main(int argc, char **argv) {
     for (uint32_t i = 0; i < index.voxels.size(); ++i) {
       const auto &voxel = index.voxels[i];
       point_count += voxel.point_count;
+      const auto auxiliary_tables = reader.raw_auxiliary_tables(i);
+      uint64_t auxiliary_items = 0;
+      for (size_t table = 0; table < auxiliary_tables.size(); ++table)
+        auxiliary_items += voxel.auxiliary_counts[table];
       if (voxel.point_count == 0)
         continue;
       const auto point = reader.point(i, 0);
       const auto normal = nwd::decode_rcs_normal(point.normal);
       const auto rgba = point.color_rgba();
       std::cout << "voxel " << i << ": " << voxel.point_count
-                << " points; first XYZ = " << point.position[0] << ", "
+                << " points, " << auxiliary_items
+                << " opaque auxiliary records; first XYZ = " << point.position[0] << ", "
                 << point.position[1] << ", " << point.position[2]
                 << "; RGBA = " << unsigned(rgba[0]) << ", "
                 << unsigned(rgba[1]) << ", " << unsigned(rgba[2]) << ", "
