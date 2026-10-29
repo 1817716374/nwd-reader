@@ -2970,6 +2970,9 @@ enum class NwfCacheFormat : uint8_t {
 struct NwfReference {
   std::string name, original_path, partition, display_name, plugin, extra;
   std::array<uint8_t, 16> source_guid{}, reference_guid{};
+  // Two serialized bitfields present before save version64. Their meaning is
+  // not yet identified; retain the exact wire words for downstream callers.
+  std::optional<std::array<uint32_t, 2>> pre64_bitfields;
   // load_flags: bit0 replaces source units; bit1 replaces the base transform;
   // bit2 replaces up/north/front vectors. Before version244 these are all set.
   // The orientation_flag below is a separate transform execution hint.

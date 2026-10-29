@@ -160,7 +160,7 @@ void detail::read_source_references(Cursor &r,
                                     std::vector<NwfReference> &references,
                                     ObjectReader &object_reader,
                                     uint32_t version, const Options &options) {
-  require(version >= 63 && version <= 450,
+  require(version <= 450,
           "source-reference version not yet validated");
   auto count = [&]() {
     auto n = r.u32();
@@ -182,26 +182,36 @@ void detail::read_source_references(Cursor &r,
       x.display_name = r.string();
     }
     x.plugin = r.string();
+    if (version < 64) {
+      x.pre64_bitfields = std::array<uint32_t, 2>{r.u32(), r.u32()};
+    }
     x.flags = r.u32();
     x.load_flags = version >= 244 ? r.u32() : 7;
     for (auto &v : x.affine)
       v = r.f64();
-    x.linear_units = r.u32();
-    x.angular_units = r.u32();
-    x.orientation_flag = r.u32();
-    x.up = vector3(r);
-    x.north = vector3(r);
+    if (version >= 5) {
+      x.linear_units = r.u32();
+      x.angular_units = r.u32();
+      x.orientation_flag = r.u32();
+    } else {
+      // Native LcOpSceneRef constructor/read defaults for old streams.
+      x.angular_units = 1;
+    }
+    if (version >= 53) {
+      x.up = vector3(r);
+      x.north = vector3(r);
+    }
     if (version >= 80) {
       x.extra_enum = r.u32();
       x.extra = r.string();
     }
-    if (version < 72) {
+    if (version >= 63 && version < 72) {
       x.legacy_cache_encoding = true;
       x.cache_format = NwfCacheFormat::legacy_xrefs;
       read_legacy_xrefs(r, x.cached_files, version, options, budget, false);
-    } else if (version < 92)
+    } else if (version >= 72 && version < 92)
       read_legacy_cache_data(r, x, object_reader, version, options, budget);
-    else {
+    else if (version >= 92) {
       x.cache_format = NwfCacheFormat::plugin_options;
       read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
                       object_reader, options, budget);
@@ -215,16 +225,22 @@ void detail::read_source_references(Cursor &r,
 }
 NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version,
                              Options options) {
-  require(version >= 63 && version <= 448,
+  require(version <= 448,
           "NWF scene-set version not yet validated");
   Cursor r(bytes, "NWF scene set");
   NwfData out;
+  // Native SceneSet reader uses these unit defaults before version5.
+  out.angular_units = 1;
   ObjectReader objects(bytes, out.option_values, version, options);
   read_source_references(r, out.references, objects, version, options);
-  out.linear_units = r.u32();
-  out.angular_units = r.u32();
-  out.up = vector3(r);
-  out.north = vector3(r);
+  if (version >= 5) {
+    out.linear_units = r.u32();
+    out.angular_units = r.u32();
+  }
+  if (version >= 53) {
+    out.up = vector3(r);
+    out.north = vector3(r);
+  }
   if (version >= 109)
     out.front = vector3(r);
   r.exact();
