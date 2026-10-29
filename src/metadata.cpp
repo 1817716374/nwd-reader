@@ -1292,6 +1292,18 @@ public:
       o.flags = r.u32();
       doubles(o, 12);
       break;
+    case 28:
+      if (version != 103)
+        r.fail("metadata type 28 layout unverified for this container version");
+      common(o);
+      doubles(o, 15);
+      break;
+    case 29:
+      if (version != 103)
+        r.fail("metadata type 29 layout unverified for this container version");
+      common(o);
+      doubles(o, 20);
+      break;
     default:
       r.fail("unsupported metadata type " + std::to_string(o.type));
     }
