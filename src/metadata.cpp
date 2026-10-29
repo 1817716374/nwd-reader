@@ -1601,4 +1601,45 @@ std::string_view metadata_type_name(uint32_t type) noexcept {
     return {};
   }
 }
+
+std::optional<MetadataLightFields>
+metadata_light_fields(const Object &object) noexcept {
+  const auto &v = object.numbers;
+  if (object.type != 28 && object.type != 29)
+    return std::nullopt;
+  if (object.type == 28 && v.size() != 15 && v.size() != 16)
+    return std::nullopt;
+  if (object.type == 29 && v.size() != 20 && v.size() != 21)
+    return std::nullopt;
+
+  MetadataLightFields result;
+  auto copy3 = [&](size_t at, std::array<double, 3> &out) {
+    for (size_t i = 0; i < out.size(); ++i)
+      out[i] = v[at + i];
+  };
+  copy3(0, result.ambient_color);
+  copy3(3, result.diffuse_color);
+  copy3(6, result.specular_color);
+  copy3(9, result.position);
+  if (object.type == 28) {
+    copy3(12, result.attenuation);
+    if (v.size() == 16)
+      result.radius_of_influence = v[15];
+    return result;
+  }
+
+  if (v.size() == 20) {
+    copy3(12, result.direction.emplace());
+    copy3(15, result.attenuation);
+    result.drop_off_rate = v[18];
+    result.cutoff_angle = v[19];
+  } else {
+    copy3(12, result.attenuation);
+    result.radius_of_influence = v[15];
+    copy3(16, result.direction.emplace());
+    result.cutoff_angle = v[19];
+    result.drop_off_rate = v[20];
+  }
+  return result;
+}
 } // namespace nwd

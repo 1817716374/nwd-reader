@@ -96,6 +96,19 @@ struct Object {
 // types without a verified name; this does not imply that their payload is
 // unsupported or absent.
 std::string_view metadata_type_name(uint32_t type) noexcept;
+// Named numeric fields from native LcOaPointLight/LcOaSpotLight payloads.
+// Optional fields are absent when that serializer version did not write them.
+struct MetadataLightFields {
+  std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{};
+  std::array<double, 3> position{}, attenuation{};
+  std::optional<std::array<double, 3>> direction;
+  std::optional<double> radius_of_influence, drop_off_rate, cutoff_angle;
+};
+// Decodes only verified 15/16-number point-light and 20/21-number spot-light
+// layouts. Returns empty for unrecognized type/count combinations. The raw
+// values remain available in Object::numbers.
+std::optional<MetadataLightFields>
+metadata_light_fields(const Object &) noexcept;
 struct PartitionOrientation {
   std::array<double, 3> up{}, north{};
   // Not serialized before wire version109. A present zero vector is retained.
