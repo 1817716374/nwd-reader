@@ -74,6 +74,193 @@ std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file, const Chunk &c,
 }
 } // namespace nwd::detail
 namespace nwd {
+namespace {
+struct FragmentAffine {
+  double linear[3][3]{};
+  double translation[3]{};
+};
+
+bool make_fragment_affine(const Transform &transform, FragmentAffine &out,
+                          std::string &diagnostic) {
+  if (transform.type == 14) {
+    for (unsigned i = 0; i < 3; ++i) {
+      out.linear[i][i] = 1;
+      out.translation[i] = transform.values[i];
+    }
+    return true;
+  }
+  if (transform.type != 15 && transform.type != 16) {
+    diagnostic = "unsupported native RunTransform type " +
+                 std::to_string(transform.type);
+    return false;
+  }
+  const auto &v = transform.values;
+  const double x = v[3], y = v[4], z = v[5], w = v[6];
+  const double norm = x * x + y * y + z * z + w * w;
+  if (!std::isfinite(norm) || std::abs(norm - 1.0) >= 1e-5) {
+    diagnostic = "non-unit RunTransform rotation cannot be bounded exactly";
+    return false;
+  }
+  const double scale = transform.type == 16 ? v[7] : 1.0;
+  if (!std::isfinite(scale)) {
+    diagnostic = "non-finite RunTransform scale";
+    return false;
+  }
+  out.linear[0][0] = (1 - 2 * (y * y + z * z)) * scale;
+  out.linear[0][1] = 2 * (x * y - z * w) * scale;
+  out.linear[0][2] = 2 * (x * z + y * w) * scale;
+  out.linear[1][0] = 2 * (x * y + z * w) * scale;
+  out.linear[1][1] = (1 - 2 * (x * x + z * z)) * scale;
+  out.linear[1][2] = 2 * (y * z - x * w) * scale;
+  out.linear[2][0] = 2 * (x * z - y * w) * scale;
+  out.linear[2][1] = 2 * (y * z + x * w) * scale;
+  out.linear[2][2] = (1 - 2 * (x * x + y * y)) * scale;
+  for (unsigned i = 0; i < 3; ++i) {
+    out.translation[i] = v[i];
+    if (!std::isfinite(out.translation[i])) {
+      diagnostic = "non-finite RunTransform translation";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool native_fragment_is_sensible(const std::array<double, 6> &b) {
+  if (b[0] > b[3])
+    return true;
+  for (double x : b)
+    if (!std::isfinite(x))
+      return false;
+  return b[1] <= b[4] && b[2] <= b[5] && b[0] > -1e20 &&
+         b[1] > -1e20 && b[2] > -1e20 && b[3] < 1e20 && b[4] < 1e20 &&
+         b[5] < 1e20;
+}
+
+std::optional<std::array<double, 6>> native_fragment_bounds(
+    const Model &model, const Instance &instance,
+    std::vector<std::optional<FragmentAffine>> *affines,
+    std::string &diagnostic) {
+  if (instance.geometry_reference >= model.geometry_references.size()) {
+    diagnostic = "instance references a missing GeometryReference";
+    return std::nullopt;
+  }
+  if (instance.auxiliary_transform != none) {
+    diagnostic = "auxiliary transform bounds semantics remain unresolved";
+    return std::nullopt;
+  }
+  const auto &reference = model.geometry_references[instance.geometry_reference];
+  std::array<double, 6> bounds{};
+  for (unsigned i = 0; i < bounds.size(); ++i)
+    bounds[i] = reference.bounds[i];
+  if (instance.transform == none) {
+    if (instance.flags & 0x40000000u)
+      for (unsigned i = 0; i < 3; ++i) {
+        bounds[i] += reference.origin[i];
+        bounds[i + 3] += reference.origin[i];
+      }
+    return bounds;
+  }
+  if (instance.transform >= model.transforms.size()) {
+    diagnostic = "instance references a missing RunTransform";
+    return std::nullopt;
+  }
+  const auto transform_id = instance.transform;
+  FragmentAffine uncached_affine;
+  const FragmentAffine *affine_ptr = nullptr;
+  if (affines) {
+    auto &cached = (*affines)[transform_id];
+    if (!cached) {
+      FragmentAffine affine;
+      if (!make_fragment_affine(model.transforms[transform_id], affine,
+                                diagnostic))
+        return std::nullopt;
+      cached = affine;
+    }
+    affine_ptr = &*cached;
+  } else {
+    if (!make_fragment_affine(model.transforms[transform_id], uncached_affine,
+                              diagnostic))
+      return std::nullopt;
+    affine_ptr = &uncached_affine;
+  }
+  const auto &affine = *affine_ptr;
+  if (bounds[0] > bounds[3]) {
+    const auto type = model.transforms[transform_id].type;
+    if (type == 14) {
+      for (unsigned i = 0; i < 3; ++i) {
+        bounds[i] += affine.translation[i];
+        bounds[i + 3] += affine.translation[i];
+      }
+    } else {
+      return bounds;
+    }
+    return bounds;
+  }
+  for (double x : bounds)
+    if (!std::isfinite(x)) {
+      diagnostic = "non-finite source fragment bounds";
+      return std::nullopt;
+    }
+  if (bounds[1] > bounds[4] || bounds[2] > bounds[5]) {
+    diagnostic = "inverted Y/Z bounds with a RunTransform are unresolved";
+    return std::nullopt;
+  }
+  std::array<double, 6> transformed{};
+  for (unsigned row = 0; row < 3; ++row) {
+    double lo = affine.translation[row], hi = affine.translation[row];
+    for (unsigned col = 0; col < 3; ++col) {
+      const double a = affine.linear[row][col] * bounds[col];
+      const double b = affine.linear[row][col] * bounds[col + 3];
+      lo += std::min(a, b);
+      hi += std::max(a, b);
+    }
+    transformed[row] = lo;
+    transformed[row + 3] = hi;
+  }
+  return transformed;
+}
+
+bool bind_native_fragment_slots(const Model &model, uint32_t version,
+                                SpatialHierarchy &tree) {
+  tree.fragment_instances.clear();
+  tree.fragment_slots_verified = false;
+  if (version != 448) {
+    tree.fragment_mapping_diagnostic =
+        "native bounds/filter mapping is verified only for container version 448";
+    return false;
+  }
+  constexpr size_t max_cached_transforms = 1'000'000;
+  std::vector<std::optional<FragmentAffine>> affine_cache;
+  if (model.transforms.size() <= max_cached_transforms)
+    affine_cache.resize(model.transforms.size());
+  auto *affines = affine_cache.empty() ? nullptr : &affine_cache;
+  tree.fragment_instances.reserve(model.instances.size());
+  for (size_t i = 0; i < model.instances.size(); ++i) {
+    std::string diagnostic;
+    auto bounds = native_fragment_bounds(model, model.instances[i], affines,
+                                         diagnostic);
+    if (!bounds) {
+      tree.fragment_instances.clear();
+      tree.fragment_mapping_diagnostic = std::move(diagnostic);
+      return false;
+    }
+    if (native_fragment_is_sensible(*bounds))
+      tree.fragment_instances.push_back(static_cast<Id>(i));
+  }
+  for (const auto &node : tree.nodes)
+    if (auto slot = node.partition_fragment_slot();
+        slot && *slot >= tree.fragment_instances.size()) {
+      tree.fragment_instances.clear();
+      tree.fragment_mapping_diagnostic =
+          "spatial hierarchy references a slot outside the accepted fragment table";
+      return false;
+    }
+  tree.fragment_slots_verified = true;
+  tree.fragment_mapping_diagnostic.clear();
+  return true;
+}
+} // namespace
+
 struct Document::Impl {
   Options options;
   std::span<const uint8_t> file;
@@ -564,15 +751,16 @@ Scene Document::read_scene() const {
           continue;
         require(tree->model == none, "ambiguous spatial model namespace");
         tree->model = static_cast<Id>(m);
-        // The chunk prefix proves which serialized model owns this tree, but
-        // its references index the native root-partition fragment table. They
-        // are not proven Model.instances IDs; numeric range checks conflate
-        // two identity spaces and reject valid fragment slots.
+        // Native ReadFragments compacts objects using the native bounds test.
+        // Reproduce that sequence before translating hierarchy slots into
+        // Model.instances indexes; never treat the slot as an instance ID.
         tree->associations_verified = true;
+        bind_native_fragment_slots(model, version(), *tree);
       }
       if (!tree->associations_verified) {
         b.status = ProductStatus::partial;
         b.diagnostic = "spatial hierarchy source model association missing";
+        tree->fragment_mapping_diagnostic = b.diagnostic;
       }
     }
     out.products = std::move(products);

@@ -3420,6 +3420,15 @@ struct SpatialHierarchy {
   Id model = none; // owning Scene.models index, filled by read_scene()
   bool associations_verified = false; // hierarchy block -> source model
   bool fragment_slots_verified = false; // partition slots -> Model.instances
+  // When verified, native fragment slot -> Model.instances index. Empty when
+  // the native bounds/filter mapping could not be reproduced for this file.
+  std::vector<Id> fragment_instances;
+  std::string fragment_mapping_diagnostic;
+  std::optional<Id> instance_for_fragment_slot(Id slot) const noexcept {
+    if (!fragment_slots_verified || slot >= fragment_instances.size())
+      return std::nullopt;
+    return fragment_instances[slot];
+  }
 };
 enum class PublishOption : uint32_t {
   has_password = 1,
