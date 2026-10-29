@@ -1591,15 +1591,31 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
 } // namespace nwd::detail
 
 namespace nwd {
-std::string_view metadata_type_name(uint32_t type) noexcept {
-  switch (type) {
-  case 28:
-    return "LcOaPointLight";
-  case 29:
-    return "LcOaSpotLight";
-  default:
-    return {};
-  }
+std::string_view metadata_type_name(uint32_t type,
+                                   uint32_t container_version) noexcept {
+  static constexpr std::array<std::string_view, 45> names{
+      "LcOaBad", "LcOa_LcOcStaticGroup", "LcOa_LcOcStaticLeaf",
+      "LcOa_csMaterial", "LcOa_csAppearance", "LcOa_csCoordSet3f",
+      "LcOa_csNormalSet3f", "LcOa_csNormalSet3s", "LcOa_csColorSet3f",
+      "LcOa_csColorSet4f", "LcOa_csTexCoordSet2f", "LcOa_csIndexSet",
+      "LcOa_csTriStripSet", "LcOaCoreShape", "LcOaRunTranslation",
+      "LcOaRunTransRot", "LcOaRunTransRotScale", "LcOaRunMatrix",
+      "LcOaNodeModified", "LcOaGroupModified", "LcOaUnknownAttribute",
+      "LcOaUnknownNode", "LcOaExGeometry", "LcOaUnknownGeometry",
+      "LcOaUnknownGraph", "LcOaGroup", "LcOaUnknownLight",
+      "LcOaDistantLight", "LcOaPointLight", "LcOaSpotLight",
+      "LcOaUnknownMaterial", "LcOaExMaterial", "LcOaPartition",
+      "LcOaSemanticPriority", "LcOaUnknownSemanticPriority",
+      "LcOaExSemanticPriority", "LcOaTransform", "LcOaUnknownTransform",
+      "LcOaExBaseTransform", "LcOaExTransform", "LcOaExTrans",
+      "LcOaExTransRot", "LcOaUnknownShape", "LcOaSensor", "LcOaPath",
+  };
+  if (container_version == 103)
+    return type < names.size() ? names[type] : std::string_view{};
+  // These identities were independently confirmed in Manage 2017/2026.
+  if (type == 28 || type == 29)
+    return names[type];
+  return {};
 }
 
 std::optional<MetadataLightFields>
