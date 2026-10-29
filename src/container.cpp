@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "fragment_bounds.hpp"
 #include "geometry_stream.hpp"
 #include "blowfish.hpp"
 #include <fstream>
@@ -75,56 +76,6 @@ std::vector<Bytes> chunk_blocks(std::span<const uint8_t> file, const Chunk &c,
 } // namespace nwd::detail
 namespace nwd {
 namespace {
-struct FragmentAffine {
-  double linear[3][3]{};
-  double translation[3]{};
-};
-
-bool make_fragment_affine(const Transform &transform, FragmentAffine &out,
-                          std::string &diagnostic) {
-  if (transform.type == 14) {
-    for (unsigned i = 0; i < 3; ++i) {
-      out.linear[i][i] = 1;
-      out.translation[i] = transform.values[i];
-    }
-    return true;
-  }
-  if (transform.type != 15 && transform.type != 16) {
-    diagnostic = "unsupported native RunTransform type " +
-                 std::to_string(transform.type);
-    return false;
-  }
-  const auto &v = transform.values;
-  const double x = v[3], y = v[4], z = v[5], w = v[6];
-  const double norm = x * x + y * y + z * z + w * w;
-  if (!std::isfinite(norm) || std::abs(norm - 1.0) >= 1e-5) {
-    diagnostic = "non-unit RunTransform rotation cannot be bounded exactly";
-    return false;
-  }
-  const double scale = transform.type == 16 ? v[7] : 1.0;
-  if (!std::isfinite(scale)) {
-    diagnostic = "non-finite RunTransform scale";
-    return false;
-  }
-  out.linear[0][0] = (1 - 2 * (y * y + z * z)) * scale;
-  out.linear[0][1] = 2 * (x * y - z * w) * scale;
-  out.linear[0][2] = 2 * (x * z + y * w) * scale;
-  out.linear[1][0] = 2 * (x * y + z * w) * scale;
-  out.linear[1][1] = (1 - 2 * (x * x + z * z)) * scale;
-  out.linear[1][2] = 2 * (y * z - x * w) * scale;
-  out.linear[2][0] = 2 * (x * z - y * w) * scale;
-  out.linear[2][1] = 2 * (y * z + x * w) * scale;
-  out.linear[2][2] = (1 - 2 * (x * x + y * y)) * scale;
-  for (unsigned i = 0; i < 3; ++i) {
-    out.translation[i] = v[i];
-    if (!std::isfinite(out.translation[i])) {
-      diagnostic = "non-finite RunTransform translation";
-      return false;
-    }
-  }
-  return true;
-}
-
 bool native_fragment_is_sensible(const std::array<double, 6> &b) {
   if (b[0] > b[3])
     return true;
@@ -138,7 +89,7 @@ bool native_fragment_is_sensible(const std::array<double, 6> &b) {
 
 std::optional<std::array<double, 6>> native_fragment_bounds(
     const Model &model, const Instance &instance,
-    std::vector<std::optional<FragmentAffine>> *affines,
+    std::vector<std::optional<detail::FragmentAffine>> *affines,
     std::string &diagnostic) {
   if (instance.geometry_reference >= model.geometry_references.size()) {
     diagnostic = "instance references a missing GeometryReference";
@@ -165,21 +116,21 @@ std::optional<std::array<double, 6>> native_fragment_bounds(
     return std::nullopt;
   }
   const auto transform_id = instance.transform;
-  FragmentAffine uncached_affine;
-  const FragmentAffine *affine_ptr = nullptr;
+  detail::FragmentAffine uncached_affine;
+  const detail::FragmentAffine *affine_ptr = nullptr;
   if (affines) {
     auto &cached = (*affines)[transform_id];
     if (!cached) {
-      FragmentAffine affine;
-      if (!make_fragment_affine(model.transforms[transform_id], affine,
-                                diagnostic))
+      detail::FragmentAffine affine;
+      if (!detail::make_fragment_affine(model.transforms[transform_id], affine,
+                                        diagnostic))
         return std::nullopt;
       cached = affine;
     }
     affine_ptr = &*cached;
   } else {
-    if (!make_fragment_affine(model.transforms[transform_id], uncached_affine,
-                              diagnostic))
+    if (!detail::make_fragment_affine(model.transforms[transform_id],
+                                      uncached_affine, diagnostic))
       return std::nullopt;
     affine_ptr = &uncached_affine;
   }
@@ -230,7 +181,7 @@ bool bind_native_fragment_slots(const Model &model, uint32_t version,
     return false;
   }
   constexpr size_t max_cached_transforms = 1'000'000;
-  std::vector<std::optional<FragmentAffine>> affine_cache;
+  std::vector<std::optional<detail::FragmentAffine>> affine_cache;
   if (model.transforms.size() <= max_cached_transforms)
     affine_cache.resize(model.transforms.size());
   auto *affines = affine_cache.empty() ? nullptr : &affine_cache;
