@@ -1439,8 +1439,8 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
       }
     throw Error("missing metadata chunk " + suffix);
   };
-  auto raw = [&](const std::string &suffix) {
-    auto blocks = chunk_blocks(file, find(suffix), options);
+  auto raw_chunk = [&](const Chunk &chunk) {
+    auto blocks = chunk_blocks(file, chunk, options);
     if (blocks.size() == 1)
       return std::move(blocks.front());
     Bytes data;
@@ -1452,11 +1452,24 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
       data.insert(data.end(), b.begin(), b.end());
     return data;
   };
-  auto shared = raw("LcOpNwdSharedNodes");
-  auto shared_context = context ? *context : GeometryStreamContext{};
-  shared_context.paged = true; // modern model entry is anchored by Geometry
-  shared_context.schemas = schemas;
-  read_shared_nodes(model, shared, version, options, &shared_context);
+  auto raw = [&](const std::string &suffix) { return raw_chunk(find(suffix)); };
+  const auto shared_name =
+      (model.name.empty() ? "" : model.name + "\\") +
+      "LcOpNwdSharedNodes";
+  const Chunk *shared_chunk = nullptr;
+  for (const auto &chunk : chunks)
+    if (chunk.name == shared_name) {
+      require(shared_chunk == nullptr, "duplicate shared-nodes chunk");
+      shared_chunk = &chunk;
+    }
+  if (shared_chunk) {
+    parsed[static_cast<size_t>(shared_chunk - chunks.data())] = true;
+    auto shared_context = context ? *context : GeometryStreamContext{};
+    shared_context.paged = true; // modern model entry is anchored by Geometry
+    shared_context.schemas = schemas;
+    read_shared_nodes(model, raw_chunk(*shared_chunk), version, options,
+                      &shared_context);
+  }
   model.graphs.resize(2);
   auto part = raw("LcOpNwdPartition");
   read_partition(model, part, version, options);
