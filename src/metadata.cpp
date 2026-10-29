@@ -1619,6 +1619,20 @@ std::string_view metadata_type_name(uint32_t type,
   return {};
 }
 
+std::optional<MetadataDistantLightFields>
+metadata_distant_light_fields(const Object &object) noexcept {
+  if (object.type != 27 || object.numbers.size() != 12)
+    return std::nullopt;
+  MetadataDistantLightFields result;
+  for (size_t i = 0; i < 3; ++i) {
+    result.ambient_color[i] = object.numbers[i];
+    result.diffuse_color[i] = object.numbers[i + 3];
+    result.specular_color[i] = object.numbers[i + 6];
+    result.direction[i] = object.numbers[i + 9];
+  }
+  return result;
+}
+
 std::optional<MetadataLightFields>
 metadata_light_fields(const Object &object) noexcept {
   const auto &v = object.numbers;

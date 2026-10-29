@@ -99,6 +99,15 @@ struct Object {
 // it does not imply that the payload is unsupported or absent.
 std::string_view metadata_type_name(uint32_t type,
                                     uint32_t container_version = 0) noexcept;
+// Named numeric fields from the verified LcOaDistantLight serializer.
+struct MetadataDistantLightFields {
+  std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{};
+  std::array<double, 3> direction{};
+};
+// Decodes only type 27 with its verified 12-number layout. Returns empty for
+// other types or counts; Object::numbers retains the original order.
+std::optional<MetadataDistantLightFields>
+metadata_distant_light_fields(const Object &) noexcept;
 // Named numeric fields from native LcOaPointLight/LcOaSpotLight payloads.
 // Optional fields are absent when that serializer version did not write them.
 struct MetadataLightFields {
