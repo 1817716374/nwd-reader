@@ -91,6 +91,11 @@ struct Object {
   std::vector<Shader> shaders;
   std::vector<uint8_t> bytes;
 };
+// Static registered names for metadata object types whose class identity has
+// been verified against native registration tables. Returns an empty view for
+// types without a verified name; this does not imply that their payload is
+// unsupported or absent.
+std::string_view metadata_type_name(uint32_t type) noexcept;
 struct PartitionOrientation {
   std::array<double, 3> up{}, north{};
   // Not serialized before wire version109. A present zero vector is retained.

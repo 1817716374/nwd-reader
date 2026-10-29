@@ -1589,3 +1589,16 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
     walk(id, 0, 0);
 }
 } // namespace nwd::detail
+
+namespace nwd {
+std::string_view metadata_type_name(uint32_t type) noexcept {
+  switch (type) {
+  case 28:
+    return "LcOaPointLight";
+  case 29:
+    return "LcOaSpotLight";
+  default:
+    return {};
+  }
+}
+} // namespace nwd
