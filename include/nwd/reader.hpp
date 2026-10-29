@@ -3707,6 +3707,10 @@ struct ProjectNode {
   // Legacy values/mask patch serialized on the owning NWF reference (before
   // version64); retained per occurrence and never applied to shared models.
   std::optional<NwfLegacyOverridePatch> legacy_override_patch;
+  // Resolved patch result for the referenced scene's root node only. Present
+  // only when the reference resolves to one scene model with a decoded root
+  // original-overrides byte; the shared source Model remains unchanged.
+  std::optional<uint32_t> legacy_effective_root_original_overrides;
   std::string name, requested_path, status;
   std::array<double, 16> to_parent{1, 0, 0, 0, 0, 1, 0, 0,
                                    0, 0, 1, 0, 0, 0, 0, 1}; // meters to meters

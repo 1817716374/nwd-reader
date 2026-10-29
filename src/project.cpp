@@ -9,6 +9,17 @@ namespace nwd {
 namespace {
 using namespace detail;
 using Matrix = std::array<double, 16>;
+std::optional<uint8_t> partition_original_overrides(const Object &o,
+                                                    uint32_t version) {
+  if (o.type != 32)
+    return {};
+  auto flags = uint8_t(o.flags >> 24);
+  if (version < 78)
+    flags &= uint8_t(~4u);
+  if (version == 0)
+    flags |= uint8_t((o.flags >> 16) & 3);
+  return flags;
+}
 Matrix identity() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 Matrix multiply(const Matrix &a, const Matrix &b) {
   Matrix c{};
@@ -1050,6 +1061,17 @@ class Loader {
               }
             require(leaf != none, "reference has no model partition");
             const auto &m = cs.scene->models[out.nodes[leaf].model];
+            if (out.nodes[child].legacy_override_patch) {
+              const auto &root = path_object(m, 0);
+              if (root.type == 32) {
+                const auto original =
+                    partition_original_overrides(root, cs.scene->version);
+                if (original)
+                  out.nodes[child].legacy_effective_root_original_overrides =
+                      out.nodes[child].legacy_override_patch
+                          ->apply_to_original(*original);
+              }
+            }
             out.nodes[leaf].to_parent =
                 reference_placement_matrix(m, r, nwf->linear_units);
             auto base = base_attribute(m);

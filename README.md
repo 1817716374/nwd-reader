@@ -966,6 +966,8 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 `appearance_stack(project, node, instance)` 返回模型保存的基础 Appearance，以及按内层到外层顺序排列的原始 NWF 覆盖记录。跨文件覆盖保留各自的 `source/model/appearance` 身份和 `Appearance.flags`；调用方可据 flags 解释哪些字段由该层提供。兼容字段 `appearance_overrides` 和 `effective_appearance()` 只投影最外层显式选择材质（flags bit 1）的覆盖；其它字段从分层接口读取。项目纹理活动性按最外层显式 asset 字段处理；未显式写入 asset 时沿用前一层。
 
+对于版本64之前的 NWF 引用，`NwfReference::legacy_override_patch` 保留原始 values/mask。`load_project()` 会按引用出现保留该 patch；当引用已解析到单一场景模型且根对象为 type32 分区时，`ProjectNode::legacy_effective_root_original_overrides` 提供合并后的根节点值。目标未解析或根状态不可用时该字段为空；解析器不会修改共享模型或把根覆盖扩展到后代。各 bit 的业务含义仍由调用方按目标版本解释。
+
 以下内容仍存在限制：
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
