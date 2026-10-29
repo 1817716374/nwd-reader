@@ -675,8 +675,11 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
                    implicit_node_map, options);
     return;
   } else if (kind == "LcOwLightsElement") {
-    read_presenter_lights(b.value.emplace<PresenterLights>(), r, version,
-                          options);
+    auto &lights = b.value.emplace<PresenterLights>();
+    read_presenter_lights(lights, r, version, options);
+    for (const auto &a : lights.archives)
+      if (!a.complete)
+        throw Unsupported(a.diagnostic);
     return;
   } else if (kind == "LcOpClashElement" && version < 301) {
     auto &v = b.value.emplace<SavedItems>();
