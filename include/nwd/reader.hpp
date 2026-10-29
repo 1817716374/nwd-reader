@@ -2327,14 +2327,21 @@ struct Model {
   bool raw_coordinates = false;
   unsigned normal_bits = 0;
 };
-// A type-200 Protein material attribute may point to a type-185 JSON object
-// that is also serialized as a core Model::assets entry. This view reports
-// exact JSON-content candidates; equal JSON does not establish shared object
-// identity. Candidate order follows Model::assets and duplicates are kept.
+enum class MetadataProteinMaterialAssetMatchKind {
+  graph_object_identity,
+  exact_json_content
+};
+// A type-200 Protein material attribute may point to a legacy type-182 object
+// or a current type-185 JSON object. This view reports exact graph/object
+// identity candidates for 182 and exact JSON-content candidates for 185;
+// equal JSON does not establish shared object identity. Candidate order
+// follows Model::assets and duplicates are kept.
 struct MetadataProteinMaterialAssetCandidates {
   Reference attribute; // graph/object containing the type-200 attribute
-  Reference serialized_asset; // original graph-scoped type-185 target
-  std::vector<Id> assets; // exact JSON matches in Model::assets; may be empty
+  Reference serialized_asset; // original version-scoped target
+  MetadataProteinMaterialAssetMatchKind match_kind =
+      MetadataProteinMaterialAssetMatchKind::exact_json_content;
+  std::vector<Id> assets; // candidate indices in Model::assets; may be empty
   struct Owner {
     Reference object; // object whose attributes contain this material attribute
     Id attribute_ordinal = none;
@@ -2343,11 +2350,12 @@ struct MetadataProteinMaterialAssetCandidates {
   std::vector<Owner> owners; // one entry per direct attribute edge
 };
 // Batch-indexes core asset JSON once, then scans the metadata graphs. Returns
-// one record per non-null type-200 reference to a valid type-185 object.
-// Null references and pre-443 type-182 targets remain available in the raw
-// graph and are intentionally not guessed into Model::assets here. Direct
-// owner edges and all matching hierarchy path IDs are retained; instances
-// remain in Model.instances and refer to those paths without being copied.
+// one record per non-null type-200 reference to a valid version-scoped type-182
+// or type-185 object. Type 182 uses exact graph/object identity only when that
+// identity is also present in Asset::protein; type 185 uses exact JSON content.
+// Unmatched targets remain available in the raw graph. Direct owner edges and
+// matching hierarchy path IDs are retained; instances remain in Model.instances
+// and refer to those paths without being copied.
 std::vector<MetadataProteinMaterialAssetCandidates>
 metadata_protein_material_asset_candidates(const Model &);
 struct Timing {

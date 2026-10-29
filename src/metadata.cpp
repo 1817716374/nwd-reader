@@ -1660,9 +1660,17 @@ std::vector<MetadataProteinMaterialAssetCandidates>
 metadata_protein_material_asset_candidates(const Model &model) {
   std::unordered_map<std::string_view, std::vector<Id>> assets_by_json;
   assets_by_json.reserve(model.assets.size());
+  std::vector<std::unordered_map<Id, std::vector<Id>>> assets_by_graph_object(
+      model.graphs.size());
   for (Id asset = 0; asset < model.assets.size(); ++asset)
     if (!model.assets[asset].json.empty())
       assets_by_json[model.assets[asset].json].push_back(asset);
+    else if (model.assets[asset].protein &&
+             model.assets[asset].protein->graph < model.graphs.size() &&
+             model.assets[asset].protein->object != none)
+      assets_by_graph_object[model.assets[asset].protein->graph]
+          [model.assets[asset].protein->object]
+              .push_back(asset);
 
   std::vector<MetadataProteinMaterialAssetCandidates> result;
   std::vector<std::unordered_map<Id, size_t>> candidates_by_graph(
@@ -1679,15 +1687,26 @@ metadata_protein_material_asset_candidates(const Model &model) {
       if (reference->object >= target_graph.objects.size())
         continue;
       const auto &target = target_graph.objects[reference->object];
-      if (target.type != 185 || target.strings.empty())
-        continue;
-      const auto match = assets_by_json.find(
-          resolve_string(target_graph, target.strings.front()));
       MetadataProteinMaterialAssetCandidates candidates;
       candidates.attribute = {graph_id, object_id};
       candidates.serialized_asset = *reference;
-      if (match != assets_by_json.end())
-        candidates.assets = match->second;
+      if (target.type == 182) {
+        candidates.match_kind =
+            MetadataProteinMaterialAssetMatchKind::graph_object_identity;
+        const auto &graph_assets = assets_by_graph_object[reference->graph];
+        const auto match = graph_assets.find(reference->object);
+        if (match != graph_assets.end())
+          candidates.assets = match->second;
+      } else if (target.type == 185 && !target.strings.empty()) {
+        candidates.match_kind =
+            MetadataProteinMaterialAssetMatchKind::exact_json_content;
+        const auto match = assets_by_json.find(
+            resolve_string(target_graph, target.strings.front()));
+        if (match != assets_by_json.end())
+          candidates.assets = match->second;
+      } else {
+        continue;
+      }
       candidates_by_graph[graph_id].emplace(object_id, result.size());
       result.push_back(std::move(candidates));
     }

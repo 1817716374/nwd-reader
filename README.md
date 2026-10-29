@@ -250,7 +250,7 @@ cmake --build build-examples --config Release --parallel
 | `metadata_distant_light_fields(object)` | 以命名字段读取 12 项定向光数据：环境色、漫反射色、高光色和方向向量 |
 | `metadata_material_fields(object)` | 以命名字段读取 14 项扩展材质数据：四种颜色、光泽度和透明度 |
 | `metadata_protein_material_asset_reference(object)` | 读取 type 200 属性保存的 Protein 资产图引用，保留 graph/object 身份和空引用；不据此判定外观是否激活 |
-| `metadata_protein_material_asset_candidates(model)` | 批量查找 type 200 → type 185 资产 JSON 的精确内容候选，并返回直接属性拥有者及层级路径；重复资产全部保留，不推断对象身份 |
+| `metadata_protein_material_asset_candidates(model)` | 关联 type 200 的 type 182/185 资产引用、拥有者和层级路径；type 182 按精确图/对象身份匹配，type 185 返回全部精确 JSON 内容候选 |
 | `metadata_light_fields(object)` | 以命名字段读取已验证布局的点光源/聚光灯数值；原始 `Object::numbers` 仍保留 |
 | `path_reference()` / `resolve_object()` | 从结构路径定位对象，再沿属性引用访问数据 |
 | `triangle_indices()` / `attribute_value()` | 读取三角槽索引以及槽对应的法线、颜色或 UV |
