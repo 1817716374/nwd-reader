@@ -22,7 +22,7 @@
 - **数据库链接**：读取保存的 SQL、连接字符串、开关和字段映射，保留共享名称与原始编码字节。
 - **文件数据库**：在内存中读取 SQLite 表结构、行、列、原始单元格类型、外键和定义，不执行源视图或外部数据库查询。虚拟表的 DDL 和名称保留，未求值表会使对应产品块标记为部分解析；普通表及其 shadow tables 仍会读取。
 - **空间树**：读取原生空间层级及分片槽引用，保留父子结构并关联模型实例。
-- **旧式 Presenter**：读取 LightWorks 实体树、有类型的着色参数、编码图像、灯光、材质槽分配和纹理映射，保留归档内共享身份与路径关联。
+- **旧式 Presenter**：读取 LightWorks 实体树、有类型的着色参数、编码图像、灯光、材质槽分配和纹理映射；`Project::presenter_resources` 还会按归档/对象/字段身份返回文件名属性、绑定记录和对应资源字节，不猜测着色器角色。
 - **灯光与文档信息**：读取现代灯光资产、位置/目标点、图纸目录、默认图纸、发布字段、缓存配置、超链接、序列号和几何压缩参数。
 - **节点 GUID**：读取 GUID 仓库和独立 GUID 属性，将节点的原始索引关联到来源模型的仓库，支持根、内联分区和共享节点。
 - **文档辅助数据**：读取统计报告、节点覆盖、工具与图形设置。
@@ -133,9 +133,9 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `Geometry::external` 保存 loader、format、原始路径、Schema 属性、标志和边界。`null_strings` 区分三个源字符串的 NULL 状态。`payload_decoded` 仅表示描述字段已解码；`unparsed_payload` 保留原始载荷，即使字段已解码也不丢弃。共享描述及其属性按源对象复用。
 
-`RcsReader` 以只读内存映射读取 Autodesk RCS 点云。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`raw_auxiliary_tables(voxel)` 一次返回24张辅助表的零拷贝字节视图（每条记录为小端 u32，条目语义保留为不透明数据），`raw_umbrella_octree_levels()` 返回 chunk 3 的32层级、每条72字节的零拷贝记录视图，`raw_timestamps(voxel)` 返回 chunk 13 中与该 voxel 点序对齐的原始 double 字节，`timestamp(voxel, point)` 按需解码单个值；首个计数字段保留在 `index()`，是否匹配点总数也显式提供，时间单位和基准未推定。若 chunk 13 的 payload 短于逐点映射所需长度，`index()` 会报告实际与期望字节数；几何和其它 chunk 仍可读取，逐点时间戳访问会明确报错，原始 timestamp chunk 可通过 `raw_chunk()` 取得。chunk 11 的计数和 TLV 字段记录在 `index().other_data_fields` 中索引，`raw_other_data_payload(field)` 零拷贝返回各字段原始字节；`raw_other_data_chunk()` 可取得完整块，`other_data_value(field)` 按需返回识别出的 bool、float、int、double 或 256 字节分类位图。已识别的语义包括强度归一化、最大/最小强度、range-image 尺寸与角度范围、lidar classification 类型位图，以及代码301的陆地扫描分类列表状态（原生语义名 `hasClassificationListInTerrestrialScan`）。目标成员偏移来自 Freedom 2026 运行时，字段名称由原生符号交叉验证。`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。读取器接受 RCS 3.x（次版本不低于1）和 4.0 的版本标识；版本门控不等同于覆盖所有版本布局。`RcpReader` 以内存映射索引 RCP ZIP/ZIP64 成员，保留重复项、原始名字节和扩展字段；文件名和中央目录注释保留原始字节，并按 ZIP UTF-8 标志、CRC 校验的 Unicode Path/Comment 扩展和 CP437 回退解码为 UTF-8，stored/DEFLATE 按需解码并校验 CRC。`RcpXmlDocument` 有资源上限地保留项目 XML 的有序节点、属性和未知字段。`RcpProjectDocument` 投影项目、点云、Scan、ShotInfo、GroupInfo 和保存视点记录，并按精确且唯一的 ID 关联相应记录及保存视点内的扫描/默认区域可见状态及 Eye/Center/Up 原始坐标字符串；区域层投影保留原始 RGB 字符串与 SelectionBounds Min/Max 三轴字符串；视点 LimitBox 保留原始标志和有序 Vertex 坐标字符串；ClipManager 和视点裁剪保留 OperationFlag 原文；区域层投影保留原始 RGB 字符串与 SelectionBounds Min/Max 三轴字符串；视点 LimitBox 保留原始标志和有序 Vertex 坐标字符串；ClipManager 和视点裁剪保留 OperationFlag 原文；相机、裁剪和区域子树仍可通过 XML 节点检查，不推断坐标单位或旋转语义。`RcpProjectReader` 支持外部 RCS 路径重映射、搜索、加载及重复路径映射共享。见 [RCP 读取说明](docs/RCP.md) 和 [RCP 示例](examples/rcp.cpp)。RCS 示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
+`RcsReader` 以只读内存映射读取 Autodesk RCS 点云。`index()` 提供 chunk 和 voxel 描述；`raw_points(voxel)` 返回借用的 16 字节点记录视图，`raw_auxiliary_tables(voxel)` 一次返回24张辅助表的零拷贝字节视图（每条记录为小端 u32，条目语义保留为不透明数据），`raw_umbrella_octree_levels()` 返回 chunk 3 的32层级、每条72字节的零拷贝记录视图，`raw_timestamps(voxel)` 返回 chunk 13 中与该 voxel 点序对齐的原始 double 字节，`timestamp(voxel, point)` 按需解码单个值；首个计数字段保留在 `index()`，是否匹配点总数也显式提供，时间单位和基准未推定。若 chunk 13 的 payload 短于逐点映射所需长度，`index()` 会报告实际与期望字节数；几何和其它 chunk 仍可读取，严格的 `raw_timestamps()`/`timestamp()` 会明确报错，原始 timestamp chunk 可通过 `raw_chunk()` 取得。`native_raw_timestamps()`/`native_timestamp()` 则按体素点数步进读取；只有完整物理范围存在、没有覆盖其它 chunk 且正好终止于下一块时才开放，越过 chunk 13 的字节数单独报告。chunk 11 的计数和 TLV 字段记录在 `index().other_data_fields` 中索引，`raw_other_data_payload(field)` 零拷贝返回各字段原始字节；`raw_other_data_chunk()` 可取得完整块，`other_data_value(field)` 按需返回识别出的 bool、float、int、double 或 256 字节分类位图。已识别的语义包括强度归一化、最大/最小强度、range-image 尺寸与角度范围、lidar classification 类型位图，以及代码301的陆地扫描分类列表状态（原生语义名 `hasClassificationListInTerrestrialScan`）。目标成员偏移来自 Freedom 2026 运行时，字段名称由原生符号交叉验证。`point(voxel, index)` 解出坐标、四通道原始字节、分类及保留的原始属性字。`rgba` 保留文件字节顺序；`color_rgba()` 按 Freedom 原生输出顺序交换中间两字节。`rgba[3]` 同时是原生 intensity 输出启用时使用的原始强度字节，可通过 `raw_intensity()` 读取。`decode_rcs_normal(point.normal)` 按需把14位法线索引解为单位方向。坐标通过 `primary_bounds` 和保存的量化值返回，不生成渲染几何。读取器接受 RCS 3.x（次版本不低于1）和 4.0 的版本标识；版本门控不等同于覆盖所有版本布局。`RcpReader` 以内存映射索引 RCP ZIP/ZIP64 成员，保留重复项、原始名字节和扩展字段；文件名和中央目录注释保留原始字节，并按 ZIP UTF-8 标志、CRC 校验的 Unicode Path/Comment 扩展和 CP437 回退解码为 UTF-8，stored/DEFLATE 按需解码并校验 CRC。`RcpXmlDocument` 有资源上限地保留项目 XML 的有序节点、属性和未知字段。`RcpProjectDocument` 投影项目、点云、Scan、ShotInfo、GroupInfo 和保存视点记录，并按精确且唯一的 ID 关联相应记录及保存视点内的扫描/默认区域可见状态及 Eye/Center/Up 原始坐标字符串；区域层投影保留原始 RGB 字符串与 SelectionBounds Min/Max 三轴字符串；视点 LimitBox 保留原始标志和有序 Vertex 坐标字符串；ClipManager 和视点裁剪保留 OperationFlag 原文；相机、裁剪和区域子树仍可通过 XML 节点检查，不推断坐标单位或旋转语义。`RcpProjectReader` 支持外部 RCS 路径重映射、搜索、加载及重复路径映射共享。见 [RCP 读取说明](docs/RCP.md) 和 [RCP 示例](examples/rcp.cpp)。RCS 示例见 [examples/rcs_reader.cpp](examples/rcs_reader.cpp)。
 
-`RcsReader::raw_chunk(table_index)` 可按原始目录序号零拷贝取得任意完整 chunk，包括未知 chunk 和未解析尾随字节；相同 ID 的重复 chunk 仍可分别读取。chunk 13 的首个 32 位值按原样保留，Freedom 2026 原生解析器不使用它推算逐 voxel 时间范围；时间单位和纪元尚未确认。
+`RcsReader::raw_chunk(table_index)` 可按原始目录序号零拷贝取得任意完整 chunk，包括未知 chunk 和未解析尾随字节；相同 ID 的重复 chunk 仍可分别读取。chunk 13 的首个 32 位值按原样保留，该计数字段保留原值，不用于推算每个 voxel 的时间范围；时间单位和纪元尚未确认。
 
 `ExternalReferenceIndex(table)` 一次建立可复用的路径索引。`resolve()` 检查精确保存字节并保留重复项歧义；`resolve_read_path()` 执行 UTF-8 流的读取规则，返回拥有的 UTF-16 路径、末个同键表项及全部匹配编号。`query_path()` 查询已经转换的 UTF-16 路径。NULL、空路径和无效二进制编码分别保留状态，不做大小写或目录前缀归一化。使用借用视图期间，索引、源表和描述必须保持有效且不变。
 
@@ -930,6 +930,8 @@ for (const auto& path : locator.paths) {
 
 `PresenterData` 包含背景、材质槽、材质分配和纹理映射；`PresenterLights` 返回旧式灯光列表。实体的 `archive` 索引指向各自的 `archives`，同一个归档内用 `LightWorksObject.parent/first_child/next_sibling` 访问层级。`identity` 保留源编号，`reference` 指向同归档的已有对象，`null_reference` 区分显式空引用。不同归档不能按名称或数字ID合并。
 
+`load_project()` 配合 `ProjectOptions.reader.products = true` 时，`Project.presenter_resources` 投影 LightWorks 对象中 `name="file name"` 且包含字符串 `value` 的记录，并保留 source/model/block/entity/archive/object/field ID、原始与查找路径、关联的材料或纹理绑定记录以及资源引用状态。`load_textures=false` 时只解析引用，不读取字节；默认开启时，`bytes` 共享已读取的内嵌或外部文件数据。该记录表达序列化资源路径，不说明它在材质或着色器中的具体用途；单独 `read_products()` 仍可通过 `ProductData` 访问原始 Presenter 归档与选择器。
+
 `LightWorksField` 同时提供字段编号、源类型、名称和有类型的值。着色器返回类型名称和命名参数；图像返回编码字节、宽高、位深、行步长和codec字段；颜色、纹理坐标及灯光参数保留原值。未知字段名称为空，不能据此推定业务语义。旧式非LightWorks着色器通过 `LegacyShader` 返回参数。字符串数组使用 `vector<string>`，保留空字符串和内嵌 NUL；`LightWorksArchive.frame_count` 返回读取的分页数，跨页字段统一解码。`root_page/page_order` 返回起始页及逻辑读取顺序；`header_value` 保留尚未解释的头部值，`encoded_key` 保留旧式编码密钥。
 
 对已解析、非引用的 `LtImage` 对象，可按需调用 `decode_lightworks_image(object, max_bytes)`，取得宽高、位深和源像素字节。支持原始数据和 zlib 两种内置 codec，默认输出上限为 256 MiB；不做颜色转换。压缩字节及其他图像字段仍保留在源对象中。未知插件 codec 抛出异常，不猜测其图片格式。
@@ -966,7 +968,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
 - 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；可通过 `SavedItem.type == 58` 和 `selection.path_links` 访问碰撞选择路径。
 - NWD/NWC 保存项的显式 PathLink 支持分区绑定；NWF 保存项支持引用出现绑定及选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值。部分关键帧和产品配置分支缺少非空原生文件验证，未知子类型保留诊断。
-- 外部 `.rcs` 路径成功解析时，项目加载器通过 Schema 的唯一 `int32 index` 关联 RCS voxel；RCP 的 ZIP/XML、UTF-8/CP437 文件名解码、外部 RCS 加载及 Scan、ShotInfo、GroupInfo、保存视点 ID 关联已提供；其他 XML 字段语义、格式版本和坐标变换上下文仍有限制。
+- 外部 `.rcs` 路径成功解析时，项目加载器通过 Schema 的唯一 `int32 index` 关联 RCS voxel；RCP 的 ZIP/XML、外部 RCS 加载及 Scan、ShotInfo、GroupInfo、保存视点 ID 关联已提供；其他 XML 字段语义、格式版本和坐标变换上下文仍有限制。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置，以及跨文件部分 Appearance 的最终字段合成语义仍未完整支持；原始覆盖层和字段标志已保留。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
 - 纹理映射向量和方向枚举尚未全部赋予通用语义。

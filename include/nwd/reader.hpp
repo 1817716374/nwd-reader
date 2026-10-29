@@ -216,6 +216,7 @@ struct RcsVoxelDescriptor {
   uint64_t record_offset = 0; // file offset
   uint64_t point_data_offset = 0; // file offset of 16-byte raw points
   uint64_t timestamp_data_offset = 0; // file offset of point-aligned doubles
+  uint64_t native_timestamp_data_offset = 0; // native point-count-strided view
 };
 enum class RcsOtherDataValueKind : uint8_t {
   opaque,
@@ -284,6 +285,8 @@ struct RcsFileIndex {
   uint64_t timestamp_payload_bytes = 0; // available after the chunk header
   uint64_t timestamp_expected_bytes = 0; // sum(point_count * sizeof(double))
   bool timestamp_values_complete = false;
+  bool timestamp_native_values_available = false;
+  uint64_t timestamp_native_bytes_outside_chunk = 0;
   bool has_other_data_chunk = false;
   int32_t other_data_count = 0; // raw chunk header, signed natively
   uint64_t other_data_records_end_offset = 0;
@@ -329,6 +332,13 @@ public:
   // available through raw_chunk().
   std::span<const uint8_t> raw_timestamps(uint32_t voxel_index) const;
   double timestamp(uint32_t voxel_index, uint32_t point_index) const;
+  // Complete point-count-strided timestamp spans from the saved payload.
+  // These can extend beyond chunk 13 only when the complete native span is
+  // physically present before the next chunk; the declared chunk size remains
+  // separately visible in RcsFileIndex and raw_chunk().
+  std::span<const uint8_t>
+  native_raw_timestamps(uint32_t voxel_index) const;
+  double native_timestamp(uint32_t voxel_index, uint32_t point_index) const;
   // Borrowed chunk 11 bytes and field payloads. Unknown data remains raw.
   std::span<const uint8_t> raw_other_data_chunk() const;
   std::span<const uint8_t>
@@ -3781,6 +3791,27 @@ struct TextureFile {
       protein_uri;          // graph selected by source/model/asset
   bool enabled_path = true; // structural reachability, not shader evaluation
 };
+enum class PresenterResourceOwnerKind : uint8_t {
+  background,
+  material,
+  texture_binding,
+  light
+};
+// A serialized LightWorks parameter named "file name". This preserves the
+// source object/field identity and does not assign a shader role to the file.
+struct PresenterResourceReference {
+  Id source = none, model = none, block = none, entity = none;
+  Id archive = none, object = none;
+  PresenterResourceOwnerKind owner_kind = PresenterResourceOwnerKind::material;
+  // Indices in PresenterData.material_bindings or texture_bindings. A material
+  // can be selected by more than one binding; background/lights have none.
+  std::vector<Id> binding_records;
+  uint32_t object_type = 0, name_field = none, value_field = none;
+  std::string property_name, raw_path, lookup_path, status;
+  std::shared_ptr<const ProjectFileReference> reference;
+  std::shared_ptr<const std::vector<uint8_t>>
+      bytes; // shared embedded/external bytes when texture loading is enabled
+};
 struct Project {
   std::vector<ProjectSource> sources; // each canonical file parsed once
   std::vector<ProjectNode> nodes; // each reference occurrence stays distinct
@@ -3797,6 +3828,8 @@ struct Project {
   std::vector<TextureSpaceAssignment> texture_space_assignments;
   std::vector<ProductBinding> product_bindings; // NWF product selectors
   std::vector<TextureFile> textures;
+  // Raw Presenter file-name properties with archive/object/field provenance.
+  std::vector<PresenterResourceReference> presenter_resources;
   // One per unique geometry record, not per instance. File resolution does not
   // imply decoding of external point-cloud/mesh plugin formats.
   std::vector<ExternalGeometryFile> external_geometry_files;
@@ -3809,7 +3842,7 @@ struct Project {
 const SavedPathBinding *saved_path_binding(const Project &, Id owner, Id block,
                                            Id path_link);
 Project load_project(const std::filesystem::path &, ProjectOptions = {});
-std::array<double, 16> model_base_matrix(const Model &);
+  std::array<double, 16> model_base_matrix(const Model &);
 std::array<double, 16> nwf_transform_matrix(const NwfTransformOverride &);
 // Replaces the stored base transform in metric space, including validated
 // NWF input/output unit overrides. Singular source bases still throw when a

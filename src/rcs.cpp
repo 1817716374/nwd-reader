@@ -343,11 +343,53 @@ RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
     result.timestamp_payload_bytes = timestamp_chunk->size - 4;
     result.timestamp_values_complete =
         result.timestamp_payload_bytes >= result.timestamp_expected_bytes;
-    if (result.timestamp_values_complete) {
-      uint64_t timestamp_offset = timestamp_chunk->offset + 4;
+    result.timestamp_native_values_available =
+        result.timestamp_values_complete;
+    const uint64_t timestamp_data_start = timestamp_chunk->offset + 4;
+    if (!result.timestamp_values_complete) {
+      const uint64_t missing_bytes =
+          result.timestamp_expected_bytes - result.timestamp_payload_bytes;
+      const uint64_t chunk_end =
+          timestamp_chunk->offset + timestamp_chunk->size;
+      const bool no_overflow =
+          timestamp_chunk->offset <=
+          std::numeric_limits<uint64_t>::max() - 4 -
+              result.timestamp_expected_bytes;
+      if (no_overflow) {
+        const uint64_t native_end =
+            timestamp_data_start + result.timestamp_expected_bytes;
+        bool overlaps_native_tail = false;
+        uint64_t next_chunk_offset = std::numeric_limits<uint64_t>::max();
+        for (const auto &chunk : result.chunks) {
+          if (&chunk == timestamp_chunk)
+            continue;
+          const uint64_t chunk_end_candidate = chunk.offset + chunk.size;
+          if (chunk.offset >= chunk_end)
+            next_chunk_offset = std::min(next_chunk_offset, chunk.offset);
+          else if (chunk_end_candidate > chunk_end &&
+                   chunk.offset < native_end)
+            overlaps_native_tail = true;
+        }
+        if (!overlaps_native_tail && next_chunk_offset == native_end &&
+            native_end <= file.size()) {
+          range(file, timestamp_data_start, result.timestamp_expected_bytes,
+                "native timestamp values");
+          result.timestamp_native_values_available = true;
+          result.timestamp_native_bytes_outside_chunk = missing_bytes;
+        }
+      }
+    }
+    if (result.timestamp_native_values_available) {
+      uint64_t native_timestamp_offset = timestamp_data_start;
+      uint64_t timestamp_offset = timestamp_data_start;
       for (auto &voxel : result.voxels) {
-        voxel.timestamp_data_offset = timestamp_offset;
-        timestamp_offset += uint64_t(voxel.point_count) * sizeof(double);
+        voxel.native_timestamp_data_offset = native_timestamp_offset;
+        if (result.timestamp_values_complete)
+          voxel.timestamp_data_offset = timestamp_offset;
+        const uint64_t voxel_bytes =
+            uint64_t(voxel.point_count) * sizeof(double);
+        native_timestamp_offset += voxel_bytes;
+        timestamp_offset += voxel_bytes;
       }
     }
   }
@@ -562,6 +604,38 @@ double RcsReader::timestamp(uint32_t voxel_index,
   if (point_index >= voxel.point_count)
     throw Error("RCS timestamp point index outside voxel");
   const uint64_t offset = voxel.timestamp_data_offset +
+                          uint64_t(point_index) * sizeof(double);
+  return f64({impl_->data, impl_->size}, offset);
+}
+
+std::span<const uint8_t>
+RcsReader::native_raw_timestamps(uint32_t voxel_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  if (!impl_->index.has_timestamp_chunk)
+    return {};
+  if (!impl_->index.timestamp_native_values_available)
+    throw Error("RCS native timestamp span is unavailable");
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  const uint64_t size = uint64_t(voxel.point_count) * sizeof(double);
+  range({impl_->data, impl_->size}, voxel.native_timestamp_data_offset, size,
+        "native voxel timestamps");
+  return {impl_->data + voxel.native_timestamp_data_offset,
+          static_cast<size_t>(size)};
+}
+
+double RcsReader::native_timestamp(uint32_t voxel_index,
+                                   uint32_t point_index) const {
+  if (voxel_index >= impl_->index.voxels.size())
+    throw Error("RCS voxel index outside descriptor table");
+  if (!impl_->index.has_timestamp_chunk)
+    throw Error("RCS timestamp chunk is absent");
+  if (!impl_->index.timestamp_native_values_available)
+    throw Error("RCS native timestamp span is unavailable");
+  const auto &voxel = impl_->index.voxels[voxel_index];
+  if (point_index >= voxel.point_count)
+    throw Error("RCS timestamp point index outside voxel");
+  const uint64_t offset = voxel.native_timestamp_data_offset +
                           uint64_t(point_index) * sizeof(double);
   return f64({impl_->data, impl_->size}, offset);
 }

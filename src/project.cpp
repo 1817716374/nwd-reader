@@ -1071,6 +1071,121 @@ class Loader {
     }
     bind(node, out.nodes.size());
   }
+  void presenter_resources() {
+    auto collect = [&](Id sid, Id block, Id model_id,
+                       const std::vector<LightWorksArchive> &archives,
+                       PresenterResourceOwnerKind owner_kind, Id entity_id,
+                       Id archive_id, std::vector<Id> binding_records) {
+      if (archive_id == none)
+        return;
+      require(archive_id < archives.size(),
+              "Presenter resource archive outside product block");
+      const auto &archive = archives[archive_id];
+      for (Id object_id = 0; object_id < archive.objects.size(); ++object_id) {
+        const auto &object = archive.objects[object_id];
+        for (Id name_index = 0; name_index < object.fields.size();
+             ++name_index) {
+          const auto &name_field = object.fields[name_index];
+          const auto *property_name =
+              std::get_if<std::string>(&name_field.value);
+          if (name_field.name != "name" || !property_name ||
+              *property_name != "file name")
+            continue;
+          for (Id value_index = 0; value_index < object.fields.size();
+               ++value_index) {
+            const auto &value_field = object.fields[value_index];
+            const auto *raw_path =
+                std::get_if<std::string>(&value_field.value);
+            if (value_field.name != "value" || !raw_path)
+              continue;
+            require(out.presenter_resources.size() < options.reader.max_objects,
+                    "Presenter resource record limit");
+            PresenterResourceReference result;
+            result.source = sid;
+            result.model = model_id;
+            result.block = block;
+            result.entity = entity_id;
+            result.archive = archive_id;
+            result.object = object_id;
+            result.owner_kind = owner_kind;
+            result.binding_records = binding_records;
+            result.object_type = object.type;
+            result.name_field = name_field.id;
+            result.value_field = value_field.id;
+            result.property_name = *property_name;
+            result.raw_path = *raw_path;
+            result.lookup_path = result.raw_path;
+            // This exact legacy spelling is present in the 2014 Presenter
+            // sample; its resource-directory identity omits the ".#" marker.
+            if (result.lookup_path.starts_with("nwd:.#"))
+              result.lookup_path.replace(0, 6, "nwd:");
+            result.reference = file_reference(sid, result.lookup_path, 2);
+            result.status = result.reference->status;
+            if (options.load_textures) {
+              try {
+                result.bytes = reference_bytes(*result.reference);
+              } catch (const std::exception &e) {
+                result.status = "resource_read_error";
+                out.warnings.push_back(
+                    "Presenter resource read failed: " + result.raw_path +
+                    ": " + e.what());
+              }
+            }
+            out.presenter_resources.push_back(std::move(result));
+          }
+        }
+      }
+    };
+    for (Id sid = 0; sid < out.sources.size(); ++sid) {
+      const auto &source = out.sources[sid];
+      if (!source.products)
+        continue;
+      for (Id block_id = 0; block_id < source.products->blocks.size();
+           ++block_id) {
+        const auto &block = source.products->blocks[block_id];
+        if (block.status == ProductStatus::failed ||
+            block.status == ProductStatus::not_handled)
+          continue;
+        if (const auto *presenter = std::get_if<PresenterData>(&block.value)) {
+          collect(sid, block_id, presenter->model, presenter->archives,
+                  PresenterResourceOwnerKind::background, none,
+                  presenter->background.archive, {});
+          std::vector<std::vector<Id>> material_bindings(
+              presenter->materials.size());
+          for (Id binding = 0; binding < presenter->material_bindings.size();
+               ++binding) {
+            const auto material = presenter->material_bindings[binding].material;
+            if (material < material_bindings.size())
+              material_bindings[material].push_back(binding);
+          }
+          for (Id material_id = 0; material_id < presenter->materials.size();
+               ++material_id) {
+            const auto &material = presenter->materials[material_id];
+            collect(sid, block_id, presenter->model, presenter->archives,
+                    PresenterResourceOwnerKind::material, material_id,
+                    material.archive, std::move(material_bindings[material_id]));
+          }
+          for (Id texture_id = 0;
+               texture_id < presenter->texture_bindings.size(); ++texture_id) {
+            const auto &binding = presenter->texture_bindings[texture_id];
+            if (!binding.entity)
+              continue;
+            collect(sid, block_id, presenter->model, presenter->archives,
+                    PresenterResourceOwnerKind::texture_binding, texture_id,
+                    binding.entity->archive, {texture_id});
+          }
+        } else if (const auto *lights =
+                       std::get_if<PresenterLights>(&block.value)) {
+          for (Id light_id = 0; light_id < lights->lights.size(); ++light_id) {
+            const auto &light = lights->lights[light_id];
+            collect(sid, block_id, none, lights->archives,
+                    PresenterResourceOwnerKind::light, light_id, light.archive,
+                    {});
+          }
+        }
+      }
+    }
+  }
   void textures() {
     using AssetKey = std::tuple<Id, Id, Id>;
     std::set<AssetKey> active_assets;
@@ -1289,6 +1404,8 @@ public:
     visit(f, 0, 0);
     if (options.resolve_external_geometry)
       external_files();
+    if (options.reader.products)
+      presenter_resources();
     if (options.load_textures)
       textures();
     for (const auto &[key, layers] : overrides) {

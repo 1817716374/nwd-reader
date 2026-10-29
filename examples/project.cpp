@@ -21,6 +21,7 @@ static int run(const std::filesystem::path &file) {
   try {
     nwd::ProjectOptions options;
     options.reader.threads = 8;
+    options.reader.products = true;
     // options.search_paths.push_back(texture_directory);
     // options.remaps.emplace_back(original_name, local_file);
     auto project = nwd::load_project(file, options);
@@ -93,6 +94,11 @@ static int run(const std::filesystem::path &file) {
                   << t.enabled_path;
       std::cout << '\n';
     }
+    for (const auto &r : project.presenter_resources)
+      std::cout << "Presenter " << r.source << '/' << r.block << '/'
+                << r.archive << '/' << r.object << " " << r.property_name
+                << " = " << r.raw_path << " (" << r.status << ", "
+                << (r.bytes ? r.bytes->size() : 0) << " bytes)\n";
     for (const auto &g : project.external_geometry_files) {
       std::cout << "external source/model/geometry " << g.source << '/'
                 << g.model << '/' << g.geometry << ": " << g.reference->status
