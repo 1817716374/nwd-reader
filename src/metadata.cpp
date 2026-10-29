@@ -1637,8 +1637,8 @@ metadata_light_fields(const Object &object) noexcept {
     copy3(12, result.attenuation);
     result.radius_of_influence = v[15];
     copy3(16, result.direction.emplace());
-    result.cutoff_angle = v[19];
-    result.drop_off_rate = v[20];
+    result.drop_off_rate = v[19];
+    result.cutoff_angle = v[20];
   }
   return result;
 }
