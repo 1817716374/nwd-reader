@@ -113,11 +113,16 @@ struct EmbeddedAssetFile {
   std::vector<uint8_t> bytes;
 };
 // Inline spatial records from partition object types 1/2, wire version 28+.
-// Tags 1/4 retain the raw stream-context table index; it is not assumed to be
-// a graph object ID. Child links index ObjectGraph::spatial_child_edges.
+// Tags 1/4 carry a Nat32 indexing a root-partition fragment slot for accepted
+// records; keep the wire value unchanged. It is distinct from GraphReader IDs.
+// Child links index ObjectGraph::spatial_child_edges.
 struct SpatialChildOccurrence {
   uint32_t tag = 0;
   std::optional<uint32_t> stream_table_index;
+  // Proven by native fragment write/read order; empty for non-reference tags.
+  std::optional<uint32_t> partition_fragment_slot() const noexcept {
+    return stream_table_index;
+  }
   uint32_t first_child = 0, child_count = 0;
 };
 struct SpatialChildList {

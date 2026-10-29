@@ -173,7 +173,8 @@ void bind_inline_partition(Model &model, const Options &options) {
     index->spatial_roots.push_back({partition.owner, occurrence});
   }
   // Commit only after both domains validate; raw graphs and shared payloads
-  // are retained. Spatial occurrences are not guessed to be fragment slots.
+  // are retained. Type-1/4 stream IDs denote partition fragment slots; this
+  // projection still does not invent links from those slots to Model.instances.
   model.paths = std::move(paths);
   model.hierarchy_graph = 0;
   model.inline_partition = std::move(index);
