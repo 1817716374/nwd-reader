@@ -3378,6 +3378,9 @@ struct LightWorksArchive {
   uint32_t header_value = none, root_page = 0;
   std::vector<uint8_t> encoded_key; // encoding0 key bytes, before restoration
   std::vector<Id> page_order;       // logical traversal of physical pages
+  bool complete = true;
+  std::string diagnostic; // first unsupported object/layout in this archive
+  std::vector<uint8_t> unparsed_object_stream; // decoded bytes from that object onward
 };
 struct LightWorksImage {
   uint32_t width = 0, height = 0, bits_per_pixel = 0;
