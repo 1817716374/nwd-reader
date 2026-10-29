@@ -968,6 +968,8 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 
 对于版本64之前的 NWF 引用，`NwfReference::legacy_override_patch` 保留原始 values/mask。`load_project()` 会按引用出现保留该 patch；当引用已解析到单一场景模型且根对象为 type32 分区时，`ProjectNode::legacy_effective_root_original_overrides` 提供合并后的根节点值。目标未解析或根状态不可用时该字段为空；解析器不会修改共享模型或把根覆盖扩展到后代。各 bit 的业务含义仍由调用方按目标版本解释。
 
+`metadata_material_fields()` 返回 `LcOaExMaterial` 的四组颜色、shininess 和 transparency 原始值。Freedom 2013 与 Manage 2026 的原生材质路径会将颜色转为 float；shininess 在运行时夹取至 `[1e-5, 1.0]`，transparency 不高于 `0.1` 时运行时值为零。解析器仍保留文件中的原始数值；颜色空间和最终显示行为由调用方按目标环境处理。
+
 以下内容仍存在限制：
 
 - 碰撞自定义字段/状态、动画脚本/事件/动作仍未完整读取。
