@@ -2961,6 +2961,12 @@ struct CachePlugin {
   bool has_options = false;
   CacheOption options; // root option set; unnamed
 };
+enum class NwfCacheFormat : uint8_t {
+  none,
+  legacy_xrefs,
+  nw5_validation,
+  plugin_options
+};
 struct NwfReference {
   std::string name, original_path, partition, display_name, plugin, extra;
   std::array<uint8_t, 16> source_guid{}, reference_guid{};
@@ -2976,9 +2982,10 @@ struct NwfReference {
   std::vector<CachedReference> cached_files;
   std::vector<CachePlugin> cache_plugins; // primary plugin first
   std::vector<CacheOption> cache_options;
-  // Before save version92 cache validation used LcOpSceneValidData's NW5
-  // layout. Keep its source fields and ordered values separate from modern
-  // plugin option sets; old option names come from the installed plugin.
+  NwfCacheFormat cache_format = NwfCacheFormat::none;
+  // NW5 validation fields are present only for cache_format::nw5_validation:
+  // plugin/version, synthetic collapse enum and ordered values whose names
+  // normally come from the installed plugin schema.
   bool legacy_cache_encoding = false;
   std::string cache_validation_plugin;
   int32_t cache_validation_version = -1, legacy_option_value_count = 0;

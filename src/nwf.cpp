@@ -99,39 +99,46 @@ void detail::read_cache_data(Cursor &r, std::vector<CachePlugin> &cache_plugins,
     cache_options.push_back(std::move(o));
   }
 }
-static void read_legacy_cache_data(Cursor &r, NwfReference &reference,
-                                   ObjectReader &object_reader,
-                                   uint32_t version, const Options &options,
-                                   uint64_t &budget) {
-  reference.legacy_cache_encoding = true;
-  reference.cache_validation_plugin = r.string();
-  reference.cache_validation_version = r.read<int32_t>();
-  if (version >= 72)
-    reference.collapse_type = r.read<int32_t>();
-
-  auto count = [&]() {
-    const auto n = r.u32();
-    require(n <= std::min<uint64_t>(1000000, options.max_objects),
-            "legacy NWF cache count limit");
-    return n;
-  };
-  const auto xref_count = count();
+static void read_legacy_xrefs(Cursor &r,
+                              std::vector<CachedReference> &cached_files,
+                              uint32_t version, const Options &options,
+                              uint64_t &budget, bool skip_null_names) {
+  const auto xref_count = r.u32();
+  require(xref_count <= std::min<uint64_t>(1000000, options.max_objects),
+          "legacy NWF cache count limit");
   require(xref_count <= budget, "legacy NWF cache resource limit");
   budget -= xref_count;
-  reference.cached_files.reserve(xref_count);
+  cached_files.reserve(cached_files.size() + xref_count);
   for (uint32_t i = 0; i < xref_count; ++i) {
     CachedReference file;
     file.name = r.string(&file.name_is_null);
-    // The native reader counts null names but does not construct an xref.
-    if (file.name_is_null)
+    // NW5 validation counts null names but does not construct an xref. The
+    // preceding xref-only encoding still reads the full xref object.
+    if (skip_null_names && file.name_is_null)
       continue;
     file.path = r.string(&file.path_is_null);
     if (version >= 62 && !file.path_is_null) {
       file.timestamp = r.u64();
       file.size = r.u64();
     }
-    reference.cached_files.push_back(std::move(file));
+    cached_files.push_back(std::move(file));
   }
+}
+
+static void read_legacy_cache_data(Cursor &r, NwfReference &reference,
+                                   ObjectReader &object_reader,
+                                   uint32_t version, const Options &options,
+                                   uint64_t &budget) {
+  reference.legacy_cache_encoding = true;
+  reference.cache_format = NwfCacheFormat::nw5_validation;
+  reference.cache_validation_plugin = r.string();
+  reference.cache_validation_version = r.read<int32_t>();
+  if (version >= 72)
+    reference.collapse_type = r.read<int32_t>();
+
+  // SceneSet calls NW5 only from version72. That branch is count-bounded and
+  // null names consume a slot without constructing an xref.
+  read_legacy_xrefs(r, reference.cached_files, version, options, budget, true);
 
   reference.legacy_option_value_count = r.read<int32_t>();
   if (reference.legacy_option_value_count <= 0)
@@ -153,7 +160,7 @@ void detail::read_source_references(Cursor &r,
                                     std::vector<NwfReference> &references,
                                     ObjectReader &object_reader,
                                     uint32_t version, const Options &options) {
-  require(version >= 72 && version <= 450,
+  require(version >= 63 && version <= 450,
           "source-reference version not yet validated");
   auto count = [&]() {
     auto n = r.u32();
@@ -188,11 +195,17 @@ void detail::read_source_references(Cursor &r,
       x.extra_enum = r.u32();
       x.extra = r.string();
     }
-    if (version < 92)
+    if (version < 72) {
+      x.legacy_cache_encoding = true;
+      x.cache_format = NwfCacheFormat::legacy_xrefs;
+      read_legacy_xrefs(r, x.cached_files, version, options, budget, false);
+    } else if (version < 92)
       read_legacy_cache_data(r, x, object_reader, version, options, budget);
-    else
+    else {
+      x.cache_format = NwfCacheFormat::plugin_options;
       read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
                       object_reader, options, budget);
+    }
     if (version >= 109)
       x.front = vector3(r);
     if (version >= 246)
@@ -202,7 +215,7 @@ void detail::read_source_references(Cursor &r,
 }
 NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version,
                              Options options) {
-  require(version >= 72 && version <= 448,
+  require(version >= 63 && version <= 448,
           "NWF scene-set version not yet validated");
   Cursor r(bytes, "NWF scene set");
   NwfData out;
