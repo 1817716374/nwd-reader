@@ -93,9 +93,10 @@ struct Object {
 };
 // Static registered names for metadata object types whose class identity has
 // been verified against native registration tables. Without a version, only
-// names confirmed across generations are returned. Version 103 selects the
-// complete Freedom 2013 table. An empty view means the name is unverified for
-// that version; it does not imply that the payload is unsupported or absent.
+// names confirmed across generations are returned. Versions 103, 431 and 448
+// select the complete 0..44 table verified in the corresponding native
+// registrations. An empty view means the name is unverified for that version;
+// it does not imply that the payload is unsupported or absent.
 std::string_view metadata_type_name(uint32_t type,
                                     uint32_t container_version = 0) noexcept;
 // Named numeric fields from native LcOaPointLight/LcOaSpotLight payloads.

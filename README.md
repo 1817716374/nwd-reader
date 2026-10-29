@@ -246,7 +246,7 @@ cmake --build build-examples --config Release --parallel
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
 | `Project.sources` / `Project.nodes` | 共享源文件与独立引用出现构成的文件树 |
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
-| `metadata_type_name(type, version)` | 查询已验证的元数据类名；版本 103 提供 Freedom 2013 的类名表，省略版本时只返回跨代际确认的名称 |
+| `metadata_type_name(type, version)` | 查询已验证的元数据类名；版本 103、431、448 提供对应的类名表，省略版本时只返回跨代际确认的名称 |
 | `metadata_light_fields(object)` | 以命名字段读取已验证布局的点光源/聚光灯数值；原始 `Object::numbers` 仍保留 |
 | `path_reference()` / `resolve_object()` | 从结构路径定位对象，再沿属性引用访问数据 |
 | `triangle_indices()` / `attribute_value()` | 读取三角槽索引以及槽对应的法线、颜色或 UV |
