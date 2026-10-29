@@ -2967,12 +2967,21 @@ enum class NwfCacheFormat : uint8_t {
   nw5_validation,
   plugin_options
 };
+struct NwfLegacyOverridePatch {
+  uint32_t values = 0, mask = 0; // exact serialized words, in wire order
+  // Apply the 2017 SceneRef rule to a target node's native original-overrides
+  // word. That reader clears bit2 from both serialized words first.
+  constexpr uint32_t apply_to_original(uint32_t original) const noexcept {
+    const auto native_mask = mask & ~uint32_t{4};
+    const auto native_values = values & ~uint32_t{4};
+    return (original & ~native_mask) | (native_values & native_mask);
+  }
+};
 struct NwfReference {
   std::string name, original_path, partition, display_name, plugin, extra;
   std::array<uint8_t, 16> source_guid{}, reference_guid{};
-  // Two serialized bitfields present before save version64. Their meaning is
-  // not yet identified; retain the exact wire words for downstream callers.
-  std::optional<std::array<uint32_t, 2>> pre64_bitfields;
+  // Legacy reference override patch, serialized only before version64.
+  std::optional<NwfLegacyOverridePatch> legacy_override_patch;
   // load_flags: bit0 replaces source units; bit1 replaces the base transform;
   // bit2 replaces up/north/front vectors. Before version244 these are all set.
   // The orientation_flag below is a separate transform execution hint.

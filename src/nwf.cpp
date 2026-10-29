@@ -183,7 +183,7 @@ void detail::read_source_references(Cursor &r,
     }
     x.plugin = r.string();
     if (version < 64) {
-      x.pre64_bitfields = std::array<uint32_t, 2>{r.u32(), r.u32()};
+      x.legacy_override_patch = NwfLegacyOverridePatch{r.u32(), r.u32()};
     }
     x.flags = r.u32();
     x.load_flags = version >= 244 ? r.u32() : 7;
