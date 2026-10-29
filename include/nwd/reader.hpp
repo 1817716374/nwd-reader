@@ -112,6 +112,18 @@ struct EmbeddedAssetFile {
   std::string name, prefix, suffix;
   std::vector<uint8_t> bytes;
 };
+// Inline spatial records from partition object types 1/2, wire version 28+.
+// Tags 1/4 retain the raw stream-context table index; it is not assumed to be
+// a graph object ID. Child links index ObjectGraph::spatial_child_edges.
+struct SpatialChildOccurrence {
+  uint32_t tag = 0;
+  std::optional<uint32_t> stream_table_index;
+  uint32_t first_child = 0, child_count = 0;
+};
+struct SpatialChildList {
+  Id owner = none; // owning graph object, type 1 or 2
+  uint32_t first_child = 0, child_count = 0;
+};
 struct AnimationObject;
 struct LegacyNodeRecord {
   Id owner = none;
@@ -142,6 +154,9 @@ struct ObjectGraph {
   std::vector<Id> roots;
   std::vector<EmbeddedAssetFile>
       embedded_files; // sparse arena, no per-object overhead
+  std::vector<SpatialChildOccurrence> spatial_children;
+  std::vector<Id> spatial_child_edges; // indices into spatial_children
+  std::vector<SpatialChildList> spatial_child_lists; // sparse per-object roots
   std::vector<AnimationObject> animation_objects; // sparse, ordered by owner ID
   std::vector<LegacyPartitionRecord> legacy_partitions; // associate by owner ID
   std::shared_ptr<GeometryObjectArena>

@@ -20,6 +20,7 @@ class GraphReader {
   std::vector<std::pair<uint32_t, Id>> *wire_objects = nullptr;
   std::unordered_map<std::string, Id> strings;
   unsigned depth = 0;
+  size_t spatial_nodes = 0;
   GeometryObjectArena &geometry_arena() {
     if (!geometry_context)
       throw UnsupportedLayout(
@@ -400,6 +401,74 @@ class GraphReader {
     graph.animation_objects[slot] = std::move(out);
   }
 
+  Id spatial_child(uint32_t mode) {
+    require(++depth < 512, "spatial child recursion limit");
+    struct Guard {
+      unsigned &d;
+      ~Guard() { --d; }
+    } guard{depth};
+    require(version >= 28, "tagged spatial children before version28");
+    const uint32_t tag = r.u32(); // native ReadEnum
+    if (tag > 5)
+      r.fail("unsupported tagged spatial child " + std::to_string(tag));
+    if (tag == 0)
+      return none;
+    if (tag == 3 && mode == 3)
+      r.fail("static spatial group forbidden in recursive mode3");
+    if ((tag == 4 || tag == 5) && version < 77)
+      r.fail("single/dynamic spatial child before version77");
+    require(spatial_nodes < options.max_objects &&
+                graph.spatial_children.size() < none,
+            "spatial child resource limit");
+    const Id id = static_cast<Id>(graph.spatial_children.size());
+    graph.spatial_children.push_back({});
+    graph.spatial_children[id].tag = tag;
+    if (tag == 1 || tag == 4) {
+      // The native reader indexes stream-context +0x170 with this Nat32.
+      // Preserve the ordinal; it is not proven identical to a GraphReader ID.
+      graph.spatial_children[id].stream_table_index = r.u32();
+      ++spatial_nodes;
+      return id;
+    }
+    if (tag == 2 || tag == 3 || tag == 5) {
+      const uint32_t n = count();
+      if (tag == 5)
+        require(n <= 7, "dynamic spatial group child count");
+      require(uint64_t(graph.spatial_child_edges.size()) + n <=
+                  options.max_objects &&
+                  uint64_t(graph.spatial_child_edges.size()) + n <= none,
+              "spatial child edge resource limit");
+      const auto first = static_cast<uint32_t>(graph.spatial_child_edges.size());
+      graph.spatial_child_edges.resize(size_t(first) + n, none);
+      graph.spatial_children[id].first_child = first;
+      graph.spatial_children[id].child_count = n;
+      ++spatial_nodes;
+      for (uint32_t i = 0; i < n; ++i) {
+        const Id child = spatial_child(tag == 5 ? 3u : 5u);
+        require(child != none, "null tagged spatial child in child list");
+        graph.spatial_child_edges[first + i] = child;
+      }
+      return id;
+    }
+    r.fail("invalid tagged spatial child");
+  }
+
+  void spatial_child_list(Id owner) {
+    const uint32_t n = count(); // native ReadArraySize32
+    require(uint64_t(graph.spatial_child_edges.size()) + n <=
+                options.max_objects &&
+                uint64_t(graph.spatial_child_edges.size()) + n <= none,
+            "spatial child edge resource limit");
+    const auto first = static_cast<uint32_t>(graph.spatial_child_edges.size());
+    graph.spatial_child_edges.resize(size_t(first) + n, none);
+    for (uint32_t i = 0; i < n; ++i) {
+      const Id child = spatial_child(5);
+      require(child != none, "null spatial child in static node");
+      graph.spatial_child_edges[first + i] = child;
+    }
+    graph.spatial_child_lists.push_back({owner, first, n});
+  }
+
 public:
   GraphReader(std::span<const uint8_t> b, ObjectGraph &g, Id gid, uint32_t ver,
               const Options &op, bool root = false,
@@ -732,16 +801,19 @@ public:
     case 1:
     case 2: {
       if (version >= 28)
-        throw UnsupportedLayout("tagged spatial children from version28");
-      auto n = count();
-      o.children.reserve(n);
-      for (uint32_t j = 0; j < n; ++j) {
-        auto child = object();
-        require(child != none, "null legacy spatial child");
-        const auto type = graph.objects[child].type;
-        require(o.type == 2 ? type == 13 : type == 1 || type == 2 || type == 13,
-                "legacy spatial child type");
-        o.children.push_back(child);
+        spatial_child_list(index);
+      else {
+        auto n = count();
+        o.children.reserve(n);
+        for (uint32_t j = 0; j < n; ++j) {
+          auto child = object();
+          require(child != none, "null legacy spatial child");
+          const auto type = graph.objects[child].type;
+          require(o.type == 2 ? type == 13
+                              : type == 1 || type == 2 || type == 13,
+                  "legacy spatial child type");
+          o.children.push_back(child);
+        }
       }
       break;
     }

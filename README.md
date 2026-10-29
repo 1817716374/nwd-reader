@@ -119,6 +119,8 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `Model::inline_projection` 将分区图内的 `owner` 映射到对应 Model 表的 `value`。每个成功绑定的形状对象生成一个实例，重复空间引用不扩增实例；未绑定形状的映射值是 `nwd::none`。`inline_partition` 保存逻辑路径候选、形状绑定状态和独立的空间出现树。逻辑路径编号、空间出现编号和来源对象编号属于不同的索引空间。访问结构树请使用 `path_reference()`、`path_object()` 和 `ModelIndex`，不要固定假设所有节点都位于 `graphs[1]`。
 
+分区图中出现 wire 版本28起的静态空间类型1/2时，`ObjectGraph::spatial_child_lists`、`spatial_children` 和 `spatial_child_edges` 保留标签化的嵌套出现树；这与上面的运行时实例投影及逻辑路径表是不同索引空间。标签1/4的 `stream_table_index` 原样保留，目前不推断其等同于 `GraphReader` 对象 ID。
+
 `graphs[0].geometry_arena` 保留原坐标槽、未使用索引尾和旧材质/外观的附加字段；稀疏表按 `owner` 排序。兼容 Geometry 表只包含实际使用的顶点与带索引前缀。旧外观中尚未确认含义的第二材质槽、布尔字和枚举保留原值，通过 `inline_projection->legacy_appearance_fields` 及场景警告提示未映射部分。
 
 旧模型的逻辑与几何数据交织保存，`Options::metadata=false` 仍会读取解析几何所需的分区图；旧模型的 `geometry_ms` 包含这部分读取和投影时间。共享几何投影可按 `Options::threads` 并行执行。使用示例见 [examples/inline_model.cpp](examples/inline_model.cpp)。
