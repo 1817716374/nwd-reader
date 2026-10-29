@@ -1656,6 +1656,82 @@ metadata_protein_material_asset_reference(const Object &object) noexcept {
   return object.references.front();
 }
 
+std::vector<MetadataProteinMaterialAssetCandidates>
+metadata_protein_material_asset_candidates(const Model &model) {
+  std::unordered_map<std::string_view, std::vector<Id>> assets_by_json;
+  assets_by_json.reserve(model.assets.size());
+  for (Id asset = 0; asset < model.assets.size(); ++asset)
+    if (!model.assets[asset].json.empty())
+      assets_by_json[model.assets[asset].json].push_back(asset);
+
+  std::vector<MetadataProteinMaterialAssetCandidates> result;
+  std::vector<std::unordered_map<Id, size_t>> candidates_by_graph(
+      model.graphs.size());
+  for (Id graph_id = 0; graph_id < model.graphs.size(); ++graph_id) {
+    const auto &graph = model.graphs[graph_id];
+    for (Id object_id = 0; object_id < graph.objects.size(); ++object_id) {
+      const auto &object = graph.objects[object_id];
+      const auto reference = metadata_protein_material_asset_reference(object);
+      if (!reference || reference->object == none ||
+          reference->graph >= model.graphs.size())
+        continue;
+      const auto &target_graph = model.graphs[reference->graph];
+      if (reference->object >= target_graph.objects.size())
+        continue;
+      const auto &target = target_graph.objects[reference->object];
+      if (target.type != 185 || target.strings.empty())
+        continue;
+      const auto match = assets_by_json.find(
+          resolve_string(target_graph, target.strings.front()));
+      MetadataProteinMaterialAssetCandidates candidates;
+      candidates.attribute = {graph_id, object_id};
+      candidates.serialized_asset = *reference;
+      if (match != assets_by_json.end())
+        candidates.assets = match->second;
+      candidates_by_graph[graph_id].emplace(object_id, result.size());
+      result.push_back(std::move(candidates));
+    }
+  }
+
+  for (Id graph_id = 0; graph_id < model.graphs.size(); ++graph_id) {
+    const auto &graph = model.graphs[graph_id];
+    for (Id owner_id = 0; owner_id < graph.objects.size(); ++owner_id) {
+      const auto &owner = graph.objects[owner_id];
+      for (Id ordinal = 0; ordinal < owner.attributes.size(); ++ordinal) {
+        const auto attribute = owner.attributes[ordinal];
+        if (attribute.graph >= candidates_by_graph.size())
+          continue;
+        const auto found = candidates_by_graph[attribute.graph].find(
+            attribute.object);
+        if (found == candidates_by_graph[attribute.graph].end())
+          continue;
+        MetadataProteinMaterialAssetCandidates::Owner binding;
+        binding.object = {graph_id, owner_id};
+        binding.attribute_ordinal = ordinal;
+        result[found->second].owners.push_back(std::move(binding));
+      }
+    }
+  }
+
+  if (model.hierarchy_graph < model.graphs.size()) {
+    std::unordered_map<Id, std::vector<std::pair<size_t, size_t>>> owner_paths;
+    for (size_t candidate = 0; candidate < result.size(); ++candidate)
+      for (size_t owner = 0; owner < result[candidate].owners.size(); ++owner) {
+        const auto &reference = result[candidate].owners[owner].object;
+        if (reference.graph == model.hierarchy_graph)
+          owner_paths[reference.object].emplace_back(candidate, owner);
+      }
+    for (Id path = 0; path < model.paths.size(); ++path) {
+      const auto found = owner_paths.find(model.paths[path].object);
+      if (found == owner_paths.end())
+        continue;
+      for (const auto &[candidate, owner] : found->second)
+        result[candidate].owners[owner].paths.push_back(path);
+    }
+  }
+  return result;
+}
+
 std::optional<MetadataLightFields>
 metadata_light_fields(const Object &object) noexcept {
   const auto &v = object.numbers;
