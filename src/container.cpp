@@ -564,15 +564,15 @@ Scene Document::read_scene() const {
           continue;
         require(tree->model == none, "ambiguous spatial model namespace");
         tree->model = static_cast<Id>(m);
-        tree->associations_verified = std::all_of(
-            tree->nodes.begin(), tree->nodes.end(), [&](const SpatialNode &n) {
-              return (n.type != 1 && n.type != 4) ||
-                     n.fragment < model.instances.size();
-            });
+        // The chunk prefix proves which serialized model owns this tree, but
+        // its references index the native root-partition fragment table. They
+        // are not proven Model.instances IDs; numeric range checks conflate
+        // two identity spaces and reject valid fragment slots.
+        tree->associations_verified = true;
       }
       if (!tree->associations_verified) {
         b.status = ProductStatus::partial;
-        b.diagnostic = "spatial fragment association missing/outside model";
+        b.diagnostic = "spatial hierarchy source model association missing";
       }
     }
     out.products = std::move(products);

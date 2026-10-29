@@ -3303,13 +3303,18 @@ struct SpatialNode {
   uint32_t type = 0; // 0 null, 1 shape, 2 static leaf, 3 static group, 4 single
                      // leaf, 5 dynamic group
   Id parent = none, first_child = none, next_sibling = none;
-  Id fragment = none; // source fragment slot for type 1/4
+  Id fragment = none; // raw root-partition fragment slot for type 1/4
+  std::optional<Id> partition_fragment_slot() const noexcept {
+    return type == 1 || type == 4 ? std::optional<Id>(fragment)
+                                  : std::nullopt;
+  }
 };
 struct SpatialHierarchy {
   std::vector<SpatialNode>
       nodes;       // preorder, compact adjacency; no geometry copies
   Id model = none; // owning Scene.models index, filled by read_scene()
-  bool associations_verified = false;
+  bool associations_verified = false; // hierarchy block -> source model
+  bool fragment_slots_verified = false; // partition slots -> Model.instances
 };
 enum class PublishOption : uint32_t {
   has_password = 1,

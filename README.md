@@ -862,7 +862,7 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 `FileDatabase.tables` 保留数据库普通表的原始列与行；`DatabaseCell` 区分NULL、64位整数、浮点数、字符串和二进制字节。空BLOB与NULL、自动索引的NULL SQL与空字符串分别保留。`schema` 保留视图/索引/触发器定义，但读取器不会执行这些定义。`unread_virtual_tables` 返回保留了DDL但未读取其逻辑行的虚拟表名；对应 `ProductBlock` 状态为 `partial`，普通表和可见的shadow tables仍保留。应用表中BLOB内部格式和业务关联需另行解释。
 
-`SpatialHierarchy.nodes` 使用 `parent/first_child/next_sibling` 表达邻接关系。类型1/4的 `fragment` 是模型分片槽，只有 `associations_verified` 为true时才能结合 `model` 访问 `Scene.models[model].instances[fragment]`。通过 `Options.products = true` 调用 `read_scene()` 才会校验此关联；单独 `read_products()` 保留未绑定状态。实例仍引用共享几何。
+`SpatialHierarchy.nodes` 使用 `parent/first_child/next_sibling` 表达邻接关系。类型1/4的 `fragment` 和 `partition_fragment_slot()` 保留根 Partition 片段表槽号。`associations_verified` 只表示空间树块已按块名前缀绑定到来源模型；它不表示片段槽号可直接用于 `Model.instances`。只有将来 `fragment_slots_verified` 为 true 时，调用方才可把槽位映射到实例。当前解析器尚未证明这种跨表映射，因此保留原始槽号，不按数值范围猜测实例身份。单独 `read_products()` 保留未绑定状态。实例仍引用共享几何。
 
 `HyperlinkOverrides.paths/nodes` 和 `NodeOverrides.paths/nodes` 分别保存路径级、节点级覆盖；节点记录的 `paths` 保留显式选择器或隐式候选列表。`TextureSpaceOverrides` 复用纹理空间记录。三种类型通过 `read_scene()` 读取时，共用与 Presenter 相同的模型命名空间和路径校验：只有 `associations_verified` 为true时，才能用 `model` 访问所属模型、将选择器视为该模型的路径索引。节点范围通过 `path_reference()` 取得共享节点身份；单独 `read_products()` 不绑定模型。
 
