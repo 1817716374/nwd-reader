@@ -2946,6 +2946,7 @@ struct SavedItem {
 struct CachedReference {
   std::string name, path;
   uint64_t timestamp = 0, size = 0;
+  bool name_is_null = false, path_is_null = false;
 };
 struct CacheOption {
   std::string name;
@@ -2975,6 +2976,14 @@ struct NwfReference {
   std::vector<CachedReference> cached_files;
   std::vector<CachePlugin> cache_plugins; // primary plugin first
   std::vector<CacheOption> cache_options;
+  // Before save version92 cache validation used LcOpSceneValidData's NW5
+  // layout. Keep its source fields and ordered values separate from modern
+  // plugin option sets; old option names come from the installed plugin.
+  bool legacy_cache_encoding = false;
+  std::string cache_validation_plugin;
+  int32_t cache_validation_version = -1, legacy_option_value_count = 0;
+  std::optional<int32_t> collapse_type;
+  std::vector<Value> legacy_option_values;
 };
 struct SavedItems {
   bool legacy_clash =
@@ -3629,7 +3638,8 @@ struct NwfData {
   std::vector<std::pair<std::string, std::string>> path_remaps;
   std::vector<std::string> unparsed_core;
 };
-NwfData decode_nwf_scene_set(std::span<const uint8_t>, uint32_t version);
+NwfData decode_nwf_scene_set(std::span<const uint8_t>, uint32_t version,
+                             Options options = {});
 void decode_nwf_path_map(NwfData &, std::span<const uint8_t>);
 void decode_nwf_transforms(NwfData &, std::span<const uint8_t>);
 void decode_nwf_texture_spaces(NwfData &, std::span<const uint8_t>,

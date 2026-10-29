@@ -37,7 +37,6 @@ void detail::read_cache_data(Cursor &r, std::vector<CachePlugin> &cache_plugins,
                              std::vector<CacheOption> &cache_options,
                              ObjectReader &object_reader,
                              const Options &options, uint64_t &budget) {
-  auto bytes = r.data;
   auto count = [&]() {
     auto n = r.u32();
     require(n <= std::min<uint64_t>(1000000, options.max_objects),
@@ -84,13 +83,10 @@ void detail::read_cache_data(Cursor &r, std::vector<CachePlugin> &cache_plugins,
     cache_plugins.push_back(plugin());
   for (auto c = count(); c; --c) {
     CachedReference f;
-    f.name = r.string();
+    f.name = r.string(&f.name_is_null);
     r.align(4);
-    uint32_t len;
-    require(r.pos + 4 <= bytes.size(), "truncated NWF cache path");
-    std::memcpy(&len, bytes.data() + r.pos, 4);
-    f.path = r.string();
-    if (len != UINT32_MAX) {
+    f.path = r.string(&f.path_is_null);
+    if (!f.path_is_null) {
       f.timestamp = r.u64();
       f.size = r.u64();
     }
@@ -103,11 +99,61 @@ void detail::read_cache_data(Cursor &r, std::vector<CachePlugin> &cache_plugins,
     cache_options.push_back(std::move(o));
   }
 }
+static void read_legacy_cache_data(Cursor &r, NwfReference &reference,
+                                   ObjectReader &object_reader,
+                                   uint32_t version, const Options &options,
+                                   uint64_t &budget) {
+  reference.legacy_cache_encoding = true;
+  reference.cache_validation_plugin = r.string();
+  reference.cache_validation_version = r.read<int32_t>();
+  if (version >= 72)
+    reference.collapse_type = r.read<int32_t>();
+
+  auto count = [&]() {
+    const auto n = r.u32();
+    require(n <= std::min<uint64_t>(1000000, options.max_objects),
+            "legacy NWF cache count limit");
+    return n;
+  };
+  const auto xref_count = count();
+  require(xref_count <= budget, "legacy NWF cache resource limit");
+  budget -= xref_count;
+  reference.cached_files.reserve(xref_count);
+  for (uint32_t i = 0; i < xref_count; ++i) {
+    CachedReference file;
+    file.name = r.string(&file.name_is_null);
+    // The native reader counts null names but does not construct an xref.
+    if (file.name_is_null)
+      continue;
+    file.path = r.string(&file.path_is_null);
+    if (version >= 62 && !file.path_is_null) {
+      file.timestamp = r.u64();
+      file.size = r.u64();
+    }
+    reference.cached_files.push_back(std::move(file));
+  }
+
+  reference.legacy_option_value_count = r.read<int32_t>();
+  if (reference.legacy_option_value_count <= 0)
+    return;
+  const auto value_count =
+      static_cast<uint32_t>(reference.legacy_option_value_count);
+  require(value_count <= std::min<uint64_t>(1000000, options.max_objects),
+          "legacy NWF cache option count limit");
+  require(value_count <= budget,
+          "legacy NWF cache option resource limit");
+  budget -= value_count;
+  reference.legacy_option_values.reserve(value_count);
+  for (uint32_t i = 0; i < value_count; ++i)
+    reference.legacy_option_values.push_back(read_data_value(
+        r, [&] { return object_reader.string(r); },
+        [&] { return Reference{0, object_reader.object(r)}; }));
+}
 void detail::read_source_references(Cursor &r,
                                     std::vector<NwfReference> &references,
                                     ObjectReader &object_reader,
                                     uint32_t version, const Options &options) {
-  require(version >= 92 && version <= 450,
+  require(version >= 72 && version <= 450,
           "source-reference version not yet validated");
   auto count = [&]() {
     auto n = r.u32();
@@ -138,10 +184,15 @@ void detail::read_source_references(Cursor &r,
     x.orientation_flag = r.u32();
     x.up = vector3(r);
     x.north = vector3(r);
-    x.extra_enum = r.u32();
-    x.extra = r.string();
-    read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
-                    object_reader, options, budget);
+    if (version >= 80) {
+      x.extra_enum = r.u32();
+      x.extra = r.string();
+    }
+    if (version < 92)
+      read_legacy_cache_data(r, x, object_reader, version, options, budget);
+    else
+      read_cache_data(r, x.cache_plugins, x.cached_files, x.cache_options,
+                      object_reader, options, budget);
     if (version >= 109)
       x.front = vector3(r);
     if (version >= 246)
@@ -149,18 +200,20 @@ void detail::read_source_references(Cursor &r,
     references.push_back(std::move(x));
   }
 }
-NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version) {
-  require(version >= 251 && version <= 448,
+NwfData decode_nwf_scene_set(std::span<const uint8_t> bytes, uint32_t version,
+                             Options options) {
+  require(version >= 72 && version <= 448,
           "NWF scene-set version not yet validated");
   Cursor r(bytes, "NWF scene set");
   NwfData out;
-  ObjectReader objects(bytes, out.option_values, version);
-  read_source_references(r, out.references, objects, version);
+  ObjectReader objects(bytes, out.option_values, version, options);
+  read_source_references(r, out.references, objects, version, options);
   out.linear_units = r.u32();
   out.angular_units = r.u32();
   out.up = vector3(r);
   out.north = vector3(r);
-  out.front = vector3(r);
+  if (version >= 109)
+    out.front = vector3(r);
   r.exact();
   return out;
 }
@@ -312,7 +365,7 @@ NwfData Document::read_nwf() const {
   for (size_t i = 0; i < chunks().size(); ++i)
     if (chunks()[i].name.ends_with("LcOpNwfSceneSet")) {
       require(!found, "multiple NWF scene sets unsupported");
-      out = decode_nwf_scene_set(read_chunk(i), version());
+      out = decode_nwf_scene_set(read_chunk(i), version(), options());
       found = true;
     }
   require(found, "not an NWF scene set");
