@@ -213,6 +213,7 @@ void objects(LightWorksArchive &out, BE &r, Budget &budget) {
   std::unordered_map<uint32_t, Id> identities;
   std::vector<Id> stack, last_children;
   while (r.pos < r.data.size()) {
+    const auto object_offset = r.pos;
     auto raw = r.u();
     if (raw == none) {
       require(!stack.empty(), "LightWorks unmatched object end");
@@ -259,9 +260,28 @@ void objects(LightWorksArchive &out, BE &r, Budget &budget) {
       }
     }
     auto it = definitions.find(o.type);
-    if (it == definitions.end())
-      throw UnsupportedLayout("LightWorks object class " +
-                              std::to_string(o.type));
+    if (it == definitions.end()) {
+      std::string message = "LightWorks object class " +
+                            std::to_string(o.type) +
+                            " at object-stream offset " +
+                            std::to_string(object_offset) + "; engine=" +
+                            std::to_string(out.engine_version) +
+                            "; stream_flags=" +
+                            std::to_string(out.stream_flags) +
+                            "; definitions=" +
+                            std::to_string(out.definitions.size()) + " [";
+      for (size_t i = 0; i < out.definitions.size(); ++i) {
+        if (i)
+          message += ',';
+        message += std::to_string(out.definitions[i].type);
+      }
+      message += ']';
+      out.complete = false;
+      out.diagnostic = std::move(message);
+      out.unparsed_object_stream.assign(r.data.begin() + object_offset,
+                                        r.data.end());
+      return;
+    }
     const auto &definition = out.definitions[it->second];
     for (;;) {
       auto id = out.stream_flags & 4 ? uint32_t(r.byte()) : r.u();
