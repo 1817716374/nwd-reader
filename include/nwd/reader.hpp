@@ -3704,6 +3704,9 @@ struct ProjectSource {
 };
 struct ProjectNode {
   Id parent = none, source = none, model = none, reference = none;
+  // Legacy values/mask patch serialized on the owning NWF reference (before
+  // version64); retained per occurrence and never applied to shared models.
+  std::optional<NwfLegacyOverridePatch> legacy_override_patch;
   std::string name, requested_path, status;
   std::array<double, 16> to_parent{1, 0, 0, 0, 0, 1, 0, 0,
                                    0, 0, 1, 0, 0, 0, 0, 1}; // meters to meters

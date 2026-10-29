@@ -1015,6 +1015,7 @@ class Loader {
       ProjectNode n;
       n.parent = node;
       n.reference = static_cast<Id>(i);
+      n.legacy_override_patch = r.legacy_override_patch;
       n.name = r.display_name.empty() ? r.name : r.display_name;
       n.requested_path = r.original_path;
       auto resolved = resolve(file, r.original_path, nwf->path_remaps);
