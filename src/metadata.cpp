@@ -1633,6 +1633,22 @@ metadata_distant_light_fields(const Object &object) noexcept {
   return result;
 }
 
+std::optional<MetadataMaterialFields>
+metadata_material_fields(const Object &object) noexcept {
+  if (object.type != 31 || object.numbers.size() != 14)
+    return std::nullopt;
+  MetadataMaterialFields result;
+  for (size_t i = 0; i < 3; ++i) {
+    result.ambient_color[i] = object.numbers[i];
+    result.diffuse_color[i] = object.numbers[i + 3];
+    result.specular_color[i] = object.numbers[i + 6];
+    result.emissive_color[i] = object.numbers[i + 9];
+  }
+  result.shininess = object.numbers[12];
+  result.transparency = object.numbers[13];
+  return result;
+}
+
 std::optional<MetadataLightFields>
 metadata_light_fields(const Object &object) noexcept {
   const auto &v = object.numbers;

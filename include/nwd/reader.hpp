@@ -108,6 +108,16 @@ struct MetadataDistantLightFields {
 // other types or counts; Object::numbers retains the original order.
 std::optional<MetadataDistantLightFields>
 metadata_distant_light_fields(const Object &) noexcept;
+// Named numeric fields from the verified LcOaExMaterial serializer.
+struct MetadataMaterialFields {
+  std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{},
+      emissive_color{};
+  double shininess = 0, transparency = 0;
+};
+// Decodes only type 31 with its verified 14-number layout. Returns empty for
+// other types or counts; Object::numbers retains the original order.
+std::optional<MetadataMaterialFields>
+metadata_material_fields(const Object &) noexcept;
 // Named numeric fields from native LcOaPointLight/LcOaSpotLight payloads.
 // Optional fields are absent when that serializer version did not write them.
 struct MetadataLightFields {
