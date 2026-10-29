@@ -118,6 +118,12 @@ struct MetadataMaterialFields {
 // other types or counts; Object::numbers retains the original order.
 std::optional<MetadataMaterialFields>
 metadata_material_fields(const Object &) noexcept;
+// Type 200 ProteinMaterialAttribute stores one version-scoped Protein asset
+// reference (type 182 before wire version 443, type 185 from 443). This
+// returns the exact graph/object pair, including a saved null reference; it
+// does not resolve names or decide whether an appearance is active.
+std::optional<Reference>
+metadata_protein_material_asset_reference(const Object &) noexcept;
 // Named numeric fields from native LcOaPointLight/LcOaSpotLight payloads.
 // Optional fields are absent when that serializer version did not write them.
 struct MetadataLightFields {

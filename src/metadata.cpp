@@ -1649,6 +1649,13 @@ metadata_material_fields(const Object &object) noexcept {
   return result;
 }
 
+std::optional<Reference>
+metadata_protein_material_asset_reference(const Object &object) noexcept {
+  if (object.type != 200 || object.references.size() != 1)
+    return std::nullopt;
+  return object.references.front();
+}
+
 std::optional<MetadataLightFields>
 metadata_light_fields(const Object &object) noexcept {
   const auto &v = object.numbers;
