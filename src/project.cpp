@@ -713,6 +713,8 @@ class Loader {
     // (bit 32) has not been assigned semantics yet.
     if (path.bounds.size() != 6)
       return true;
+    if (!(path_unit_scale > 0) || !std::isfinite(path_unit_scale))
+      return false;
     auto [it, inserted] = cache.try_emplace(project_node);
     if (inserted)
       it->second.resize(model(project_node).paths.size());
@@ -913,7 +915,13 @@ class Loader {
     std::vector<std::vector<Location>> mapping(data->paths.size());
     std::map<Id, ModelIndex> indices;
     std::map<Id, std::vector<PathBoundsCacheEntry>> path_bounds_cache;
-    const double path_unit_scale = unit(data->linear_units);
+    double path_unit_scale = 0;
+    try {
+      path_unit_scale = unit(data->linear_units);
+    } catch (const Error &) {
+      // Unknown units make the saved bounds unusable for identity matching,
+      // but must not prevent the rest of the NWF from loading.
+    }
     for (auto node : leaves) {
       indices.emplace(node, ModelIndex(model(node)));
       if (mapping.size() < 2) {
@@ -1029,7 +1037,8 @@ class Loader {
       // bounds only to narrow an otherwise ambiguous structural match; some
       // exporters save aggregate-node bounds while others save direct-node
       // bounds, so a unique type/name/sibling match is retained as-is.
-      if (p.bounds.size() == 6 && ((p.flags & 256) || found.size() > 1)) {
+      if ((data->path_map_flags & 16) && !(data->path_map_flags & 32) &&
+          p.bounds.size() == 6 && ((p.flags & 256) || found.size() > 1)) {
         const bool include_descendants = !(p.flags & 256);
         std::erase_if(found, [&](const Location &candidate) {
           return !matches_path_bounds(

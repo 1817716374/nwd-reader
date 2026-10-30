@@ -1005,7 +1005,7 @@ NWD/NWC 支持 `lichunk-007/008` 容器及内部格式版本 `103/112/431/448`�
 - 数据库链接的部分配置和轴线字段仍保留源值；序列化节点 GUID 索引可关联到所属模型的 GUID Store，但运行时重挂接/合并、type180 分离节点回退，以及模型/来源/版本/保存项/数据库/图纸的业务身份关系仍未完成。
 - 旧式 TimeLiner 定义通过 `LegacyTimeLinerDefinitions` 返回；状态参数和旧名称保持原值，尚未全部转换为现代阶段枚举与外观关联。
 - 碰撞容器支持内部版本 `103/112` 与 `301–450` 的已实现布局；可通过 `SavedItem.type == 58` 和 `selection.path_links` 访问碰撞选择路径。
-- NWD/NWC 保存项的显式 PathLink 支持分区绑定。`load_project()` 会将 NWF PathMap 的外部文件根按引用 GUID 绑定到对应 NWC 出现及其模型根，再在该模型中解析子路径；根 GUID 缺失时才按文件名匹配，重复引用保留各自出现身份。PathMap 子节点带 GUID 字段时，会在所属模型的 `GuidStore` 中做精确 16 字节匹配；带 fragment checksum 数组时，会按序比对该节点直接实例的几何引用 checksum。checksum 与单组六值 bounds 同存时，bounds 也会与项目坐标下的直接实例包围盒校验；没有 checksum 时，bounds 只用于缩小歧义候选，不拒绝已有的唯一结构匹配。无效或不匹配的 GUID/checksum/强校验 bounds 不退回名称匹配。无法唯一匹配的路径仍标为 unresolved。NWF 保存项也支持选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值，未知子类型保留诊断。
+- NWD/NWC 保存项的显式 PathLink 支持分区绑定。`load_project()` 会将 NWF PathMap 的外部文件根按引用 GUID 绑定到对应 NWC 出现及其模型根，再在该模型中解析子路径；根 GUID 缺失时才按文件名匹配，重复引用保留各自出现身份。PathMap 子节点带 GUID 字段时，会在所属模型的 `GuidStore` 中做精确 16 字节匹配；带 fragment checksum 数组时，会按序比对该节点直接实例的几何引用 checksum。全局 bit16 的单组六值 bounds（bit32 未启用）与 checksum 同存时，也会和项目坐标下的直接实例包围盒严格校验；无 checksum 时，bounds 只用于缩小歧义候选，不拒绝已有的唯一结构匹配。无效或不匹配的 GUID/checksum/强校验 bounds 不退回名称匹配。无法唯一匹配的路径仍标为 unresolved。NWF 保存项也支持选择集名称定位；属性树等其他定位根、动态搜索和跨保存项关系尚未全部求值，未知子类型保留诊断。
 - 外部 `.rcs` 路径成功解析时，项目加载器通过 Schema 的唯一 `int32 index` 关联 RCS voxel；RCP 的 ZIP/XML、外部 RCS 加载及 Scan、ShotInfo、GroupInfo、保存视点 ID 关联已提供；其他 XML 字段语义、格式版本和坐标变换上下文仍有限制。
 - NWF 的混合单位变换、源单位重定义、多分区聚合放置，以及跨文件部分 Appearance 的最终字段合成语义仍未完整支持；原始覆盖层和字段标志已保留。
 - 嵌套引用中的对象覆盖、源模型已有覆盖的重置仍有限制，项目会报告不完整并拒绝提供对应世界矩阵。
