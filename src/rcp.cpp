@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 #include <limits>
+#include "bzlib.h"
 #include <zlib.h>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -676,6 +677,60 @@ std::vector<uint8_t> RcpReader::read_entry(uint32_t entry_index) const {
     detail::require(status == Z_STREAM_END && stream.total_in == input.size() &&
                         stream.total_out == output.size(),
                     "invalid RCP ZIP DEFLATE stream");
+  } else if (entry.compression_method == 12) {
+    detail::require(input.size() <= UINT_MAX && output.size() <= UINT_MAX,
+                    "RCP ZIP BZIP2 member exceeds library limit");
+    bz_stream stream{};
+    stream.next_in = reinterpret_cast<char *>(
+        const_cast<uint8_t *>(input.data()));
+    stream.avail_in = static_cast<unsigned int>(input.size());
+    uint8_t empty_output = 0;
+    stream.next_out = output.empty()
+                          ? reinterpret_cast<char *>(&empty_output)
+                          : reinterpret_cast<char *>(output.data());
+    stream.avail_out = static_cast<unsigned int>(output.empty()
+                                                     ? 1
+                                                     : output.size());
+    detail::require(BZ2_bzDecompressInit(&stream, 0, 0) == BZ_OK,
+                    "RCP ZIP BZIP2 initialization failed");
+    struct EndBzip2 {
+      bz_stream *stream;
+      ~EndBzip2() { BZ2_bzDecompressEnd(stream); }
+    } end{&stream};
+    uint8_t overflow_output = 0;
+    int status = BZ_OK;
+    for (;;) {
+      const auto previous_in = stream.total_in_lo32;
+      const auto previous_in_hi = stream.total_in_hi32;
+      const auto previous_out = stream.total_out_lo32;
+      const auto previous_out_hi = stream.total_out_hi32;
+      status = BZ2_bzDecompress(&stream);
+      const uint64_t consumed = (uint64_t(stream.total_in_hi32) << 32) |
+                                stream.total_in_lo32;
+      const uint64_t produced = (uint64_t(stream.total_out_hi32) << 32) |
+                                stream.total_out_lo32;
+      detail::require(produced <= output.size(),
+                      "RCP ZIP BZIP2 output exceeds declared length");
+      if (status == BZ_STREAM_END) {
+        detail::require(consumed == input.size() && produced == output.size(),
+                        "RCP ZIP BZIP2 stream length mismatch");
+        break;
+      }
+      detail::require(status == BZ_OK,
+                      "invalid RCP ZIP BZIP2 stream (status " +
+                          std::to_string(status) + ")");
+      detail::require(consumed != input.size(),
+                      "truncated RCP ZIP BZIP2 stream");
+      if (stream.avail_out == 0) {
+        stream.next_out = reinterpret_cast<char *>(&overflow_output);
+        stream.avail_out = 1;
+      }
+      detail::require(stream.total_in_lo32 != previous_in ||
+                          stream.total_in_hi32 != previous_in_hi ||
+                          stream.total_out_lo32 != previous_out ||
+                          stream.total_out_hi32 != previous_out_hi,
+                      "RCP ZIP BZIP2 decoder made no progress");
+    }
   } else {
     throw Error("unsupported RCP ZIP compression method " +
                 std::to_string(entry.compression_method));

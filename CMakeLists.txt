@@ -15,6 +15,18 @@ add_library(nwd_sqlite STATIC third_party/sqlite/sqlite3.c)
 set_target_properties(nwd_sqlite PROPERTIES EXPORT_NAME sqlite)
 target_compile_definitions(nwd_sqlite PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_TEMP_STORE=3 SQLITE_DQS=0)
 target_link_libraries(nwd_sqlite PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+add_library(nwd_bzip2 STATIC
+  third_party/bzip2-1.0.8/blocksort.c
+  third_party/bzip2-1.0.8/huffman.c
+  third_party/bzip2-1.0.8/crctable.c
+  third_party/bzip2-1.0.8/randtable.c
+  third_party/bzip2-1.0.8/compress.c
+  third_party/bzip2-1.0.8/decompress.c
+  third_party/bzip2-1.0.8/bzlib.c)
+set_target_properties(nwd_bzip2 PROPERTIES EXPORT_NAME bzip2)
+target_include_directories(nwd_bzip2 PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/bzip2-1.0.8>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 include(cmake/NwdExpat.cmake)
 add_library(nwd_reader STATIC src/container.cpp src/geometry.cpp src/attributes.cpp src/scene.cpp src/metadata.cpp src/viewpoints.cpp src/access.cpp src/partition_fields.cpp src/nwf.cpp src/project.cpp src/affine_factor.cpp src/view_transforms.cpp src/surface_frame.cpp src/clip_box.cpp src/clip_state.cpp src/clip_planes.cpp src/clip_loading.cpp src/assets.cpp src/schema.cpp src/products.cpp src/blowfish.cpp src/database.cpp src/lightworks.cpp src/selection.cpp src/property_index.cpp src/search_values.cpp src/saved_paths.cpp src/node_guids.cpp src/rcs.cpp src/rcp.cpp third_party/tiny-aes/aes.c)
 set_source_files_properties(third_party/tiny-aes/aes.c PROPERTIES COMPILE_DEFINITIONS "CBC=0;CTR=0;AES_init_ctx=nwd_lwa_aes_init;AES_ECB_decrypt=nwd_lwa_aes_decrypt;AES_ECB_encrypt=nwd_lwa_aes_encrypt")
@@ -25,7 +37,7 @@ target_compile_features(nwd_reader PUBLIC cxx_std_20)
 target_include_directories(nwd_reader PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}> PRIVATE src third_party)
-target_link_libraries(nwd_reader PRIVATE zlibstatic nwd_sqlite nwd_expat Threads::Threads)
+target_link_libraries(nwd_reader PRIVATE zlibstatic nwd_bzip2 nwd_sqlite nwd_expat Threads::Threads)
 if(MSVC)
  target_compile_options(nwd_reader PRIVATE /W4 /permissive- /utf-8)
 else()
@@ -42,10 +54,11 @@ if(NWD_BUILD_EXAMPLES)
   add_executable(nwd_rcp_example examples/rcp.cpp)
   target_link_libraries(nwd_rcp_example PRIVATE nwd::reader)
 endif()
-install(TARGETS nwd_reader zlibstatic nwd_sqlite nwd_expat EXPORT nwdTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS nwd_reader zlibstatic nwd_bzip2 nwd_sqlite nwd_expat EXPORT nwdTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES LICENSE NOTICE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd)
 install(FILES third_party/zlib-1.3.1/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses RENAME zlib.txt)
+install(FILES third_party/bzip2-1.0.8/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses RENAME bzip2.txt)
 install(FILES third_party/json-LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses)
 install(FILES third_party/blowfish-LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/nwd/licenses)
 install(EXPORT nwdTargets NAMESPACE nwd:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nwd)

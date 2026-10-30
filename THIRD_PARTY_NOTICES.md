@@ -5,6 +5,7 @@ This library bundles the following source dependencies. Their copyright notices 
 | Component | Version | Purpose | License |
 |---|---|---|---|
 | [zlib](https://github.com/madler/zlib/tree/v1.3.1) | 1.3.1 | Block decompression | [zlib license](third_party/zlib-1.3.1/LICENSE) |
+| [bzip2/libbzip2](https://sourceware.org/bzip2/) | 1.0.8 | ZIP method 12 decompression | [bzip2 license](third_party/bzip2-1.0.8/LICENSE) |
 | [JSON for Modern C++](https://github.com/nlohmann/json/tree/v3.11.3) | 3.11.3 | Reference tables and material assets | [MIT license](third_party/json-LICENSE.MIT) |
 | [SQLite](https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip) | 3.53.4 | In-memory embedded database reading | [Public domain](third_party/sqlite/LICENSE) |
 | [Expat](https://github.com/libexpat/libexpat/tree/R_2_8_5) | 2.8.5 | Protein Schema XML reading (private static symbols) | [MIT license](third_party/expat/COPYING) |

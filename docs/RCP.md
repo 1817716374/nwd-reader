@@ -1,6 +1,6 @@
 # RCP project reader
 
-`RcpReader` maps an RCP archive read-only and indexes ZIP/ZIP64 members in central-directory order. Duplicate member names remain distinct. `raw_archive()` and `raw_compressed_entry()` expose borrowed byte spans. `read_entry()` decodes stored and DEFLATE members on demand and verifies the uncompressed size and CRC.
+`RcpReader` maps an RCP archive read-only and indexes ZIP/ZIP64 members in central-directory order. Duplicate member names remain distinct. `raw_archive()` and `raw_compressed_entry()` expose borrowed byte spans. `read_entry()` decodes stored, DEFLATE, and BZIP2 method 12 members on demand and verifies the uncompressed size and CRC.
 
 Entry names and central-directory comments are exposed as UTF-8 in `RcpArchiveEntry::name` and `comment`. The reader honors the ZIP UTF-8 flag; when it is unset, it accepts a version 1 Info-ZIP Unicode Path (`0x7075`) or Unicode Comment (`0x6375`) extra field only when its CRC matches the original filename or comment bytes, then falls back to CP437. `raw_name` preserves the exact filename bytes, `central_comment` preserves the exact comment bytes, and `name_encoding`/`comment_encoding` report the selected branch. An undefined legacy language-encoding field is reported as `unknown_legacy_encoding`; the displayed text then uses the CP437 fallback. These rules follow the ZIP format specification's filename/comment encoding and Unicode extra field definitions. [PKWARE APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
 
@@ -23,4 +23,4 @@ for (const auto &reference : project.external_rcs_files()) {
 }
 ```
 
-`ClipManager/MultiSpatialFilter` exposes raw `OperationFlag/@Value` and the `AllSpatialFilters` node ID; saved views expose the equivalent clipping-boundary operation flag and container ID. Filter children remain available in the ordered XML tree, and operation enum semantics are not inferred. Encrypted members and compression methods other than stored and DEFLATE are not decoded. Their source bytes and unknown project XML remain accessible.
+`ClipManager/MultiSpatialFilter` exposes raw `OperationFlag/@Value` and the `AllSpatialFilters` node ID; saved views expose the equivalent clipping-boundary operation flag and container ID. Filter children remain available in the ordered XML tree, and operation enum semantics are not inferred. Encrypted members and ZIP compression methods other than stored, DEFLATE, and BZIP2 method 12 are not decoded. Their source bytes and unknown project XML remain accessible.
