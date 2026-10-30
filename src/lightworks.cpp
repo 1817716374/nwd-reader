@@ -562,8 +562,8 @@ std::vector<uint32_t> selector(Cursor &r, bool implicit, bool node, Budget &b) {
 } // namespace
 void read_presenter(PresenterData &out, Cursor &r, uint32_t version,
                     bool implicit, const Options &options) {
-  if (version < 82)
-    throw UnsupportedLayout("Presenter version below 82");
+  if (version < 82 && version != 72)
+    throw UnsupportedLayout("Presenter version not validated below 82");
   Budget budget(options);
   out.implicit_node_map = implicit;
   if (version >= 101)
@@ -593,8 +593,8 @@ void read_presenter(PresenterData &out, Cursor &r, uint32_t version,
 }
 void read_presenter_lights(PresenterLights &out, Cursor &r, uint32_t version,
                            const Options &options) {
-  if (version < 82)
-    throw UnsupportedLayout("Presenter lights version below 82");
+  if (version < 82 && version != 72)
+    throw UnsupportedLayout("Presenter lights version not validated below 82");
   Budget budget(options);
   for (auto n = count(r, budget); n; --n)
     out.lights.push_back(entity(r, out.archives, budget));

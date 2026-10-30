@@ -668,8 +668,8 @@ bool supported(std::string_view kind) {
 void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
             std::span<const SchemaDefinition> schemas, const Options &options,
             bool implicit_node_map) {
-  if (version < 82)
-    throw Unsupported("product version below 82");
+  if (version < 82 && version != 72)
+    throw Unsupported("product version not validated below 82");
   if (kind == "LcOpClashElement" &&
       ((version < 301 && version != 103 && version != 112) || version > 450))
     throw Unsupported("clash container version not yet validated");
