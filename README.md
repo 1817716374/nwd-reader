@@ -262,7 +262,7 @@ cmake --build build-examples --config Release --parallel
 | `NwfData.option_values` / `NwfReference.cache_plugins` | 缓存插件配置、嵌套选项及枚举对象 |
 | `Project.textures` | 获取纹理归属、路径、状态和共享原始字节 |
 
-`PublishInformation::has_option(PublishOption)` 可查询密码标志、打开时显示、到期日期标志、已重存、允许重存、密码提示时显示和嵌入数据库属性等保存配置。`flags` 保留原始位，`unknown_flags()` 返回尚未命名的位；`published` 和 `expires` 保留有符号时间值。密码标志不等于口令内容，此发布信息块不包含可返回的口令字段。
+`PublishInformation::has_option(PublishOption)` 可查询密码标志、打开时显示、到期日期标志、已重存、允许重存、密码提示时显示和嵌入数据库属性等保存配置。`embed_textures` 与 `prevent_object_property_export` 的位语义由 Freedom 2017 原生 API 确认；Manage 2026 未导出对应访问器，因此不据此承诺现代版本仍执行这两项设置。`flags` 保留原始位，`unknown_flags()` 排除已确认命名的位并返回其它原始位；bit 2、bit 3 和其它未命名位仍会返回。`published` 和 `expires` 保留有符号时间值。密码标志不等于口令内容，此发布信息块不包含可返回的口令字段。
 
 ### 脚本与事件对象
 
