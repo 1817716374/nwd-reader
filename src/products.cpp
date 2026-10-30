@@ -543,8 +543,11 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
       break;
     case 54:
     case 55:
-      if (count(r, options.max_objects))
-        throw Unsupported("nonempty clash field/status root");
+      // Native ClashElement::CreateRootStructure constructs these roots as
+      // LcOpFolderItem instances (the same generic group layout as type 53).
+      // Their descendants can therefore be traversed through the ordinary
+      // SavedItem reader; unknown descendant payloads still fail explicitly.
+      children = count(r, options.max_objects);
       break;
     case 58: {
       // Validation item: a concrete selection, without a kind discriminator.
