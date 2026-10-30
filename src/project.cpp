@@ -698,6 +698,102 @@ class Loader {
     }
     return true;
   }
+  struct PathBoundsCacheEntry {
+    bool computed = false;
+    bool valid = false;
+    std::array<double, 6> bounds{};
+  };
+  bool matches_path_bounds(
+      const NwfPath &path, Id project_node, Id path_id,
+      const ModelIndex &model_index, double path_unit_scale,
+      bool include_descendants,
+      std::map<Id, std::vector<PathBoundsCacheEntry>> &cache) {
+    // The first six values (global PathMap bit 16) have been verified as
+    // bounds in the owning NWF's linear units. The second six-value block
+    // (bit 32) has not been assigned semantics yet.
+    if (path.bounds.size() != 6)
+      return true;
+    auto [it, inserted] = cache.try_emplace(project_node);
+    if (inserted)
+      it->second.resize(model(project_node).paths.size());
+    if (path_id >= it->second.size())
+      return false;
+    auto &entry = it->second[path_id];
+    if (!entry.computed) {
+      entry.computed = true;
+      const auto &m = model(project_node);
+      std::array<double, 6> bounds{
+          std::numeric_limits<double>::infinity(),
+          std::numeric_limits<double>::infinity(),
+          std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity(),
+          -std::numeric_limits<double>::infinity()};
+      bool any = false;
+      std::vector<Id> pending{path_id};
+      while (!pending.empty()) {
+        const auto current = pending.back();
+        pending.pop_back();
+        for (const auto instance : model_index.instances(current)) {
+          if (instance >= m.instances.size())
+            return false;
+          const auto reference = m.instances[instance].geometry_reference;
+          if (reference >= m.geometry_references.size())
+            return false;
+          const auto &geometry = m.geometry_references[reference];
+          Matrix matrix;
+          try {
+            matrix = project_world_matrix(out, project_node, instance);
+          } catch (const Error &) {
+            return false;
+          }
+          for (unsigned corner = 0; corner < 8; ++corner) {
+            double point[3];
+            for (unsigned axis = 0; axis < 3; ++axis) {
+              point[axis] =
+                  geometry.bounds[axis + (((corner >> axis) & 1) * 3)];
+              if (!std::isfinite(point[axis]))
+                return false;
+            }
+            const double transformed[3] = {
+                matrix[0] * point[0] + matrix[4] * point[1] +
+                    matrix[8] * point[2] + matrix[12],
+                matrix[1] * point[0] + matrix[5] * point[1] +
+                    matrix[9] * point[2] + matrix[13],
+                matrix[2] * point[0] + matrix[6] * point[1] +
+                    matrix[10] * point[2] + matrix[14]};
+            for (unsigned axis = 0; axis < 3; ++axis) {
+              if (!std::isfinite(transformed[axis]))
+                return false;
+              bounds[axis] = std::min(bounds[axis], transformed[axis]);
+              bounds[axis + 3] =
+                  std::max(bounds[axis + 3], transformed[axis]);
+            }
+            any = true;
+          }
+        }
+        if (include_descendants) {
+          const auto children = model_index.children(current);
+          pending.insert(pending.end(), children.begin(), children.end());
+        }
+      }
+      if (!any)
+        return false;
+      entry.bounds = bounds;
+      entry.valid = true;
+    }
+    if (!entry.valid)
+      return false;
+    for (unsigned axis = 0; axis < 6; ++axis) {
+      const double expected = path.bounds[axis] * path_unit_scale;
+      if (!std::isfinite(expected))
+        return false;
+      const double tolerance = 1e-4 + std::abs(expected) * 1e-10;
+      if (std::abs(entry.bounds[axis] - expected) > tolerance)
+        return false;
+    }
+    return true;
+  }
   template <class Resolve> void bind_saved_paths(Id owner, Resolve resolve) {
     const auto &source = out.sources[out.nodes[owner].source];
     if (!source.products)
@@ -816,6 +912,8 @@ class Loader {
     using Location = std::pair<Id, Id>;
     std::vector<std::vector<Location>> mapping(data->paths.size());
     std::map<Id, ModelIndex> indices;
+    std::map<Id, std::vector<PathBoundsCacheEntry>> path_bounds_cache;
+    const double path_unit_scale = unit(data->linear_units);
     for (auto node : leaves) {
       indices.emplace(node, ModelIndex(model(node)));
       if (mapping.size() < 2) {
@@ -915,14 +1013,30 @@ class Loader {
       for (auto [node, parent] : mapping.at(p.parent)) {
         const auto &m = model(node);
         auto children = indices.at(node).children(parent);
-        if (p.parent == 1 && p.type == 32 && match(p, m, 0, node, indices.at(node)))
+        if (p.parent == 1 && p.type == 32 &&
+            match(p, m, 0, node, indices.at(node)))
           found.emplace_back(node, 0);
         for (size_t j = 0; j < children.size(); ++j) {
           auto child = children[j];
-          if (match(p, m, child, node, indices.at(node)) && (!(p.flags & 64) || p.sibling < 0 ||
-                                     static_cast<size_t>(p.sibling) == j))
+          if (match(p, m, child, node, indices.at(node)) &&
+              (!(p.flags & 64) || p.sibling < 0 ||
+               static_cast<size_t>(p.sibling) == j))
             found.emplace_back(node, child);
         }
+      }
+      // Bounds are authoritative when paired with the fragment checksum
+      // sequence (verified against real 2023 NWFs). Without checksums, use
+      // bounds only to narrow an otherwise ambiguous structural match; some
+      // exporters save aggregate-node bounds while others save direct-node
+      // bounds, so a unique type/name/sibling match is retained as-is.
+      if (p.bounds.size() == 6 && ((p.flags & 256) || found.size() > 1)) {
+        const bool include_descendants = !(p.flags & 256);
+        std::erase_if(found, [&](const Location &candidate) {
+          return !matches_path_bounds(
+              p, candidate.first, candidate.second,
+              indices.at(candidate.first), path_unit_scale,
+              include_descendants, path_bounds_cache);
+        });
       }
       if (found.size() == 1)
         mapping[i] = std::move(found);
