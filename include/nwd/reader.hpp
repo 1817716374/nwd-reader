@@ -3448,7 +3448,9 @@ enum class PublishOption : uint32_t {
   has_been_resaved = 32,
   allow_resave = 64,
   display_at_password = 128,
-  embed_database_properties = 512
+  embed_textures = 256,
+  embed_database_properties = 512,
+  prevent_object_property_export = 1024
 };
 struct PublishInformation {
   Id name = none, class_name = none; // objects below
@@ -3460,7 +3462,7 @@ struct PublishInformation {
   bool has_option(PublishOption option) const {
     return (flags & static_cast<uint32_t>(option)) != 0;
   }
-  uint32_t unknown_flags() const { return flags & ~uint32_t{0x2f3}; }
+  uint32_t unknown_flags() const { return flags & ~uint32_t{0x7f3}; }
 };
 // LightWorks values retain their wire type separately from the C++ storage.
 using LightWorksValue =
