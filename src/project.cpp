@@ -979,10 +979,31 @@ class Loader {
         auto split = name.rfind('\\');
         auto prefix =
             split == name.npos ? std::string{} : name.substr(0, split);
-        auto selected = prefix == data->path_map_namespace
-                            ? select_node(paths)
-                            : std::optional<Location>{};
-        if (selected) {
+        bool project_root = false;
+        if (prefix == data->path_map_namespace && data->path_map_kind != 0) {
+          Id only = none;
+          bool multiple = false;
+          for (Id id : paths) {
+            if (id == 0 || id == none)
+              continue;
+            if (only != none && only != id) {
+              multiple = true;
+              break;
+            }
+            only = id;
+          }
+          project_root = only == 1 && !multiple;
+        }
+        auto selected = project_root
+                            ? std::optional<Location>{}
+                            : prefix == data->path_map_namespace
+                                  ? select_node(paths)
+                                  : std::optional<Location>{};
+        if (project_root) {
+          binding.status = ProductBindingStatus::resolved;
+          binding.node = owner;
+          binding.project_root = true;
+        } else if (selected) {
           binding.status = ProductBindingStatus::resolved;
           binding.node = selected->first;
           binding.path = selected->second;

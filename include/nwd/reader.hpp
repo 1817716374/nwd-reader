@@ -3776,6 +3776,9 @@ struct ProductBinding {
   bool node_scope = false;
   ProductBindingStatus status = ProductBindingStatus::unresolved;
   Id node = none, path = none; // target ProjectNode and source Model.paths
+  // A selector for NWF PathMap root ID 1 addresses the owning project node
+  // and all of its reference occurrences, rather than one source model path.
+  bool project_root = false;
 };
 struct SavedPathBinding {
   Id owner = none, block = none, path_link = none;
