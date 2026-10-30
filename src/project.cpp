@@ -652,7 +652,8 @@ class Loader {
     return result.status == NodeGuidStatus::resolved && result.guid &&
            *result.guid == p.guid;
   }
-  bool match(const NwfPath &p, const Model &m, Id id, Id project_node) {
+  bool match(const NwfPath &p, const Model &m, Id id, Id project_node,
+             const ModelIndex &model_index) {
     auto ref = path_reference(m, id);
     const auto &o = resolve_object(m, ref);
     const auto &g = m.graphs[ref.graph];
@@ -669,6 +670,21 @@ class Loader {
     }
     if (!matches_node_guid(p, project_node, id))
       return false;
+    if (p.flags & 256) {
+      const auto instances = model_index.instances(id);
+      if (instances.size() != p.fragment_checksums.size())
+        return false;
+      for (size_t i = 0; i < instances.size(); ++i) {
+        const auto instance_id = instances[i];
+        if (instance_id >= m.instances.size())
+          return false;
+        const auto reference = m.instances[instance_id].geometry_reference;
+        if (reference >= m.geometry_references.size() ||
+            m.geometry_references[reference].checksum !=
+                p.fragment_checksums[i])
+          return false;
+      }
+    }
     if (p.flags & 8) {
       bool same = false;
       for (auto r : o.attributes) {
@@ -899,11 +915,11 @@ class Loader {
       for (auto [node, parent] : mapping.at(p.parent)) {
         const auto &m = model(node);
         auto children = indices.at(node).children(parent);
-        if (p.parent == 1 && p.type == 32 && match(p, m, 0, node))
+        if (p.parent == 1 && p.type == 32 && match(p, m, 0, node, indices.at(node)))
           found.emplace_back(node, 0);
         for (size_t j = 0; j < children.size(); ++j) {
           auto child = children[j];
-          if (match(p, m, child, node) && (!(p.flags & 64) || p.sibling < 0 ||
+          if (match(p, m, child, node, indices.at(node)) && (!(p.flags & 64) || p.sibling < 0 ||
                                      static_cast<size_t>(p.sibling) == j))
             found.emplace_back(node, child);
         }
