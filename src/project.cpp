@@ -178,6 +178,7 @@ class Loader {
   ProjectOptions options;
   Project out;
   std::map<std::string, Id> cache;
+  std::map<Id, std::unique_ptr<NodeGuidIndex>> node_guid_indices;
   std::set<std::string> active;
   std::map<std::pair<Id, Id>, std::vector<ProjectAppearance>> overrides;
   std::map<std::tuple<Id, Id, Id>, Matrix> transform_overrides;
@@ -634,7 +635,21 @@ class Loader {
     const auto &n = out.nodes.at(node);
     return out.sources.at(n.source).scene->models.at(n.model);
   }
-  bool match(const NwfPath &p, const Model &m, Id id) {
+  bool matches_node_guid(const NwfPath &p, Id project_node, Id path_id) {
+    if (!(p.flags & 512))
+      return true;
+    const auto &node = out.nodes.at(project_node);
+    const auto &source = out.sources.at(node.source);
+    if (!source.scene)
+      return false;
+    auto &index = node_guid_indices[node.source];
+    if (!index)
+      index = std::make_unique<NodeGuidIndex>(*source.scene);
+    const auto result = index->resolve(node.model, path_id);
+    return result.status == NodeGuidStatus::resolved && result.guid &&
+           *result.guid == p.guid;
+  }
+  bool match(const NwfPath &p, const Model &m, Id id, Id project_node) {
     auto ref = path_reference(m, id);
     const auto &o = resolve_object(m, ref);
     const auto &g = m.graphs[ref.graph];
@@ -649,6 +664,8 @@ class Loader {
       if (c.strings.empty() || p.class_name != resolve_string(g, c.strings[0]))
         return false;
     }
+    if (!matches_node_guid(p, project_node, id))
+      return false;
     if (p.flags & 8) {
       bool same = false;
       for (auto r : o.attributes) {
@@ -879,11 +896,11 @@ class Loader {
       for (auto [node, parent] : mapping.at(p.parent)) {
         const auto &m = model(node);
         auto children = indices.at(node).children(parent);
-        if (p.parent == 1 && p.type == 32 && match(p, m, 0))
+        if (p.parent == 1 && p.type == 32 && match(p, m, 0, node))
           found.emplace_back(node, 0);
         for (size_t j = 0; j < children.size(); ++j) {
           auto child = children[j];
-          if (match(p, m, child) && (!(p.flags & 64) || p.sibling < 0 ||
+          if (match(p, m, child, node) && (!(p.flags & 64) || p.sibling < 0 ||
                                      static_cast<size_t>(p.sibling) == j))
             found.emplace_back(node, child);
         }
