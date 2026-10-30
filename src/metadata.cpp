@@ -1427,7 +1427,7 @@ void read_partition(Model &model, std::span<const uint8_t> part,
     }
   }
   if (version < 28)
-    bind_inline_partition(model, options);
+    bind_inline_partition(model, options, version);
 }
 void read_shared_nodes(Model &model, std::span<const uint8_t> bytes,
                        uint32_t version, const Options &options,
@@ -1583,12 +1583,23 @@ void read_metadata(Model &model, std::span<const uint8_t> file,
     active[id] = true;
     Id path = static_cast<Id>(model.paths.size());
     model.paths.push_back({parent, id});
-    for (Id child : graph.objects[id].children)
-      walk(child, path, depth + 1);
+    const auto &children = graph.objects[id].children;
+    if (version < 37) {
+      for (auto child = children.rbegin(); child != children.rend(); ++child)
+        walk(*child, path, depth + 1);
+    } else {
+      for (Id child : children)
+        walk(child, path, depth + 1);
+    }
     active[id] = false;
   };
-  for (Id id : graph.roots)
-    walk(id, 0, 0);
+  if (version < 37) {
+    for (auto id = graph.roots.rbegin(); id != graph.roots.rend(); ++id)
+      walk(*id, 0, 0);
+  } else {
+    for (Id id : graph.roots)
+      walk(id, 0, 0);
+  }
 }
 } // namespace nwd::detail
 

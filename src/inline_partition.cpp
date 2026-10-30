@@ -1,6 +1,7 @@
 #include "internal.hpp"
 namespace nwd::detail {
-void bind_inline_partition(Model &model, const Options &options) {
+void bind_inline_partition(Model &model, const Options &options,
+                           uint32_t version) {
   require(!model.graphs.empty(), "inline partition graph missing");
   const auto &graph = model.graphs[0];
   require(graph.roots.size() == 1 && graph.roots[0] < graph.objects.size() &&
@@ -61,7 +62,10 @@ void bind_inline_partition(Model &model, const Options &options) {
         active[frame.object] = false;
         stack.pop_back();
       } else {
-        const auto child = node.children[frame.child++];
+        size_t child_index = frame.child++;
+        if (version < 37 && !spatial)
+          child_index = node.children.size() - 1 - child_index;
+        const auto child = node.children[child_index];
         if (spatial && node.type == 2)
           require(child < graph.objects.size() &&
                       graph.objects[child].type == 13,

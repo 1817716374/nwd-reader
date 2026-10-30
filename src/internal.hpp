@@ -324,7 +324,7 @@ SchemaInstance read_schema_instance(Cursor &,
                                     std::span<const SchemaDefinition>);
 void read_partition(Model &, std::span<const uint8_t>, uint32_t,
                     const Options &, const GeometryStreamContext * = nullptr);
-void bind_inline_partition(Model &, const Options &);
+void bind_inline_partition(Model &, const Options &, uint32_t version);
 void project_inline_model(Model &, uint32_t, const Options &);
 void read_shared_nodes(Model &, std::span<const uint8_t>, uint32_t,
                        const Options &,
