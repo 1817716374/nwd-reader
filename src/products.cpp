@@ -38,11 +38,25 @@ void comments(Cursor &r, std::vector<SavedComment> &out,
     out.push_back(std::move(v));
   }
 }
+void legacy_comments(Cursor &r, std::vector<SavedComment> &out,
+                     const Options &options, uint32_t version) {
+  for (auto n = count(r, options.max_objects); n; --n) {
+    SavedComment v;
+    v.author = r.string();
+    v.text = r.string();
+    v.timestamp = version >= 5 ? r.read<int64_t>() : r.read<int32_t>();
+    if (version >= 47)
+      v.id = r.u64();
+    if (version >= 52)
+      v.status = r.read<int32_t>();
+    out.push_back(std::move(v));
+  }
+}
 void find_selection(Cursor &r, SavedSelection &v, const Options &options) {
   read_find_selection(r, v, options.max_objects);
 }
 void implicit_selection(Cursor &r, SavedSelection &v, ObjectReader &objects,
-                        const Options &options) {
+                        const Options &options, uint32_t version) {
   v.kind = r.u32();
   if (v.kind == 0) {
     for (auto n = count(r, options.max_objects); n; --n)
@@ -62,7 +76,7 @@ void implicit_selection(Cursor &r, SavedSelection &v, ObjectReader &objects,
     find_selection(r, v, options);
     v.search_mode = r.u32();
     v.prune_below_match = boolean(r);
-  } else if (v.kind == 2) {
+  } else if (v.kind == 2 && version >= 82) {
     for (auto n = count(r, options.max_objects); n; --n)
       v.item_paths.push_back(string_pair(r));
     v.item_path_mode = r.u32();
@@ -125,7 +139,8 @@ uint32_t timeliner(Cursor &r, SavedItem &s, uint32_t version,
     v.task_type = r.string();
     v.data_source = r.string();
     if (boolean(r))
-      implicit_selection(r, v.implicit_selection.emplace(), objects, options);
+      implicit_selection(r, v.implicit_selection.emplace(), objects, options,
+                         version);
     if (boolean(r))
       find_selection(r, v.find_selection.emplace(), options);
     if (version < 229 && boolean(r))
@@ -584,7 +599,7 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
       break;
     case 5: {
       auto &selection = s.selection.emplace();
-      implicit_selection(r, selection, objects, options);
+      implicit_selection(r, selection, objects, options, version);
       selection.source = r.string();
       selection.timestamp = r.read<int64_t>();
       break;
@@ -631,6 +646,33 @@ void items(Cursor &r, SavedItems &out, Id parent, uint32_t n, uint32_t version,
     }
     out.items[id].complete = true;
     out.items[id].end_offset = r.pos;
+  }
+}
+void legacy_selection_sets_v72(Cursor &r, SavedItems &out, uint32_t version,
+                                const Options &options,
+                                uint32_t root_count) {
+  ObjectReader objects(r.data, out.objects, version, options);
+  out.root_count = root_count;
+  out.items.reserve(root_count);
+  for (uint32_t i = 0; i < root_count; ++i) {
+    require(out.items.size() < options.max_objects &&
+                out.items.size() < none,
+            "legacy selection-set item limit");
+    out.items.emplace_back();
+    auto &item = out.items.back();
+    item.offset = r.pos;
+    item.parent = none;
+    item.type = 5;
+    auto &selection = item.selection.emplace();
+    // Freedom 2013's pre-v82 SelectionSet::ReadContents stores the derived
+    // selection first; the SavedItem name and comments follow its timestamp.
+    implicit_selection(r, selection, objects, options, version);
+    selection.source = r.string();
+    legacy_comments(r, item.comments, options, version);
+    selection.timestamp = r.read<int64_t>();
+    item.name = r.string(&item.name_is_null);
+    item.complete = true;
+    item.end_offset = r.pos;
   }
 }
 bool supported(std::string_view kind) {
@@ -696,6 +738,12 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     v.legacy_clash = true;
     v.root_count = count(r, options.max_objects);
     legacy_clash_items(r, v, none, v.root_count, version, objects, options);
+    return;
+  }
+  if (kind == "LcOpSelectionSetsElement" && version == 72) {
+    auto &v = b.value.emplace<SavedItems>();
+    const auto root_count = count(r, options.max_objects);
+    legacy_selection_sets_v72(r, v, version, options, root_count);
     return;
   }
   if (kind == "LcOpNwdSpatialHierarchy") {
