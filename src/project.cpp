@@ -642,6 +642,9 @@ class Loader {
     const auto &source = out.sources.at(node.source);
     if (!source.scene)
       return false;
+    const auto &candidate_model = source.scene->models.at(node.model);
+    if (!node_guid_index(path_object(candidate_model, path_id)))
+      return false;
     auto &index = node_guid_indices[node.source];
     if (!index)
       index = std::make_unique<NodeGuidIndex>(*source.scene);
