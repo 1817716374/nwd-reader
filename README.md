@@ -834,8 +834,8 @@ NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放�
 
 产品数据通过 `Document::read_products()` 单独读取，也可设置 `Options.products = true`，从 `Scene.products` 或 `ProjectSource.products` 获取。它默认关闭，便于只读取模型数据的调用方控制耗时与内存。
 
-版本边界：产品块版本 72 和版本 82 及以上有读取路径；72 是经 Freedom 2013 样本验证的唯一旧版本例外。v72 Selection Sets 使用已验证的旧式固定类型记录读取；Saved Views 部分旧元素记录仍返回诊断。版本 73–81 与 72 以下明确报告为未验证。
-Version scope: product layouts at version 72 and version 82 or later have decoding paths. Version 72 is the only pre-82 exception validated with Freedom 2013 samples. Its Selection Sets use the validated legacy fixed-type record reader; some old Saved Views element records still return diagnostics. Versions 73–81 and versions below 72 are reported as unvalidated.
+版本边界：产品块版本 72 和版本 82 及以上有读取路径；72 是经 Freedom 2013 样本验证的唯一旧版本例外。v72 Selection Sets 使用已验证的旧式固定类型记录读取；Saved Views 目前覆盖两个已验证的 ElementCopy 类，未观察到的旧元素类或非空载荷仍可能返回诊断。版本 73–81 与 72 以下明确报告为未验证。
+Version scope: product layouts at version 72 and version 82 or later have decoding paths. Version 72 is the only pre-82 exception validated with Freedom 2013 samples. Its Selection Sets use the validated legacy fixed-type reader. Saved Views currently cover two validated ElementCopy classes; unobserved legacy element classes or nonempty payloads may still return diagnostics. Versions 73–81 and versions below 72 are reported as unvalidated.
 
 ```cpp
 nwd::Document file("model.nwd");

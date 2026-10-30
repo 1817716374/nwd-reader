@@ -929,7 +929,9 @@ public:
     case 89: {
       // LcOpElementRecord shares the stream object arena with name objects.
       // The node override copy is a zero-terminated (flags, path-link) list.
-      require(version >= 82, "legacy element record layout");
+      // Freedom 2013 version 72 uses the >=33 ElementCopy branch; only the
+      // sample-observed element classes are handled by the current readers.
+      require(version >= 82 || version == 72, "legacy element record layout");
       auto name = str();
       o.strings.push_back(name);
       if (name == none)
