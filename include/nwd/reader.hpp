@@ -3066,16 +3066,27 @@ struct TimeLinerClock {
   std::optional<int32_t> module_version;
   int64_t time = 0;
 };
+enum class TimeLinerFieldKind : uint8_t {
+  time,
+  integer,
+  boolean,
+  string,
+  animation_path
+};
+struct TimeLinerFieldRef {
+  TimeLinerFieldKind kind = TimeLinerFieldKind::time;
+  uint32_t index = 0;
+};
 struct TimeLinerSimulation {
   std::optional<int32_t> module_version;
-  // Each array retains fields of its type in serialized order. Enum meanings
-  // and time units are not normalized; see the format version and module
-  // version.
+  // Typed arrays retain per-type order; ordered_fields restores wire order by
+  // indexing those arrays. Enum meanings and time units are not normalized.
   std::vector<int64_t> times;
   std::vector<int32_t> integers;
   std::vector<bool> booleans;
   std::vector<std::string> strings;
   std::optional<std::pair<std::string, std::string>> animation_path;
+  std::vector<TimeLinerFieldRef> ordered_fields;
 };
 struct LegacyTimeLinerState {
   bool flag = false;

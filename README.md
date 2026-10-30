@@ -860,7 +860,30 @@ for (std::size_t i = 0; i < data.blocks.size(); ++i) {
 
 碰撞数据通过 `SavedItem.clash` 访问：`ClashTest` 返回选择、容差、规则与运行配置；`ClashResult` 返回距离、两侧位置、包围盒、状态、审批信息和模拟事件；`ClashResultGroup` 保留结果分组。组的子项使用 `SavedItem.parent` 关联。`SavedItems.source_references` 提供保存的模型来源，缓存属性与规则参数共用 `SavedItems.objects`。`legacy_clash` 标识旧容器，旧状态枚举保持源值；结果中的 `test_name` 是测试类型或自定义标签，与保存项的 `name` 分开使用。PathLink 和备用 PathLink 保留原始编号，调用方不能直接把它们当作模型路径索引。
 
-当前动画返回一个隐含类型为 1 的保存项根及其子项。`TimeLinerClock` 提供模拟时钟，`TimeLinerSimulation` 按序列化顺序返回时间、整数、布尔、字符串和动画路径。时间与枚举保留源值，模拟设置中的部分字段语义仍需解释。
+当前动画返回一个隐含类型为 1 的保存项根及其子项。`TimeLinerClock` 提供模拟时钟。`TimeLinerSimulation` 的 `times`、`integers`、`booleans` 和 `strings` 分别按类型保留原值；`ordered_fields` 中每个 `{kind, index}` 指向对应数组的位置，可据此还原不同类型字段的原始交错顺序。`animation_path` 对应的 `animation_path` 项使用索引 0。枚举 `TimeLinerFieldKind` 标识字段类型。时间与枚举保留源值，模拟设置中的部分字段语义仍需解释。
+
+```cpp
+for (const auto& field : simulation.ordered_fields) {
+    switch (field.kind) {
+    case nwd::TimeLinerFieldKind::time:
+        consume_time(simulation.times[field.index]);
+        break;
+    case nwd::TimeLinerFieldKind::integer:
+        consume_integer(simulation.integers[field.index]);
+        break;
+    case nwd::TimeLinerFieldKind::boolean:
+        consume_boolean(simulation.booleans[field.index]);
+        break;
+    case nwd::TimeLinerFieldKind::string:
+        consume_string(simulation.strings[field.index]);
+        break;
+    case nwd::TimeLinerFieldKind::animation_path:
+        if (simulation.animation_path)
+            consume_animation_path(*simulation.animation_path);
+        break;
+    }
+}
+```
 
 `DatabaseLinks` 的名称索引属于自身的 `objects`，与 SQL、连接字符串和字段映射一起返回；`tagged_connection` 使用 UTF-8，保留宏表达式，不执行外部数据库查询。`Grids` 保留系统、轴线和楼层层级，段类型 `5` 是直线、`2` 是圆弧。`GuidStore` 保留源顺序和重复 GUID；`SceneStatistics.text` 保留统计报告原文。
 

@@ -902,12 +902,26 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
       v.module_version = module;
       int m = module.value_or(8);
       auto time = [&](uint32_t boundary) {
+        const auto index = static_cast<uint32_t>(v.times.size());
         v.times.push_back(version < boundary ? r.read<int32_t>()
                                              : r.read<int64_t>());
+        v.ordered_fields.push_back({TimeLinerFieldKind::time, index});
       };
-      auto integer = [&] { v.integers.push_back(r.read<int32_t>()); };
-      auto flag = [&] { v.booleans.push_back(boolean(r)); };
-      auto string = [&] { v.strings.push_back(r.string()); };
+      auto integer = [&] {
+        const auto index = static_cast<uint32_t>(v.integers.size());
+        v.integers.push_back(r.read<int32_t>());
+        v.ordered_fields.push_back({TimeLinerFieldKind::integer, index});
+      };
+      auto flag = [&] {
+        const auto index = static_cast<uint32_t>(v.booleans.size());
+        v.booleans.push_back(boolean(r));
+        v.ordered_fields.push_back({TimeLinerFieldKind::boolean, index});
+      };
+      auto string = [&] {
+        const auto index = static_cast<uint32_t>(v.strings.size());
+        v.strings.push_back(r.string());
+        v.ordered_fields.push_back({TimeLinerFieldKind::string, index});
+      };
       time(233);
       integer();
       time(233);
@@ -936,6 +950,8 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
         if (version >= 95) {
           integer();
           v.animation_path = string_pair(r);
+          v.ordered_fields.push_back(
+              {TimeLinerFieldKind::animation_path, 0});
         }
       }
     }
