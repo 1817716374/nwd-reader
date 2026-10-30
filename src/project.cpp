@@ -793,8 +793,88 @@ class Loader {
       }
       mapping[1].emplace_back(node, 0);
     }
+    auto nonzero_guid = [](const std::array<uint8_t, 16> &guid) {
+      return std::any_of(guid.begin(), guid.end(),
+                         [](uint8_t byte) { return byte != 0; });
+    };
+    auto reference_root = [&](const NwfPath &path)
+        -> std::optional<Location> {
+      if (path.parent != 1 || path.type != 32)
+        return {};
+      std::vector<Id> references;
+      const bool has_path_guid = nonzero_guid(path.guid);
+      if (has_path_guid)
+        for (Id i = 0; i < data->references.size(); ++i) {
+          const auto &reference = data->references[i];
+          if ((nonzero_guid(reference.reference_guid) &&
+               path.guid == reference.reference_guid) ||
+              (nonzero_guid(reference.source_guid) &&
+               path.guid == reference.source_guid))
+            references.push_back(i);
+        }
+      if (!has_path_guid)
+        for (Id i = 0; i < data->references.size(); ++i)
+          if (data->references[i].name == path.name)
+            references.push_back(i);
+      if (references.size() > 1 && path.sibling >= 0 &&
+          static_cast<size_t>(path.sibling) < data->references.size() &&
+          std::find(references.begin(), references.end(),
+                    static_cast<Id>(path.sibling)) != references.end())
+        references = {static_cast<Id>(path.sibling)};
+      if (references.size() != 1)
+        return {};
+      const auto &reference = data->references[references.front()];
+      std::vector<Location> locations;
+      std::vector<Id> location_references;
+      for (Id ref_node = owner + 1; ref_node < end; ++ref_node) {
+        const auto &candidate = out.nodes[ref_node];
+        if (candidate.parent != owner || candidate.source == none ||
+            candidate.name != reference.name ||
+            (!reference.original_path.empty() &&
+             candidate.requested_path != reference.original_path))
+          continue;
+        for (Id leaf : leaves) {
+          const auto &model_node = out.nodes[leaf];
+          bool inside_reference = false;
+          for (Id parent = leaf; parent != none;
+               parent = out.nodes[parent].parent)
+            if (parent == ref_node) {
+              inside_reference = true;
+              break;
+            }
+          if (!inside_reference ||
+              (!reference.partition.empty() &&
+               model_node.name != reference.partition))
+            continue;
+          locations.emplace_back(leaf, 0);
+          location_references.push_back(ref_node);
+        }
+      }
+      if (locations.size() > 1 && path.sibling >= 0) {
+        std::vector<Id> reference_nodes;
+        for (Id id = owner + 1; id < end; ++id)
+          if (out.nodes[id].parent == owner)
+            reference_nodes.push_back(id);
+        if (static_cast<size_t>(path.sibling) < reference_nodes.size()) {
+          const auto selected = reference_nodes[path.sibling];
+          for (size_t i = locations.size(); i-- > 0;)
+            if (location_references[i] != selected) {
+              locations.erase(locations.begin() + static_cast<ptrdiff_t>(i));
+              location_references.erase(location_references.begin() +
+                                        static_cast<ptrdiff_t>(i));
+            }
+        }
+      }
+      if (locations.size() != 1)
+        return {};
+      return locations.front();
+    };
     for (size_t i = 2; i < data->paths.size(); ++i) {
       const auto &p = data->paths[i];
+      if (auto root = reference_root(p)) {
+        mapping[i].push_back(*root);
+        continue;
+      }
       std::vector<Location> found;
       for (auto [node, parent] : mapping.at(p.parent)) {
         const auto &m = model(node);
