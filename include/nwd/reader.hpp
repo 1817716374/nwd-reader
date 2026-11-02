@@ -92,11 +92,12 @@ struct Object {
   std::vector<uint8_t> bytes;
 };
 // Static registered names for metadata object types whose class identity has
-// been verified against native registration tables. Without a version, only
-// names confirmed across generations are returned. Versions 103, 431 and 448
-// select the complete 0..44 table verified in the corresponding native
-// registrations. An empty view means the name is unverified for that version;
-// it does not imply that the payload is unsupported or absent.
+// been verified against native registration tables. Without a version, names
+// confirmed at matching indices in the Freedom 2013 and Manage 2017/2026
+// tables are returned. Versions 103, 431 and 448 select the complete 0..44
+// table verified for those containers. An empty view means the name is
+// unverified for that version; it does not imply that the payload is
+// unsupported or absent.
 std::string_view metadata_type_name(uint32_t type,
                                     uint32_t container_version = 0) noexcept;
 // Named numeric fields from the verified LcOaDistantLight serializer.

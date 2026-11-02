@@ -1626,9 +1626,10 @@ std::string_view metadata_type_name(uint32_t type,
   if (container_version == 103 || container_version == 431 ||
       container_version == 448)
     return type < names.size() ? names[type] : std::string_view{};
-  // These identities were independently confirmed in Manage 2017/2026.
-  if (type == 28 || type == 29)
-    return names[type];
+  // The complete table matches the Freedom 2013 table and the Manage
+  // 2017/2026 native registration tables at every index from 0 through 44.
+  if (container_version == 0)
+    return type < names.size() ? names[type] : std::string_view{};
   return {};
 }
 
