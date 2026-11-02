@@ -837,6 +837,9 @@ NWF 引用支持替换源模型的基准变换，包含旋转、平移、缩放�
 版本边界：产品块版本 72 和版本 82 及以上有读取路径；72 是经 Freedom 2013 样本验证的唯一旧版本例外。v72 Selection Sets 使用已验证的旧式固定类型记录读取；Saved Views 目前覆盖两个已验证的 ElementCopy 类，未观察到的旧元素类或非空载荷仍可能返回诊断。版本 73–81 与 72 以下明确报告为未验证。
 Version scope: product layouts at version 72 and version 82 or later have decoding paths. Version 72 is the only pre-82 exception validated with Freedom 2013 samples. Its Selection Sets use the validated legacy fixed-type reader. Saved Views currently cover two validated ElementCopy classes; unobserved legacy element classes or nonempty payloads may still return diagnostics. Versions 73–81 and versions below 72 are reported as unvalidated.
 
+容器读取还识别带有明确 `lizlib` 标记的目录变体。若文件提供几何和实例、但没有原生分区或逻辑层级块，库会返回可读场景并在 `Scene::warnings` 中说明结构图缺失；不会伪造属性树或实例路径关联。该变体目前按单一第三方写入器的样本验证，不代表所有版本或写入器都使用相同布局。
+Container reading also recognizes the explicitly tagged `lizlib` directory variant. If a file contains geometry and instances but omits the native partition or logical-hierarchy chunks, the library returns the available scene and reports the missing graph in `Scene::warnings`; it does not fabricate a property tree or instance-path associations. This variant has been validated with one sample from one third-party writer and does not imply that all versions or writers use the same layout.
+
 ```cpp
 nwd::Document file("model.nwd");
 auto data = file.read_products();

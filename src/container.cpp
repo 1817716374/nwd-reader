@@ -336,6 +336,27 @@ Document::Document(const std::filesystem::path &path, Options options)
           "missing directory footer");
   uint64_t at;
   std::memcpy(&at, d.file.data() + footer - 8, 8);
+  bool lizlib_directory = false;
+  if (!at) {
+    // Innerscene's lizlib writer leaves the footer directory pointer empty and
+    // places a second stream header immediately before the compressed
+    // directory. Accept only that explicit writer header; never scan arbitrary
+    // payload bytes for a plausible directory.
+    auto candidate = text.rfind("#LcUStream", footer - 1);
+    if (candidate != std::string_view::npos && candidate >= 52) {
+      auto line = text.find('\n', candidate);
+      if (line != std::string_view::npos && line < candidate + 256) {
+        auto header = text.substr(candidate, line - candidate);
+        if (header.starts_with(
+                "#LcUStream-V1.1 binary double release utf8 ") &&
+            header.find("navisworks:") != std::string_view::npos &&
+            header.ends_with(" lizlib")) {
+          at = candidate;
+          lizlib_directory = true;
+        }
+      }
+    }
+  }
   require(at >= 52 && at < footer - 16, "directory pointer outside file");
   size_t line = text.find('\n', static_cast<size_t>(at));
   require(line != std::string_view::npos && line < at + 256 &&
@@ -352,7 +373,8 @@ Document::Document(const std::filesystem::path &path, Options options)
   require(z + 1 < std::min<size_t>(line + 32, footer - 8),
           "missing directory zlib header");
   auto inflated = inflate_one(d.file.subspan(z, footer - 8 - z), 64 << 20);
-  require(z + inflated.consumed == footer - 16,
+  const uint64_t directory_end = lizlib_directory ? footer - 8 : footer - 16;
+  require(z + inflated.consumed == directory_end,
           "directory trailer must be 8 bytes (opaque, not validated)");
   Cursor r(inflated.bytes, "directory");
   require(r.u32() == UINT32_MAX, "directory marker");
@@ -364,11 +386,19 @@ Document::Document(const std::filesystem::path &path, Options options)
     c.name = r.string();
     c.flags = r.u32();
     c.offset = r.u64();
-    c.size = r.u64();
-    c.prefix_bytes = r.u32();
-    if (c.prefix_bytes)
-      c.index_bytes = r.u32();
-    r.align(8);
+    const bool compact_final_size =
+        lizlib_directory && i + 1 == count && r.data.size() - r.pos == 2;
+    if (compact_final_size) {
+      c.size = r.read<uint16_t>();
+      require(c.offset <= at && c.size == at - c.offset,
+              "lizlib final chunk size mismatch");
+    } else {
+      c.size = r.u64();
+      c.prefix_bytes = r.u32();
+      if (c.prefix_bytes)
+        c.index_bytes = r.u32();
+      r.align(8);
+    }
     require(c.offset == previous && c.offset <= at && c.size <= at - c.offset,
             "directory chunk extent mismatch");
     require(c.prefix_bytes <= c.size &&
@@ -645,19 +675,42 @@ Scene Document::read_scene() const {
       raw.clear();
       raw.shrink_to_fit();
       out.timing.instances_ms += elapsed(phase);
+      const auto has_chunk = [&](std::string_view suffix) {
+        return std::any_of(out.chunks.begin(), out.chunks.end(),
+                           [&](const Chunk &chunk) {
+                             return chunk.name == prefix + std::string(suffix);
+                           });
+      };
+      const bool has_partition = has_chunk("LcOpNwdPartition");
+      const bool has_hierarchy = has_chunk("LcOpNwdLogicalHierarchy");
       if (impl_->options.metadata) {
-        phase = std::chrono::steady_clock::now();
-        read_metadata(m, impl_->file, out.chunks, version(), impl_->options,
-                      out.parsed_chunks,
-                      geometry_context ? &*geometry_context : nullptr,
-                      out.schemas);
-        for (Id schema : m.schema_references)
-          require(schema == none || schema < out.schemas.size(),
-                  "partition schema reference outside global table");
-        out.timing.metadata_ms += elapsed(phase);
-        for (auto &instance : m.instances)
-          require(instance.path < m.paths.size(),
-                  "instance path outside logical hierarchy");
+        if (has_partition && has_hierarchy) {
+          phase = std::chrono::steady_clock::now();
+          read_metadata(m, impl_->file, out.chunks, version(), impl_->options,
+                        out.parsed_chunks,
+                        geometry_context ? &*geometry_context : nullptr,
+                        out.schemas);
+          for (Id schema : m.schema_references)
+            require(schema == none || schema < out.schemas.size(),
+                    "partition schema reference outside global table");
+          out.timing.metadata_ms += elapsed(phase);
+          for (auto &instance : m.instances)
+            require(instance.path < m.paths.size(),
+                    "instance path outside logical hierarchy");
+        } else {
+          std::string missing;
+          if (!has_partition)
+            missing = "LcOpNwdPartition";
+          if (!has_hierarchy) {
+            if (!missing.empty())
+              missing += " and ";
+            missing += "LcOpNwdLogicalHierarchy";
+          }
+          out.warnings.push_back(
+              m.name + ": metadata graph unavailable; missing " + missing +
+              "; raw instance path IDs are retained without hierarchy "
+              "association");
+        }
       }
       out.models.emplace_back(std::move(m));
     }
