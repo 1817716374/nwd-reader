@@ -1119,6 +1119,11 @@ public:
     case 84:
     case 86: {
       common(o);
+      // Before metadata stream version 22 these attribute subclasses carry
+      // their own serialized names. ExPropertyAttribute adds a second opaque
+      // legacy string after the inherited property vector.
+      if (version < 22)
+        o.name = str();
       uint32_t n = count();
       o.properties.reserve(n);
       for (uint32_t j = 0; j < n; ++j) {
@@ -1127,6 +1132,8 @@ public:
         p.value = value();
         o.properties.push_back(p);
       }
+      if (o.type == 86 && version < 22)
+        o.strings.push_back(str());
       break;
     }
     case 40:
