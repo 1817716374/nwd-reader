@@ -3646,6 +3646,9 @@ struct NwfPath {
   uint64_t entity = 0;
   std::vector<uint32_t> fragment_checksums;
   std::vector<double> bounds;
+  // Six-value terminal bounds are retained by their global PathMap mask bit.
+  // `bounds` above remains the original concatenated wire-order projection.
+  std::optional<std::array<double, 6>> bounds_bit16, bounds_bit32;
 };
 struct AppearanceSelection {
   Id appearance = none;

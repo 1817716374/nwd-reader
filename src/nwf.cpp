@@ -293,9 +293,17 @@ void decode_nwf_path_map(NwfData &out, std::span<const uint8_t> bytes) {
     }
     if (signed_depth < 0) {
       for (unsigned bit : {16u, 32u})
-        if (out.path_map_flags & bit)
-          for (unsigned j = 0; j < 6; ++j)
-            p.bounds.push_back(r.read<double>());
+        if (out.path_map_flags & bit) {
+          std::array<double, 6> bounds{};
+          for (auto &value : bounds) {
+            value = r.read<double>();
+            p.bounds.push_back(value);
+          }
+          if (bit == 16)
+            p.bounds_bit16 = bounds;
+          else
+            p.bounds_bit32 = bounds;
+        }
     }
     require(out.paths.size() < 1000000, "NWF path map resource limit");
     auto id = static_cast<Id>(out.paths.size());
