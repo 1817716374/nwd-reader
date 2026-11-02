@@ -20,8 +20,10 @@ int main(int argc, char **argv) {
       umbrella_entries += index.umbrella_octree_counts[level];
       for (uint32_t record = 0; record < index.umbrella_octree_counts[level];
            ++record) {
-        for (uint8_t bit = 0; bit < 8; ++bit)
-          if (reader.umbrella_child_record(level, record, bit))
+        const auto node = reader.umbrella_octree_record(level, record);
+        const auto candidates = node.native_child_candidates();
+        for (uint8_t bit = 0; bit < candidates.size(); ++bit)
+          if (candidates[bit] && reader.umbrella_child_record(level, record, bit))
             ++umbrella_child_links;
       }
     }

@@ -139,6 +139,8 @@ auto camera_in_target = nwd::transformed_camera(saved_camera, placement);
 
 `RcsReader::umbrella_child_record(level, record, bit)` 按 Freedom 2026 的子节点索引规则返回下一层借用的 72 字节记录；没有该子位或该记录为终端记录时返回空值。该关联已在一个有实际子节点的 RCS 3.2 样本上验证，其他导出器和版本仍需核对。
 
+`RcsReader::umbrella_octree_record(level, index)` 返回单条 chunk 3 记录的零拷贝视图，可读取包围盒、原始字和原生子候选索引。`native_child_candidates()` 给出位序和紧凑 ordinal 映射；它不会替调用方执行原生查询盒相交筛选。
+
 `RcsReader::raw_chunk(table_index)` 可按原始目录序号零拷贝取得任意完整 chunk，包括未知 chunk 和未解析尾随字节；相同 ID 的重复 chunk 仍可分别读取。chunk 13 的首个 32 位值按原样保留，该计数字段保留原值，不用于推算每个 voxel 的时间范围；时间单位和纪元尚未确认。
 
 `ExternalReferenceIndex(table)` 一次建立可复用的路径索引。`resolve()` 检查精确保存字节并保留重复项歧义；`resolve_read_path()` 执行 UTF-8 流的读取规则，返回拥有的 UTF-16 路径、末个同键表项及全部匹配编号。`query_path()` 查询已经转换的 UTF-16 路径。NULL、空路径和无效二进制编码分别保留状态，不做大小写或目录前缀归一化。使用借用视图期间，索引、源表和描述必须保持有效且不变。

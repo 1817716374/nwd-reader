@@ -54,6 +54,27 @@ double f64(std::span<const uint8_t> bytes, uint64_t offset) {
   return std::bit_cast<double>(u64(bytes, offset));
 }
 
+uint16_t view_u16(
+    std::span<const uint8_t, RcsUmbrellaOctreeRecordView::wire_size> bytes,
+    size_t offset) noexcept {
+  return uint16_t(bytes[offset]) | (uint16_t(bytes[offset + 1]) << 8);
+}
+
+uint32_t view_u32(
+    std::span<const uint8_t, RcsUmbrellaOctreeRecordView::wire_size> bytes,
+    size_t offset) noexcept {
+  return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
+         (uint32_t(bytes[offset + 2]) << 16) |
+         (uint32_t(bytes[offset + 3]) << 24);
+}
+
+uint64_t view_u64(
+    std::span<const uint8_t, RcsUmbrellaOctreeRecordView::wire_size> bytes,
+    size_t offset) noexcept {
+  return uint64_t(view_u32(bytes, offset)) |
+         (uint64_t(view_u32(bytes, offset + 4)) << 32);
+}
+
 const std::array<std::array<float, 3>, normal_entry_count> &rcs_normal_table() {
   static const auto table = [] {
     std::array<std::array<float, 3>, normal_entry_count> result{};
@@ -168,6 +189,80 @@ RcsOtherDataNativeLayout other_data_value_layout(int32_t code) {
   }
 }
 } // namespace
+
+std::array<uint8_t, 4> RcsUmbrellaOctreeRecordView::vector4_u8() const noexcept {
+  return {bytes[0], bytes[1], bytes[2], bytes[3]};
+}
+
+uint16_t RcsUmbrellaOctreeRecordView::opaque_word_04() const noexcept {
+  return view_u16(bytes, 4);
+}
+
+uint16_t RcsUmbrellaOctreeRecordView::native_flags_06() const noexcept {
+  return view_u16(bytes, 6);
+}
+
+uint8_t RcsUmbrellaOctreeRecordView::child_presence_mask() const noexcept {
+  return bytes[6];
+}
+
+std::array<double, 6> RcsUmbrellaOctreeRecordView::box_min_max() const noexcept {
+  std::array<double, 6> result{};
+  for (size_t i = 0; i < result.size(); ++i)
+    result[i] = std::bit_cast<double>(view_u64(bytes, 8 + i * 8));
+  return result;
+}
+
+int32_t RcsUmbrellaOctreeRecordView::opaque_word_38() const noexcept {
+  return std::bit_cast<int32_t>(view_u32(bytes, 0x38));
+}
+
+int32_t RcsUmbrellaOctreeRecordView::native_intersection_index() const noexcept {
+  return std::bit_cast<int32_t>(view_u32(bytes, 0x3c));
+}
+
+int32_t RcsUmbrellaOctreeRecordView::native_tree_index() const noexcept {
+  return std::bit_cast<int32_t>(view_u32(bytes, 0x40));
+}
+
+std::array<std::optional<RcsUmbrellaChildCandidate>, 8>
+RcsUmbrellaOctreeRecordView::native_child_candidates() const noexcept {
+  std::array<std::optional<RcsUmbrellaChildCandidate>, 8> result{};
+  if (native_intersection_index() != -1)
+    return result;
+
+  const uint8_t mask = child_presence_mask();
+  const uint32_t base_bits = std::bit_cast<uint32_t>(native_tree_index());
+  uint8_t ordinal = 0;
+  for (uint8_t bit = 0; bit < result.size(); ++bit) {
+    if ((mask & (uint8_t(1) << bit)) == 0)
+      continue;
+    const int32_t child_base =
+        std::bit_cast<int32_t>(base_bits + static_cast<uint32_t>(ordinal));
+    result[bit] = RcsUmbrellaChildCandidate{
+        bit, ordinal, child_base, 1 + int64_t(9) * child_base};
+    ++ordinal;
+  }
+  return result;
+}
+
+std::array<uint8_t, 4>
+RcsUmbrellaOctreeRecordView::trailing_raw_44() const noexcept {
+  return {bytes[0x44], bytes[0x45], bytes[0x46], bytes[0x47]};
+}
+
+bool RcsUmbrellaOctreeRecordView::has_default_empty_box() const noexcept {
+  const uint64_t max_value =
+      std::bit_cast<uint64_t>(std::numeric_limits<double>::max());
+  const uint64_t negative_max_value =
+      std::bit_cast<uint64_t>(-std::numeric_limits<double>::max());
+  for (size_t i = 0; i < 3; ++i) {
+    if (view_u64(bytes, 8 + i * 8) != max_value ||
+        view_u64(bytes, 0x20 + i * 8) != negative_max_value)
+      return false;
+  }
+  return true;
+}
 
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                             uint64_t max_voxels,
@@ -574,6 +669,27 @@ RcsReader::raw_umbrella_octree_levels() const {
     offset += size;
   }
   return result;
+}
+
+RcsUmbrellaOctreeRecordView
+RcsReader::umbrella_octree_record(uint32_t level,
+                                  uint32_t record_index) const {
+  const auto &index = impl_->index;
+  if (level >= index.umbrella_octree_counts.size())
+    throw Error("RCS umbrella octree level index outside table");
+  if (record_index >= index.umbrella_octree_counts[level])
+    throw Error("RCS umbrella octree record index outside level");
+  uint64_t offset = index.umbrella_octree_records_offset;
+  for (uint32_t i = 0; i < level; ++i)
+    offset += uint64_t(index.umbrella_octree_counts[i]) *
+              RcsFileIndex::umbrella_octree_record_size;
+  offset += uint64_t(record_index) *
+            RcsFileIndex::umbrella_octree_record_size;
+  const std::span<const uint8_t> file{impl_->data, impl_->size};
+  range(file, offset, RcsUmbrellaOctreeRecordView::wire_size,
+        "umbrella octree record");
+  return {std::span<const uint8_t, RcsUmbrellaOctreeRecordView::wire_size>(
+      impl_->data + offset, RcsUmbrellaOctreeRecordView::wire_size)};
 }
 
 std::optional<std::span<const uint8_t>>

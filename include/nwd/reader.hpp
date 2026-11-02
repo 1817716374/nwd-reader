@@ -388,6 +388,33 @@ struct RcsFileIndex {
   uint64_t other_data_records_end_offset = 0;
   std::vector<RcsOtherDataField> other_data_fields;
 };
+struct RcsUmbrellaChildCandidate {
+  uint8_t presence_bit = 0;
+  uint8_t child_ordinal = 0;
+  int32_t child_base = 0;
+  int64_t bounds_record_slot = 0;
+};
+// Zero-copy view of one 0x48-byte Freedom 2026 UmbrellaOctreeData record.
+// Unidentified words stay explicitly raw; field meanings are limited to
+// native traversal evidence and a populated RCS 3.2 sample.
+struct RcsUmbrellaOctreeRecordView {
+  static constexpr size_t wire_size = RcsFileIndex::umbrella_octree_record_size;
+  std::span<const uint8_t, wire_size> bytes;
+
+  std::array<uint8_t, 4> vector4_u8() const noexcept;
+  uint16_t opaque_word_04() const noexcept;
+  uint16_t native_flags_06() const noexcept;
+  uint8_t child_presence_mask() const noexcept;
+  std::array<double, 6> box_min_max() const noexcept;
+  int32_t opaque_word_38() const noexcept;
+  int32_t native_intersection_index() const noexcept;
+  int32_t native_tree_index() const noexcept;
+  // Candidate mapping before the native query-box intersection test.
+  std::array<std::optional<RcsUmbrellaChildCandidate>, 8>
+  native_child_candidates() const noexcept;
+  std::array<uint8_t, 4> trailing_raw_44() const noexcept;
+  bool has_default_empty_box() const noexcept;
+};
 RcsFileIndex read_rcs_index(std::span<const uint8_t> file,
                             uint64_t max_voxels = 1000000,
                             uint64_t max_other_data_fields = 1000000);
@@ -422,6 +449,10 @@ public:
   std::array<std::span<const uint8_t>,
              RcsFileIndex::umbrella_octree_level_count>
   raw_umbrella_octree_levels() const;
+  // Zero-copy view of one level-local record. The borrowed bytes remain valid
+  // while this reader (or a copy) is alive.
+  RcsUmbrellaOctreeRecordView umbrella_octree_record(uint32_t level,
+                                                      uint32_t record_index) const;
   // Resolve one child bit to the borrowed 72-byte record in the next saved
   // level. The child mapping follows the Freedom 2026 traversal and is
   // verified on a populated RCS 3.2 tree. Empty means absent or terminal.
