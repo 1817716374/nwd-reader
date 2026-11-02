@@ -1316,6 +1316,23 @@ public:
       common_light(o);
       doubles(o, 21);
       break;
+    case 125: {
+      // lcplot.dll LcPlPaperStyle::ReadContents (Manage 2017 and 2026):
+      // visible, RGBA bytes, units, size[2], clip[4], optional transform[9].
+      const auto visible = r.u32();
+      require(visible <= 1, "paper style visible flag");
+      o.flags = visible;
+      const auto color = r.raw(4);
+      o.bytes.assign(color.begin(), color.end());
+      o.integers.push_back(r.u32()); // LcPlPaperStyle units enum
+      doubles(o, 6);                 // size[2], clip[4]
+      const auto has_transform = r.u32();
+      require(has_transform <= 1, "paper style transform flag");
+      o.integers.push_back(has_transform);
+      if (has_transform)
+        doubles(o, 9);
+      break;
+    }
     default:
       r.fail("unsupported metadata type " + std::to_string(o.type));
     }
@@ -2008,6 +2025,27 @@ metadata_protein_material_asset_candidates(const Model &model) {
       for (const auto &[candidate, owner] : found->second)
         result[candidate].owners[owner].paths.push_back(path);
     }
+  }
+  return result;
+}
+
+std::optional<MetadataPaperStyleFields>
+metadata_paper_style_fields(const Object &object) noexcept {
+  if (object.type != 125 || object.flags > 1 || object.bytes.size() != 4 ||
+      object.integers.size() != 2 || object.integers[1] > 1 ||
+      (object.numbers.size() != 6 && object.numbers.size() != 15) ||
+      (object.integers[1] != 0) != (object.numbers.size() == 15))
+    return std::nullopt;
+  MetadataPaperStyleFields result;
+  result.visible = object.flags != 0;
+  std::copy(object.bytes.begin(), object.bytes.end(), result.color.begin());
+  result.units = object.integers[0];
+  std::copy_n(object.numbers.begin(), 2, result.size.begin());
+  std::copy_n(object.numbers.begin() + 2, 4, result.clip.begin());
+  if (object.numbers.size() == 15) {
+    std::array<double, 9> matrix{};
+    std::copy_n(object.numbers.begin() + 6, matrix.size(), matrix.begin());
+    result.transform = matrix;
   }
   return result;
 }

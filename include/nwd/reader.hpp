@@ -138,6 +138,20 @@ struct MetadataLightStateFields {
 // Decodes native type-27 state and verified type-28/29 version-103 layouts.
 std::optional<MetadataLightStateFields>
 metadata_light_state_fields(const Object &) noexcept;
+// Native LcPlPaperStyle payload carried by product object type 125. The
+// four color bytes and unit enum remain in their serialized form.
+struct MetadataPaperStyleFields {
+  bool visible = false;
+  std::array<uint8_t, 4> color{};
+  uint32_t units = 0;
+  std::array<double, 2> size{};
+  std::array<double, 4> clip{};
+  std::optional<std::array<double, 9>> transform;
+};
+// Returns fields only for a fully decoded type-125 object with a recognized
+// six-number or six-plus-nine-number payload.
+std::optional<MetadataPaperStyleFields>
+metadata_paper_style_fields(const Object &) noexcept;
 // Named numeric fields from the verified LcOaExMaterial serializer.
 struct MetadataMaterialFields {
   std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{},
