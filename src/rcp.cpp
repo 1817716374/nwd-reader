@@ -142,6 +142,7 @@ zip_unicode_extra(std::span<const uint8_t> extra,
                   std::span<const uint8_t> raw_text, uint16_t wanted_id) {
   UnicodeExtraText result;
   uint64_t at = 0;
+  std::optional<uint32_t> original_crc;
   while (at < extra.size()) {
     detail::require(extra.size() - at >= 4,
                     "truncated RCP ZIP Unicode text extra field");
@@ -157,7 +158,9 @@ zip_unicode_extra(std::span<const uint8_t> extra,
         at += size;
         continue;
       }
-      if (zip_u32(field, 1) != zip_crc32(raw_text)) {
+      if (!original_crc)
+        original_crc = zip_crc32(raw_text);
+      if (zip_u32(field, 1) != *original_crc) {
         at += size;
         continue;
       }
