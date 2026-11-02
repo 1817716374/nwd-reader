@@ -12,7 +12,7 @@
 - **共享字段定义**：读取 common schema、分区引用及外部几何描述中的有类型字段、GUID和包围盒。
 - **材质**：读取环境色、漫反射、高光、自发光、光泽度和透明度，以及资产节点、参数和贴图连接。
 - **纹理**：保留内嵌文件的原始字节，支持外部纹理查找、路径重映射和可用状态查询。
-- **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点、分层材质覆盖、对象变换和纹理映射记录；被引用场景包含多个模型分区时，分别按各模型的基准变换应用引用放置。嵌套 NWF 也支持引用节点上的受支持 affine/单位放置，并与子树变换组合；旧式根覆盖和方向变化会作为不支持项报告。产品选择器可关联到模型路径或显式标记为 NWF 项目根，避免把项目级范围误认成某个引用模型的根路径；旧式引用覆盖按引用出现保留，SceneSet 缓存按版本分流读取。NWF 内多个图纸命名空间分别解析，`NwfData::additional_contexts` 保留各自的选择器、外观和变换数据。
+- **引用加载**：递归加载 NWF 引用，复用同一源文件，同时保留各次引用的独立节点、分层材质覆盖、对象变换和纹理映射记录；被引用场景包含多个模型分区时，分别按各模型的基准变换应用引用放置。嵌套 NWF 也支持引用节点上的受支持 affine/单位放置，并与子树变换组合；旧式根覆盖和方向变化会作为不支持项报告。产品选择器可关联到模型路径或显式标记为 NWF 项目根，避免把项目级范围误认成某个引用模型的根路径；旧式引用覆盖按引用出现保留，SceneSet 缓存按版本分流读取。NWF 内多个图纸命名空间分别解析，`NwfData::additional_contexts` 保留各自的选择器、外观和变换数据；`ProjectOptions::nwf_context_namespace` 可显式选择根 NWF 的图纸上下文。
 - **视点与选择集**：读取视点目录、相机与裁剪设置、批注、外观覆盖、静态选择和有类型的搜索条件。
 - **动画**：读取场景、轨道、关键帧、时间和插值开关，以及平移、旋转、缩放、颜色、不透明度和相机参数。
 - **脚本**：读取脚本启用状态、条件的取反/括号/AND/OR、动作顺序，以及键盘、定时器、变量、碰撞、动画、脚本和热点事件；保留消息、模型加载、变量设置、属性提取、视点和动画动作的数据与共享引用。
@@ -223,6 +223,16 @@ int main() {
 
 完整示例位于 [examples/main.cpp](examples/main.cpp) 和 [examples/project.cpp](examples/project.cpp)，分别展示单文件读取和联合项目导入。
 
+包含多张图纸的 NWF 默认按 `cache` 上下文导入；也可指定图纸 namespace：
+
+```cpp
+nwd::ProjectOptions options;
+options.nwf_context_namespace = "com.autodesk.dwf.ePlot_<sheet-id>";
+auto project = nwd::load_project("drawing.nwf", options);
+```
+
+该选择只作用于根 NWF；嵌套 NWF 使用自身默认上下文。`Document::read_nwf_context(namespace)` 可单独读取精确命名空间；空字符串保持 `read_nwf()` 的默认行为。
+
 ```sh
 cmake -S examples -B build-examples -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/path/to/install
 cmake --build build-examples --config Release --parallel
@@ -238,6 +248,7 @@ cmake --build build-examples --config Release --parallel
 |---|---|
 | `Document::read_scene()` | 读取单个 NWD/NWC 的嵌入模型 |
 | `Document::read_nwf()` | 读取 NWF 引用、路径表和外观覆盖信息 |
+| `Document::read_nwf_context(namespace)` | 仅读取指定 NWF 命名空间，selector ID 保持该上下文局部 |
 | `Document::read_products()` | 独立读取视点、选择集、动画、TimeLiner和显示配置，适用于NWD/NWC/NWF |
 | `ProductData` / `ProductBlock` | 块目录、共享schema定义、类型化数据、读取状态和未消费尾部 |
 | `SavedItems` / `SavedItem` | 保存项层级、注释、GUID、视点、选择、关键帧、任务、图纸、现代灯光和材质资产 |

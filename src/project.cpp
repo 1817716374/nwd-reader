@@ -581,9 +581,15 @@ class Loader {
       }
     }
   }
-  Id source(const std::filesystem::path &file) {
+  Id source(const std::filesystem::path &file,
+            std::string_view nwf_context_namespace = {}) {
     auto k = key(file);
-    auto found = cache.find(k);
+    auto cache_key = k;
+    if (!nwf_context_namespace.empty()) {
+      cache_key.push_back('\x1f');
+      cache_key.append(nwf_context_namespace);
+    }
+    auto found = cache.find(cache_key);
     if (found != cache.end())
       return found->second;
     Document d(file, options.reader);
@@ -594,8 +600,19 @@ class Loader {
         std::any_of(d.chunks().begin(), d.chunks().end(), [](const Chunk &c) {
           return c.name.ends_with("LcOpNwfSceneSet");
         });
+    std::set<std::string, std::less<>> nwf_context_namespaces;
     if (nwf)
-      s.nwf = std::make_shared<NwfData>(d.read_nwf());
+      for (const auto &chunk : d.chunks())
+        if (chunk.name.ends_with("LcOpNwfSceneSet")) {
+          const auto separator = chunk.name.rfind('\\');
+          nwf_context_namespaces.insert(
+              separator == chunk.name.npos
+                  ? std::string{}
+                  : chunk.name.substr(0, separator));
+        }
+    if (nwf)
+      s.nwf = std::make_shared<NwfData>(
+          d.read_nwf_context(nwf_context_namespace));
     else
       s.scene = std::make_shared<Scene>(d.read_scene());
     if (options.reader.products)
@@ -605,19 +622,31 @@ class Loader {
       size_t remaining = 0;
       const auto &parsed =
           s.scene ? s.scene->parsed_chunks : s.nwf->parsed_chunks;
-      for (size_t i = 0; i < d.chunks().size(); ++i)
+      for (size_t i = 0; i < d.chunks().size(); ++i) {
+        if (nwf && !nwf_context_namespace.empty() && !parsed[i]) {
+          const auto &name = d.chunks()[i].name;
+          const auto separator = name.rfind('\\');
+          const auto chunk_namespace =
+              separator == name.npos ? std::string_view{}
+                                     : std::string_view(name).substr(
+                                           0, separator);
+          if (nwf_context_namespaces.contains(chunk_namespace) &&
+              chunk_namespace != nwf_context_namespace)
+            continue;
+        }
         if (s.products->blocks[i].status == ProductStatus::failed ||
             s.products->blocks[i].status == ProductStatus::partial ||
             (!parsed[i] &&
              s.products->blocks[i].status != ProductStatus::decoded))
           ++remaining;
+      }
       if (remaining)
         missing(utf8(file) + ": " + std::to_string(remaining) +
                 " document blocks remain unparsed; inspect products.blocks");
     }
     auto id = static_cast<Id>(out.sources.size());
     out.sources.push_back(std::move(s));
-    cache.emplace(k, id);
+    cache.emplace(std::move(cache_key), id);
     // Reuse eager Scene resource buffers, retaining file directory identity.
     if (auto scene = out.sources[id].scene; scene && options.reader.resources) {
       size_t resource = 0;
@@ -801,6 +830,15 @@ class Loader {
     if (!source.products)
       return;
     for (Id block = 0; block < source.products->blocks.size(); ++block) {
+      const auto &chunk_name = source.products->chunks.at(block).name;
+      const auto separator = chunk_name.rfind('\\');
+      const auto chunk_namespace =
+          separator == chunk_name.npos
+              ? std::string_view{}
+              : std::string_view(chunk_name).substr(0, separator);
+      if (source.nwf &&
+          chunk_namespace != source.nwf->path_map_namespace)
+        continue;
       const auto &b = source.products->blocks[block];
       const auto *saved = std::get_if<SavedItems>(&b.value);
       if (b.status != ProductStatus::decoded || !saved)
@@ -858,18 +896,33 @@ class Loader {
     const auto source_id = out.nodes[owner].source;
     auto data = out.sources[source_id].nwf;
     const auto products = out.sources[source_id].products;
+    auto product_in_context = [&](Id block) {
+      if (!data || !products)
+        return true;
+      const auto &name = products->chunks.at(block).name;
+      const auto separator = name.rfind('\\');
+      const auto name_space =
+          separator == name.npos ? std::string_view{}
+                                 : std::string_view(name).substr(0, separator);
+      return name_space == data->path_map_namespace;
+    };
     auto empty_selector = [](std::span<const Id> paths) {
       return std::all_of(paths.begin(), paths.end(),
                          [](Id id) { return id == 0 || id == none; });
     };
     bool have_product_selectors = false;
     if (products)
-      product_selectors(*products, [&](Id, Id, auto, bool, auto paths) {
+      product_selectors(*products, [&](Id block, Id, auto, bool, auto paths) {
+        if (!product_in_context(block))
+          return;
         have_product_selectors |= !empty_selector(paths);
       });
     bool have_saved_paths = false;
     if (products)
-      for (const auto &b : products->blocks)
+      for (Id block = 0; block < products->blocks.size(); ++block) {
+        if (!product_in_context(block))
+          continue;
+        const auto &b = products->blocks[block];
         if (b.status == ProductStatus::decoded)
           if (const auto *saved = std::get_if<SavedItems>(&b.value))
             require(saved_path_links(*saved,
@@ -879,6 +932,7 @@ class Loader {
                                        return true;
                                      }),
                     "malformed saved path fields");
+      }
     auto no_saved_target = [](Id) -> std::optional<std::pair<Id, Id>> {
       return {};
     };
@@ -887,6 +941,8 @@ class Loader {
         product_selectors(*products,
                           [&](Id block, Id record, ProductBindingKind kind,
                               bool node_scope, std::span<const Id> paths) {
+                            if (!product_in_context(block))
+                              return;
                             ProductBinding b;
                             b.owner = owner;
                             b.block = block;
@@ -1219,7 +1275,8 @@ class Loader {
     }
   }
   void visit(const std::filesystem::path &file, Id node, unsigned depth,
-             const std::string &partition = {}) {
+             const std::string &partition = {},
+             std::string_view nwf_context_namespace = {}) {
     if (depth > options.max_reference_depth) {
       out.nodes[node].status = "depth_limit";
       missing("reference depth exceeded: " + utf8(file));
@@ -1239,7 +1296,7 @@ class Loader {
     } end{active, k};
     Id sid;
     try {
-      sid = source(file);
+      sid = source(file, nwf_context_namespace);
     } catch (const std::exception &e) {
       out.nodes[node].status = "parse_error";
       missing(utf8(file) + ": " + e.what());
@@ -1705,7 +1762,7 @@ public:
       missing("input missing: " + utf8(input));
       return std::move(out);
     }
-    visit(f, 0, 0);
+    visit(f, 0, 0, {}, options.nwf_context_namespace);
     if (options.resolve_external_geometry)
       external_files();
     if (options.reader.products)

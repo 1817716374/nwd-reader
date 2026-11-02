@@ -3848,12 +3848,18 @@ public:
   EmbeddedResource read_resource(size_t index) const;
   Scene read_scene() const;
   NwfData read_nwf() const;
+  // Select one exact NWF namespace for downstream project import. An empty
+  // namespace selects the native cache/default context.
+  NwfData read_nwf_context(std::string_view name_space) const;
   ProductData
   read_products() const; // also works for NWF without embedded geometry
   const Options &options() const;
 };
 struct ProjectOptions {
   Options reader;
+  // Optional exact namespace to expand in the root NWF. Empty preserves the
+  // cache/default behavior; nested NWF references use their own default.
+  std::string nwf_context_namespace;
   std::vector<std::filesystem::path> search_paths;
   std::vector<std::pair<std::string, std::filesystem::path>> remaps;
   bool load_textures = true;

@@ -453,7 +453,7 @@ void validate_nwf_context(const NwfData &context) {
             "transform override outside NWF path map");
 }
 } // namespace
-NwfData Document::read_nwf() const {
+NwfData Document::read_nwf_context(std::string_view requested_namespace) const {
   require(chunks().size() < none, "NWF chunk directory identity limit");
   std::vector<NwfSceneContextIndex> contexts;
   std::unordered_map<std::string, size_t> by_namespace;
@@ -501,11 +501,21 @@ NwfData Document::read_nwf() const {
   // The ordinary saved project is the cache namespace. Sheet-scoped contexts
   // remain available separately and keep their selector IDs local.
   size_t primary = 0;
-  for (size_t i = 0; i < contexts.size(); ++i)
-    if (contexts[i].name_space == "cache") {
-      primary = i;
-      break;
-    }
+  if (requested_namespace.empty()) {
+    for (size_t i = 0; i < contexts.size(); ++i)
+      if (contexts[i].name_space == "cache") {
+        primary = i;
+        break;
+      }
+  } else {
+    const auto found = std::find_if(
+        contexts.begin(), contexts.end(), [&](const auto &context) {
+          return context.name_space == requested_namespace;
+        });
+    require(found != contexts.end(), "NWF context namespace not found: " +
+                                         std::string(requested_namespace));
+    primary = static_cast<size_t>(found - contexts.begin());
+  }
   auto parse_context = [&](size_t context_index) {
     const auto &index = contexts.at(context_index);
     const auto &scoped = scoped_chunks.at(index.name_space);
@@ -558,6 +568,8 @@ NwfData Document::read_nwf() const {
   for (size_t i = 0; i < contexts.size(); ++i) {
     if (i == primary)
       continue;
+    if (!requested_namespace.empty())
+      continue;
     auto context = parse_context(i);
     out.parsed_chunks[context.scene_set_chunk] = true;
     if (context.path_map_chunk != none)
@@ -593,4 +605,5 @@ NwfData Document::read_nwf() const {
     }
   return out;
 }
+NwfData Document::read_nwf() const { return read_nwf_context({}); }
 } // namespace nwd
