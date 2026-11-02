@@ -132,10 +132,15 @@ std::string zip_decode_cp437(std::span<const uint8_t> bytes) {
     zip_append_utf8(result, byte < 0x80 ? byte : upper[byte - 0x80]);
   return result;
 }
-std::optional<std::string>
+struct UnicodeExtraText {
+  std::optional<std::string> text;
+  bool conflict = false;
+  bool invalid = false;
+};
+UnicodeExtraText
 zip_unicode_extra(std::span<const uint8_t> extra,
                   std::span<const uint8_t> raw_text, uint16_t wanted_id) {
-  std::optional<std::string> result;
+  UnicodeExtraText result;
   uint64_t at = 0;
   while (at < extra.size()) {
     detail::require(extra.size() - at >= 4,
@@ -146,15 +151,30 @@ zip_unicode_extra(std::span<const uint8_t> extra,
     detail::require(size <= extra.size() - at,
                     "truncated RCP ZIP Unicode text payload");
     const auto field = extra.subspan(static_cast<size_t>(at), size);
-    if (id == wanted_id && size >= 5 && field[0] == 1 &&
-        zip_u32(field, 1) == zip_crc32(raw_text)) {
+    if (id == wanted_id) {
+      if (size < 5) {
+        result.invalid = true;
+        at += size;
+        continue;
+      }
+      if (zip_u32(field, 1) != zip_crc32(raw_text)) {
+        at += size;
+        continue;
+      }
+      if (field[0] != 1) {
+        result.invalid = true;
+        at += size;
+        continue;
+      }
       const std::string_view text(
           reinterpret_cast<const char *>(field.data() + 5), size - 5);
       if (zip_valid_utf8(text)) {
-        if (result && *result != text)
-          return std::nullopt;
-        result = std::string(text);
-      }
+        if (result.text && *result.text != text)
+          result.conflict = true;
+        else
+          result.text = std::string(text);
+      } else
+        result.invalid = true;
     }
     at += size;
   }
@@ -186,10 +206,18 @@ zip_decode_name(std::span<const uint8_t> raw_name, uint16_t flags,
     detail::require(zip_valid_utf8(raw), "invalid UTF-8 RCP ZIP filename");
     return {std::string(raw), RcpTextEncoding::utf8_flag};
   }
-  if (auto name = zip_unicode_extra(central_extra, raw_name, 0x7075))
-    return {std::move(*name), RcpTextEncoding::unicode_path_extra};
-  if (auto name = zip_unicode_extra(local_extra, raw_name, 0x7075))
-    return {std::move(*name), RcpTextEncoding::unicode_path_extra};
+  const auto central = zip_unicode_extra(central_extra, raw_name, 0x7075);
+  const auto local = zip_unicode_extra(local_extra, raw_name, 0x7075);
+  if (central.conflict || local.conflict ||
+      (central.text && local.text && *central.text != *local.text))
+    return {zip_decode_cp437(raw_name),
+            RcpTextEncoding::unicode_extra_conflict};
+  if (central.text)
+    return {std::move(*central.text), RcpTextEncoding::unicode_path_extra};
+  if (local.text)
+    return {std::move(*local.text), RcpTextEncoding::unicode_path_extra};
+  if (central.invalid || local.invalid)
+    return {zip_decode_cp437(raw_name), RcpTextEncoding::invalid_unicode_extra};
   const bool unknown_legacy_encoding =
       zip_has_extra(central_extra, 0x0008) ||
       zip_has_extra(local_extra, 0x0008);
@@ -209,8 +237,15 @@ zip_decode_comment(std::span<const uint8_t> raw_comment, uint16_t flags,
                     "invalid UTF-8 RCP ZIP comment");
     return {std::string(raw), RcpTextEncoding::utf8_flag};
   }
-  if (auto comment = zip_unicode_extra(central_extra, raw_comment, 0x6375))
-    return {std::move(*comment), RcpTextEncoding::unicode_comment_extra};
+  const auto unicode = zip_unicode_extra(central_extra, raw_comment, 0x6375);
+  if (unicode.conflict)
+    return {zip_decode_cp437(raw_comment),
+            RcpTextEncoding::unicode_extra_conflict};
+  if (unicode.text)
+    return {std::move(*unicode.text), RcpTextEncoding::unicode_comment_extra};
+  if (unicode.invalid)
+    return {zip_decode_cp437(raw_comment),
+            RcpTextEncoding::invalid_unicode_extra};
   const bool unknown_legacy_encoding = zip_has_extra(central_extra, 0x0008);
   return {zip_decode_cp437(raw_comment),
           unknown_legacy_encoding ? RcpTextEncoding::unknown_legacy_encoding

@@ -491,7 +491,9 @@ enum class RcpTextEncoding {
   utf8_flag,
   unicode_path_extra,
   unicode_comment_extra,
-  unknown_legacy_encoding
+  unknown_legacy_encoding,
+  unicode_extra_conflict,
+  invalid_unicode_extra
 };
 // Kept as an alias for source compatibility with the filename-only API.
 using RcpNameEncoding = RcpTextEncoding;
