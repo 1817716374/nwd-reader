@@ -127,13 +127,15 @@ struct MetadataDistantLightFields {
 // other types or counts; Object::numbers retains the original order.
 std::optional<MetadataDistantLightFields>
 metadata_distant_light_fields(const Object &) noexcept;
-// Native distant-light state retained in its serialized form and decoded.
-// Type 27 stores on in integers[0] and the eye/shadow word in flags.
+// Native point/spot/distant-light state preserved as serialized values and
+// decoded flags. These types store on in integers[0] and the eye/shadow word
+in flags. Point/spot layouts are accepted only with their verified 16/21
+numeric-value counts.
 struct MetadataLightStateFields {
   uint32_t on_value = 0, state_word = 0, unknown_state_bits = 0;
   bool on = false, eye = false, cast_shadow = false;
 };
-// Decodes the native type-27 state layout; other light types are not verified.
+// Decodes native type-27 state and verified type-28/29 version-103 layouts.
 std::optional<MetadataLightStateFields>
 metadata_light_state_fields(const Object &) noexcept;
 // Named numeric fields from the verified LcOaExMaterial serializer.
@@ -160,9 +162,9 @@ struct MetadataLightFields {
   std::optional<std::array<double, 3>> direction;
   std::optional<double> radius_of_influence, drop_off_rate, cutoff_angle;
 };
-// Decodes only verified 15/16-number point-light and 20/21-number spot-light
-// layouts. Returns empty for unrecognized type/count combinations. The raw
-// values remain available in Object::numbers.
+// Interprets the known 15/16-number point-light and 20/21-number spot-light
+// layouts. The parser currently emits the version-103 16/21-number forms.
+// The raw values remain available in Object::numbers.
 std::optional<MetadataLightFields>
 metadata_light_fields(const Object &) noexcept;
 struct PartitionOrientation {

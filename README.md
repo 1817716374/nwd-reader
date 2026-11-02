@@ -250,11 +250,11 @@ cmake --build build-examples --config Release --parallel
 | `metadata_distant_light_fields(object)` | 以命名字段读取 12 项定向光数据：环境色、漫反射色、高光色和方向向量 |
 | `metadata_publish_fields(object, version)` | 读取容器版本 103 的 type 92 发布属性：8 个字符串 ID、原始日期值、flags 和已确认的策略位；[字段说明](docs/METADATA-PUBLISH-ATTRIBUTE.md) |
 | `Object::properties` (types 84/86) | 有序属性名和值；旧流版本的扩展字符串也会保留；[布局说明](docs/METADATA-PROPERTY-ATTRIBUTES.md) |
-| `metadata_light_state_fields(object)` | 读取 type 27 定向光的原始启用值、eye/投影阴影状态位和未知位；可用于场景对象或 `SavedLight::object` 指向的 `SavedItems.objects` 对象，ID仅在各自对象图内有效 |
+| `metadata_light_state_fields(object)` | 读取 type 27 定向光及容器版本 103 的 type 28/29 点光、聚光的原始启用值、eye/投影阴影状态位和未知位；`SavedLight::object` ID仅在各自对象图内有效 |
 | `metadata_material_fields(object)` | 以命名字段读取 14 项扩展材质数据：四种颜色、光泽度和透明度 |
 | `metadata_protein_material_asset_reference(object)` | 读取 type 200 属性保存的 Protein 资产图引用，保留 graph/object 身份和空引用；不据此判定外观是否激活 |
 | `metadata_protein_material_asset_candidates(model)` | 关联 type 200 的 type 182/185 资产引用、拥有者和层级路径；type 182 按精确图/对象身份匹配，type 185 返回全部精确 JSON 内容候选 |
-| `metadata_light_fields(object)` | 以命名字段读取已验证布局的点光源/聚光灯数值；原始 `Object::numbers` 仍保留 |
+| `metadata_light_fields(object)` | 以命名字段读取已验证的 16 项 type 28 点光和 21 项 type 29 聚光数据（容器版本 103）；原始 `Object::numbers` 仍保留 |
 | `path_reference()` / `resolve_object()` | 从结构路径定位对象，再沿属性引用访问数据 |
 | `triangle_indices()` / `attribute_value()` | 读取三角槽索引以及槽对应的法线、颜色或 UV |
 | `world_matrix()` / `project_world_matrix()` | 获取源单位矩阵或项目米制矩阵 |
