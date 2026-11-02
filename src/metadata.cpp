@@ -1802,6 +1802,55 @@ std::string_view metadata_type_name(uint32_t type,
   return {};
 }
 
+std::optional<MetadataPublishFields>
+metadata_publish_fields(const Object &object,
+                        uint32_t container_version) noexcept {
+  if (container_version != 103 || object.type != 92 ||
+      object.strings.size() != 8 || object.integers.size() != 1 ||
+      object.wide.size() != 2)
+    return std::nullopt;
+  constexpr uint32_t has_password = 1u << 0;
+  constexpr uint32_t display_on_open = 1u << 1;
+  constexpr uint32_t has_expiry_date = 1u << 4;
+  constexpr uint32_t has_been_resaved = 1u << 5;
+  constexpr uint32_t allow_resave = 1u << 6;
+  constexpr uint32_t display_at_password = 1u << 7;
+  constexpr uint32_t embed_textures = 1u << 8;
+  constexpr uint32_t embed_database_properties = 1u << 9;
+  constexpr uint32_t prevent_object_property_export = 1u << 10;
+  constexpr uint32_t known_flags = has_password | display_on_open |
+                                   has_expiry_date | has_been_resaved |
+                                   allow_resave | display_at_password |
+                                   embed_textures |
+                                   embed_database_properties |
+                                   prevent_object_property_export;
+  MetadataPublishFields result;
+  result.flags = object.integers[0];
+  result.unknown_flags = result.flags & ~known_flags;
+  result.title = object.strings[0];
+  result.author = object.strings[1];
+  result.subject = object.strings[2];
+  result.publisher = object.strings[3];
+  result.publish_date = object.wide[0];
+  result.expiry_date = object.wide[1];
+  result.copyright = object.strings[4];
+  result.published_for = object.strings[5];
+  result.comments = object.strings[6];
+  result.keywords = object.strings[7];
+  result.has_password = (result.flags & has_password) != 0;
+  result.display_on_open = (result.flags & display_on_open) != 0;
+  result.has_expiry_date = (result.flags & has_expiry_date) != 0;
+  result.has_been_resaved = (result.flags & has_been_resaved) != 0;
+  result.allow_resave = (result.flags & allow_resave) != 0;
+  result.display_at_password = (result.flags & display_at_password) != 0;
+  result.embed_textures = (result.flags & embed_textures) != 0;
+  result.embed_database_properties =
+      (result.flags & embed_database_properties) != 0;
+  result.prevent_object_property_export =
+      (result.flags & prevent_object_property_export) != 0;
+  return result;
+}
+
 std::optional<MetadataDistantLightFields>
 metadata_distant_light_fields(const Object &object) noexcept {
   if (object.type != 27 || object.numbers.size() != 12)

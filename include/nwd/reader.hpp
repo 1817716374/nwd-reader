@@ -100,6 +100,24 @@ struct Object {
 // that version; it does not imply that the payload is unsupported or absent.
 std::string_view metadata_type_name(uint32_t type,
                                     uint32_t container_version = 0) noexcept;
+// Native v103 LcOaExPublishAttribute fields. String members are IDs into the
+// owning ObjectGraph::strings table; date members preserve raw 64-bit wire
+// values and do not imply a time epoch or unit.
+struct MetadataPublishFields {
+  uint32_t flags = 0, unknown_flags = 0;
+  Id title = none, author = none, subject = none, publisher = none;
+  Id copyright = none, published_for = none, comments = none, keywords = none;
+  uint64_t publish_date = 0, expiry_date = 0;
+  bool has_password = false, display_on_open = false, has_expiry_date = false;
+  bool has_been_resaved = false, allow_resave = false;
+  bool display_at_password = false, embed_textures = false;
+  bool embed_database_properties = false;
+  bool prevent_object_property_export = false;
+};
+// Decodes only the verified version-103 type-92 layout. Other versions or
+// field counts return empty; the Object retains the raw fields.
+std::optional<MetadataPublishFields>
+metadata_publish_fields(const Object &, uint32_t container_version) noexcept;
 // Named numeric fields from the verified LcOaDistantLight serializer.
 struct MetadataDistantLightFields {
   std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{};

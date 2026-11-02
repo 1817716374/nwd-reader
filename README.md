@@ -248,6 +248,7 @@ cmake --build build-examples --config Release --parallel
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
 | `metadata_type_name(type, version)` | 查询已验证的元数据类名；版本 103 返回 Freedom 2013 的 184 项注册表，版本 431/448 和省略版本时只返回 2013/2017/2026 交叉确认的前 45 项 |
 | `metadata_distant_light_fields(object)` | 以命名字段读取 12 项定向光数据：环境色、漫反射色、高光色和方向向量 |
+| `metadata_publish_fields(object, version)` | 读取容器版本 103 的 type 92 发布属性：8 个字符串 ID、原始日期值、flags 和已确认的策略位 |
 | `metadata_light_state_fields(object)` | 读取 type 27 定向光的原始启用值、eye/投影阴影状态位和未知位；可用于场景对象或 `SavedLight::object` 指向的 `SavedItems.objects` 对象，ID仅在各自对象图内有效 |
 | `metadata_material_fields(object)` | 以命名字段读取 14 项扩展材质数据：四种颜色、光泽度和透明度 |
 | `metadata_protein_material_asset_reference(object)` | 读取 type 200 属性保存的 Protein 资产图引用，保留 graph/object 身份和空引用；不据此判定外观是否激活 |
