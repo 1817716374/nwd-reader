@@ -576,6 +576,54 @@ RcsReader::raw_umbrella_octree_levels() const {
   return result;
 }
 
+std::optional<std::span<const uint8_t>>
+RcsReader::umbrella_child_record(uint32_t parent_level,
+                                 uint32_t parent_record_index,
+                                 uint8_t presence_bit) const {
+  if (presence_bit >= 8)
+    throw Error("RCS umbrella child bit outside mask");
+  const auto &index = impl_->index;
+  if (parent_level >= index.umbrella_octree_counts.size())
+    throw Error("RCS umbrella octree level index outside table");
+  if (parent_record_index >= index.umbrella_octree_counts[parent_level])
+    throw Error("RCS umbrella octree record index outside level");
+
+  const size_t record_size = RcsFileIndex::umbrella_octree_record_size;
+  uint64_t parent_level_offset = index.umbrella_octree_records_offset;
+  for (uint32_t level = 0; level < parent_level; ++level)
+    parent_level_offset +=
+        uint64_t(index.umbrella_octree_counts[level]) * record_size;
+  const uint64_t parent_offset =
+      parent_level_offset + uint64_t(parent_record_index) * record_size;
+  const std::span<const uint8_t> file{impl_->data, impl_->size};
+  range(file, parent_offset, record_size, "umbrella octree parent record");
+  const auto parent = file.subspan(parent_offset, record_size);
+  const int32_t intersection_index =
+      std::bit_cast<int32_t>(u32(parent, 0x3c));
+  const uint8_t presence_mask = parent[6];
+  const uint8_t bit_mask = uint8_t(1U << presence_bit);
+  if (intersection_index != -1 || (presence_mask & bit_mask) == 0)
+    return std::nullopt;
+  if (parent_level + 1 >= index.umbrella_octree_counts.size())
+    throw Error("RCS umbrella child has no following level");
+
+  const uint8_t lower_bits =
+      uint8_t(presence_mask & uint8_t(bit_mask - 1));
+  const uint32_t ordinal = std::popcount(lower_bits);
+  const int32_t base = std::bit_cast<int32_t>(u32(parent, 0x40) + ordinal);
+  if (base < 0 || static_cast<uint32_t>(base) >=
+                      index.umbrella_octree_counts[parent_level + 1])
+    throw Error("RCS umbrella child index outside following level");
+
+  const uint64_t child_level_offset =
+      parent_level_offset +
+      uint64_t(index.umbrella_octree_counts[parent_level]) * record_size;
+  const uint64_t child_offset =
+      child_level_offset + uint64_t(base) * record_size;
+  range(file, child_offset, record_size, "umbrella octree child record");
+  return file.subspan(child_offset, record_size);
+}
+
 std::span<const uint8_t>
 RcsReader::raw_timestamps(uint32_t voxel_index) const {
   if (voxel_index >= impl_->index.voxels.size())

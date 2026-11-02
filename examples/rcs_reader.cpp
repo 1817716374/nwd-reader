@@ -14,9 +14,17 @@ int main(int argc, char **argv) {
     const auto &index = reader.index();
     const auto umbrella_levels = reader.raw_umbrella_octree_levels();
     uint64_t umbrella_entries = 0;
+    uint64_t umbrella_child_links = 0;
     uint64_t raw_chunk_table_bytes = 0;
-    for (size_t level = 0; level < umbrella_levels.size(); ++level)
+    for (uint32_t level = 0; level < umbrella_levels.size(); ++level) {
       umbrella_entries += index.umbrella_octree_counts[level];
+      for (uint32_t record = 0; record < index.umbrella_octree_counts[level];
+           ++record) {
+        for (uint8_t bit = 0; bit < 8; ++bit)
+          if (reader.umbrella_child_record(level, record, bit))
+            ++umbrella_child_links;
+      }
+    }
     for (uint32_t i = 0; i < index.chunks.size(); ++i)
       raw_chunk_table_bytes += reader.raw_chunk(i).size();
     uint64_t point_count = 0;
@@ -56,7 +64,8 @@ int main(int argc, char **argv) {
     std::cout << "RCS " << index.version_major << '.' << index.version_minor
               << ": " << index.voxels.size() << " voxels, " << point_count
               << " points, " << umbrella_entries
-              << " opaque umbrella octree records, "
+              << " umbrella octree records (" << umbrella_child_links
+              << " resolved child links), "
               << raw_chunk_table_bytes << " raw chunk-table bytes, "
               << index.other_data_fields.size() << " chunk-11 fields ("
               << other_data_payload_bytes << " raw payload bytes), "

@@ -422,6 +422,12 @@ public:
   std::array<std::span<const uint8_t>,
              RcsFileIndex::umbrella_octree_level_count>
   raw_umbrella_octree_levels() const;
+  // Resolve one child bit to the borrowed 72-byte record in the next saved
+  // level. The child mapping follows the Freedom 2026 traversal and is
+  // verified on a populated RCS 3.2 tree. Empty means absent or terminal.
+  std::optional<std::span<const uint8_t>>
+  umbrella_child_record(uint32_t parent_level, uint32_t parent_record_index,
+                        uint8_t presence_bit) const;
   // Point-aligned raw IEEE-754 doubles from chunk 13; units/context are not
   // inferred. Returns empty when absent and throws when the chunk does not
   // contain a complete point-aligned payload. Incomplete raw bytes remain
