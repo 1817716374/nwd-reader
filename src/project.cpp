@@ -1312,34 +1312,46 @@ class Loader {
         const auto &cs = out.sources[csid];
         try {
           if (cs.scene) {
-            Id leaf = none;
+            size_t placed_models = 0;
+            std::optional<uint32_t> single_model_effective;
+            out.nodes[child].legacy_effective_root_original_overrides.reset();
             for (Id j = child + 1; j < out.nodes.size(); ++j)
               if (out.nodes[j].parent == child && out.nodes[j].model != none) {
-                require(leaf == none,
-                        "aggregate NWF reference placement not supported");
-                leaf = j;
+                const auto model_id = out.nodes[j].model;
+                require(model_id < cs.scene->models.size(),
+                        "reference model outside source scene");
+                const auto &m = cs.scene->models[model_id];
+                out.nodes[j].legacy_effective_root_original_overrides.reset();
+                if (out.nodes[child].legacy_override_patch) {
+                  const auto &root = path_object(m, 0);
+                  if (root.type == 32)
+                    if (const auto original =
+                            partition_original_overrides(root,
+                                                         cs.scene->version)) {
+                      const auto effective =
+                          out.nodes[child]
+                              .legacy_override_patch->apply_to_original(
+                                  *original);
+                      out.nodes[j].legacy_effective_root_original_overrides =
+                          effective;
+                      if (placed_models == 0)
+                        single_model_effective = effective;
+                    }
+                }
+                out.nodes[j].to_parent =
+                    reference_placement_matrix(m, r, nwf->linear_units);
+                auto base = base_attribute(m);
+                bool old_orientation = base && base->type == 39 &&
+                                       !base->integers.empty() &&
+                                       base->integers[0] != 0;
+                out.nodes[j].orientation_changed =
+                    old_orientation != (r.orientation_flag != 0);
+                ++placed_models;
               }
-            require(leaf != none, "reference has no model partition");
-            const auto &m = cs.scene->models[out.nodes[leaf].model];
-            if (out.nodes[child].legacy_override_patch) {
-              const auto &root = path_object(m, 0);
-              if (root.type == 32) {
-                const auto original =
-                    partition_original_overrides(root, cs.scene->version);
-                if (original)
-                  out.nodes[child].legacy_effective_root_original_overrides =
-                      out.nodes[child].legacy_override_patch
-                          ->apply_to_original(*original);
-              }
-            }
-            out.nodes[leaf].to_parent =
-                reference_placement_matrix(m, r, nwf->linear_units);
-            auto base = base_attribute(m);
-            bool old_orientation = base && base->type == 39 &&
-                                   !base->integers.empty() &&
-                                   base->integers[0] != 0;
-            out.nodes[leaf].orientation_changed =
-                old_orientation != (r.orientation_flag != 0);
+            require(placed_models != 0, "reference has no model partition");
+            if (placed_models == 1)
+              out.nodes[child].legacy_effective_root_original_overrides =
+                  single_model_effective;
           } else {
             require(cs.nwf && affine(r.affine) == identity() &&
                         r.linear_units == cs.nwf->linear_units &&
