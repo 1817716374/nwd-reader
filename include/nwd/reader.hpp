@@ -3631,6 +3631,13 @@ struct PresenterLights {
   std::vector<PresenterEntity> lights;
   std::vector<LightWorksArchive> archives;
 };
+struct RenderStyleData {
+  // Freedom 2013 LcOwRenderStyleElement fields. The archive is the saved
+  // RenderStyleEntity object; its LightWorks object graph remains file-local.
+  std::optional<uint32_t> saved_style; // raw enum value; not normalized
+  std::optional<LightWorksArchive> entity;
+  std::optional<bool> auto_exposure;
+};
 using ProductValue = std::variant<
     std::monostate, CurrentView, Background, Headlight, Culling,
     NavigationSpeed, CommentIds, SavedItems, TimeLinerGui, TimeLinerClock,
@@ -3639,7 +3646,7 @@ using ProductValue = std::variant<
     ExternalReferenceTable, FileDatabase, HyperlinkOverrides,
     GeometryCompression, FileSerial, NodeOverrides, PublishInformation,
     CacheMetadata, CacheDocumentName, TextureSpaceOverrides, SpatialHierarchy,
-    PresenterData, PresenterLights>;
+    PresenterData, PresenterLights, RenderStyleData>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;

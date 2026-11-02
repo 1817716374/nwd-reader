@@ -761,6 +761,7 @@ bool supported(std::string_view kind) {
          kind == "LcOpNextCommentIdElement" ||
          kind == "LcOpSavedViewsElement" ||
          kind == "LcOpSelectionSetsElement" ||
+         kind == "LcOwRenderStyleElement" ||
          kind == "LcAnSavedAnimationsElement" || kind == "LcAnScriptElement" ||
          kind == "LcTlTimelinerElement" || kind == "LcTlGUISettingsElement" ||
          kind == "LcOpZoneElement";
@@ -783,6 +784,9 @@ void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
     for (const auto &a : lights.archives)
       if (!a.complete)
         throw Unsupported(a.diagnostic);
+    return;
+  } else if (kind == "LcOwRenderStyleElement") {
+    read_render_style(b.value.emplace<RenderStyleData>(), r, version, options);
     return;
   } else if (kind == "LcOpClashElement" && version < 301) {
     auto &v = b.value.emplace<SavedItems>();

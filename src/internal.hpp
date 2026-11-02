@@ -274,6 +274,7 @@ struct Inflated {
 void read_presenter(PresenterData &, Cursor &, uint32_t, bool, const Options &);
 void read_presenter_lights(PresenterLights &, Cursor &, uint32_t,
                            const Options &);
+void read_render_style(RenderStyleData &, Cursor &, uint32_t, const Options &);
 void bind_product_paths(ProductBlock &, std::string_view,
                         const std::vector<Model> &);
 Inflated inflate_one(std::span<const uint8_t> input, uint64_t limit,

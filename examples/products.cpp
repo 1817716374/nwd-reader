@@ -115,6 +115,16 @@ static int run(const std::filesystem::path &path) {
       }
       if (const auto *lights = std::get_if<nwd::PresenterLights>(&block.value))
         std::cout << "  Presenter lights=" << lights->lights.size() << '\n';
+      if (const auto *style = std::get_if<nwd::RenderStyleData>(&block.value)) {
+        if (style->saved_style)
+          std::cout << "  saved render style=" << *style->saved_style << '\n';
+        if (style->auto_exposure)
+          std::cout << "  auto exposure=" << *style->auto_exposure << '\n';
+        if (style->entity)
+          std::cout << "  render-style entity objects="
+                    << style->entity->objects.size()
+                    << " complete=" << style->entity->complete << '\n';
+      }
       if (const auto *publish =
               std::get_if<nwd::PublishInformation>(&block.value))
         std::cout << "  title=" << publish->title

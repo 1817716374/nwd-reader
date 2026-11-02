@@ -599,6 +599,20 @@ void read_presenter_lights(PresenterLights &out, Cursor &r, uint32_t version,
   for (auto n = count(r, budget); n; --n)
     out.lights.push_back(entity(r, out.archives, budget));
 }
+void read_render_style(RenderStyleData &out, Cursor &r, uint32_t version,
+                       const Options &options) {
+  Budget budget(options);
+  if (version >= 67)
+    out.saved_style = r.u32();
+  if (version >= 15 && boolean(r)) {
+    auto saved = archive(r, budget);
+    if (!saved.complete)
+      throw UnsupportedLayout(saved.diagnostic);
+    out.entity = std::move(saved);
+  }
+  if (version >= 66)
+    out.auto_exposure = boolean(r);
+}
 } // namespace nwd::detail
 namespace nwd {
 LightWorksImage decode_lightworks_image(const LightWorksObject &object,

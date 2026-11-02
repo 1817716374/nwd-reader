@@ -244,6 +244,7 @@ cmake --build build-examples --config Release --parallel
 | `FileDatabase` | SQLite 普通表、列、行、动态单元格类型、DDL 与外键 |
 | `SpatialHierarchy` | 紧凑空间树及源分片槽引用；`read_scene()` 可校验模型关联 |
 | `PresenterData` / `PresenterLights` | 旧式背景、材质、灯光与纹理映射；归档内对象树和引用 |
+| `RenderStyleData` | 保存的原始渲染样式值、自动曝光开关和 `RenderStyleEntity` LightWorks 归档；目前以 Freedom 2013 容器版本 103 实样验证 |
 | `LightWorksArchive` | 引擎版本、类型定义、字段语义及保留身份的实体记录 |
 | `PublishInformation` / `CacheMetadata` | 发布属性与源文件缓存配置 |
 | `HyperlinkOverrides` / `NodeOverrides` | 保存的超链接、位置及路径/节点级覆盖记录 |
