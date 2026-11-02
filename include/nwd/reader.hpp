@@ -3654,6 +3654,33 @@ struct RenderStyleData {
   std::optional<LightWorksArchive> entity;
   std::optional<bool> auto_exposure;
 };
+struct ProductThumbnail {
+  std::vector<uint8_t> raw_payload; // wrapper bytes and PNG are retained verbatim
+  uint64_t png_offset = 0, png_size = 0;
+  uint32_t width = 0, height = 0;
+  uint8_t bit_depth = 0, color_type = 0, compression_method = 0,
+          filter_method = 0, interlace_method = 0;
+  std::span<const uint8_t> png_bytes() const noexcept {
+    if (png_offset > raw_payload.size() ||
+        png_size > raw_payload.size() - png_offset)
+      return {};
+    return std::span<const uint8_t>(raw_payload).subspan(
+        static_cast<size_t>(png_offset), static_cast<size_t>(png_size));
+  }
+  std::span<const uint8_t> wrapper_prefix() const noexcept {
+    if (png_offset > raw_payload.size())
+      return {};
+    return std::span<const uint8_t>(raw_payload).first(
+        static_cast<size_t>(png_offset));
+  }
+  std::span<const uint8_t> wrapper_suffix() const noexcept {
+    if (png_offset > raw_payload.size() ||
+        png_size > raw_payload.size() - png_offset)
+      return {};
+    return std::span<const uint8_t>(raw_payload).subspan(
+        static_cast<size_t>(png_offset + png_size));
+  }
+};
 using ProductValue = std::variant<
     std::monostate, CurrentView, Background, Headlight, Culling,
     NavigationSpeed, CommentIds, SavedItems, TimeLinerGui, TimeLinerClock,
@@ -3662,7 +3689,7 @@ using ProductValue = std::variant<
     ExternalReferenceTable, FileDatabase, HyperlinkOverrides,
     GeometryCompression, FileSerial, NodeOverrides, PublishInformation,
     CacheMetadata, CacheDocumentName, TextureSpaceOverrides, SpatialHierarchy,
-    PresenterData, PresenterLights, RenderStyleData>;
+    PresenterData, PresenterLights, RenderStyleData, ProductThumbnail>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;

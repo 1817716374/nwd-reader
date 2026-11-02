@@ -2,6 +2,7 @@
 #include "geometry_stream.hpp"
 #include "blowfish.hpp"
 #include <cctype>
+#include <zlib.h>
 namespace nwd {
 namespace {
 using namespace detail;
@@ -733,6 +734,74 @@ void legacy_selection_sets_v72(Cursor &r, SavedItems &out, uint32_t version,
     item.end_offset = r.pos;
   }
 }
+ProductThumbnail read_product_thumbnail(Cursor &r) {
+  static constexpr std::array<uint8_t, 8> signature{
+      0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+  const auto bytes = r.data;
+  const auto found = std::search(bytes.begin(), bytes.end(), signature.begin(),
+                                 signature.end());
+  require(found != bytes.end(), "thumbnail PNG signature missing");
+  const size_t start = static_cast<size_t>(found - bytes.begin());
+  auto be32 = [&](size_t at) {
+    require(at <= bytes.size() && bytes.size() - at >= 4,
+            "truncated thumbnail PNG integer");
+    return (uint32_t(bytes[at]) << 24) | (uint32_t(bytes[at + 1]) << 16) |
+           (uint32_t(bytes[at + 2]) << 8) | uint32_t(bytes[at + 3]);
+  };
+  ProductThumbnail out;
+  out.png_offset = start;
+  size_t pos = start + signature.size();
+  bool first = true, have_ihdr = false, have_idat = false, have_iend = false;
+  while (pos < bytes.size()) {
+    require(bytes.size() - pos >= 12, "truncated thumbnail PNG chunk");
+    const uint32_t length = be32(pos);
+    require(uint64_t(length) + 12 <= bytes.size() - pos,
+            "thumbnail PNG chunk outside payload");
+    const size_t type_at = pos + 4;
+    const size_t data_at = pos + 8;
+    const size_t crc_at = data_at + length;
+    const auto type = bytes.subspan(type_at, 4);
+    const auto data = bytes.subspan(data_at, length);
+    if (first) {
+      static constexpr std::array<uint8_t, 4> ihdr{'I', 'H', 'D', 'R'};
+      require(length == 13 && std::equal(type.begin(), type.end(), ihdr.begin()),
+              "thumbnail PNG must start with IHDR");
+      out.width = be32(data_at);
+      out.height = be32(data_at + 4);
+      out.bit_depth = data[8];
+      out.color_type = data[9];
+      out.compression_method = data[10];
+      out.filter_method = data[11];
+      out.interlace_method = data[12];
+      require(out.width && out.height && out.compression_method == 0 &&
+                  out.filter_method == 0 && out.interlace_method <= 1,
+              "invalid thumbnail PNG IHDR");
+      have_ihdr = true;
+      first = false;
+    }
+    if (type[0] == 'I' && type[1] == 'D' && type[2] == 'A' && type[3] == 'T')
+      have_idat = true;
+    uLong crc = crc32(0L, Z_NULL, 0);
+    require(uint64_t(length) + 4 <= std::numeric_limits<uInt>::max(),
+            "thumbnail PNG chunk exceeds CRC limit");
+    crc = crc32(crc, bytes.data() + type_at,
+                static_cast<uInt>(uint64_t(length) + 4));
+    require(static_cast<uint32_t>(crc) == be32(crc_at),
+            "thumbnail PNG CRC mismatch");
+    pos = crc_at + 4;
+    if (type[0] == 'I' && type[1] == 'E' && type[2] == 'N' && type[3] == 'D') {
+      require(length == 0 && have_ihdr && have_idat,
+              "invalid thumbnail PNG IEND");
+      have_iend = true;
+      break;
+    }
+  }
+  require(have_iend, "thumbnail PNG IEND missing");
+  out.png_size = pos - start;
+  out.raw_payload.assign(bytes.begin(), bytes.end());
+  r.pos = bytes.size();
+  return out;
+}
 bool supported(std::string_view kind) {
   return kind == "LcOwPresenterElement" || kind == "LcOwLightsElement" ||
          kind == "LcOpNwdSpatialHierarchy" ||
@@ -764,11 +833,15 @@ bool supported(std::string_view kind) {
          kind == "LcOwRenderStyleElement" ||
          kind == "LcAnSavedAnimationsElement" || kind == "LcAnScriptElement" ||
          kind == "LcTlTimelinerElement" || kind == "LcTlGUISettingsElement" ||
-         kind == "LcOpZoneElement";
+         kind == "LcOpZoneElement" || kind == "LcOpThumb:png";
 }
 void decode(ProductBlock &b, Cursor &r, std::string_view kind, uint32_t version,
             std::span<const SchemaDefinition> schemas, const Options &options,
             bool implicit_node_map) {
+  if (kind == "LcOpThumb:png") {
+    b.value = read_product_thumbnail(r);
+    return;
+  }
   if (version < 82 && version != 72)
     throw Unsupported("product version not validated below 82");
   if (kind == "LcOpClashElement" &&
