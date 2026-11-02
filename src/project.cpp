@@ -1353,10 +1353,19 @@ class Loader {
               out.nodes[child].legacy_effective_root_original_overrides =
                   single_model_effective;
           } else {
-            require(cs.nwf && affine(r.affine) == identity() &&
-                        r.linear_units == cs.nwf->linear_units &&
-                        r.orientation_flag == 0,
-                    "nested NWF placement override not supported");
+            require(bool(cs.nwf), "referenced file has no parsed scene");
+            require(!r.legacy_override_patch,
+                    "nested NWF legacy root override not supported");
+            require(r.orientation_flag == 0,
+                    "nested NWF orientation hint not supported");
+            if (r.load_flags & 4)
+              require(r.up == cs.nwf->up && r.north == cs.nwf->north &&
+                          r.front == cs.nwf->front,
+                      "nested NWF orientation override not supported");
+            out.nodes[child].to_parent =
+                detail::reference_placement_matrix(
+                    cs.nwf->linear_units, identity(), r, nwf->linear_units);
+            out.nodes[child].orientation_changed = false;
           }
         } catch (const Error &e) {
           out.nodes[child].placement_supported = false;
@@ -1795,25 +1804,38 @@ Matrix reference_placement_matrix(const Model &m, const NwfReference &r,
                                   uint32_t parent_units) {
   detail::require(m.linear_units >= 0, "unknown NWF source units");
   const auto source_units = static_cast<uint32_t>(m.linear_units);
-  const auto source_scale = unit(source_units);
-  (void)unit(parent_units);
   const bool replace_units = (r.load_flags & 1) != 0;
   const bool replace_transform = (r.load_flags & 2) != 0;
+  (void)unit(parent_units);
   detail::require(r.orientation_flag <= 1, "invalid NWF orientation hint");
   if (!replace_transform &&
       (!replace_units || r.linear_units == source_units))
     return identity();
+  auto old = model_base_matrix(m);
+  return detail::reference_placement_matrix(source_units, old, r,
+                                            parent_units);
+}
+std::array<double, 16> detail::reference_placement_matrix(
+    uint32_t source_units, const std::array<double, 16> &source_base,
+    const NwfReference &r, uint32_t parent_units) {
+  const double source_scale = unit(source_units);
+  (void)unit(parent_units);
+  const bool replace_units = (r.load_flags & 1) != 0;
+  const bool replace_transform = (r.load_flags & 2) != 0;
+  require(r.orientation_flag <= 1, "invalid NWF orientation hint");
+  if (!replace_transform &&
+      (!replace_units || r.linear_units == source_units))
+    return identity();
 
-  const bool replace_transform_data = (r.load_flags & 2) != 0;
   const auto input_units = replace_units ? r.linear_units : source_units;
-  const auto old_input_units = replace_transform_data ? r.linear_units
-                                                       : source_units;
-  const auto old_output_units = replace_transform_data ? parent_units
-                                                        : source_units;
+  const auto old_input_units = replace_transform ? r.linear_units
+                                                  : source_units;
+  const auto old_output_units = replace_transform ? parent_units
+                                                   : source_units;
   const double input_scale = unit(input_units) / unit(old_input_units);
   const double output_scale = unit(old_output_units) / unit(parent_units);
-  auto old = model_base_matrix(m);
-  auto next = replace_transform ? affine(r.affine) : old;
+  auto old = source_base;
+  auto next = replace_transform ? affine(r.affine) : source_base;
   if (input_units != old_input_units)
     for (unsigned col = 0; col < 3; ++col)
       for (unsigned row = 0; row < 3; ++row)

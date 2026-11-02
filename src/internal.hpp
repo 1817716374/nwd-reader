@@ -413,4 +413,7 @@ inline double elapsed(std::chrono::steady_clock::time_point start) {
              std::chrono::steady_clock::now() - start)
       .count();
 }
+std::array<double, 16> reference_placement_matrix(
+    uint32_t source_units, const std::array<double, 16> &source_base,
+    const NwfReference &, uint32_t parent_units);
 } // namespace nwd::detail
