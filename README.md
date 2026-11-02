@@ -246,7 +246,7 @@ cmake --build build-examples --config Release --parallel
 | `load_project()` | 加载文件及其引用，返回项目节点、共享源和纹理 |
 | `Project.sources` / `Project.nodes` | 共享源文件与独立引用出现构成的文件树 |
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
-| `metadata_type_name(type, version)` | 查询已验证的元数据类名；45 项名称已由 Freedom 2013、Manage 2017/2026 原生注册表交叉确认，省略版本时返回该表；版本 103、431、448 可显式查询，其他显式版本不作推断 |
+| `metadata_type_name(type, version)` | 查询已验证的元数据类名；版本 103 返回 Freedom 2013 的 184 项注册表，版本 431/448 和省略版本时只返回 2013/2017/2026 交叉确认的前 45 项 |
 | `metadata_distant_light_fields(object)` | 以命名字段读取 12 项定向光数据：环境色、漫反射色、高光色和方向向量 |
 | `metadata_light_state_fields(object)` | 读取 type 27 定向光的原始启用值、eye/投影阴影状态位和未知位；可用于场景对象或 `SavedLight::object` 指向的 `SavedItems.objects` 对象，ID仅在各自对象图内有效 |
 | `metadata_material_fields(object)` | 以命名字段读取 14 项扩展材质数据：四种颜色、光泽度和透明度 |
