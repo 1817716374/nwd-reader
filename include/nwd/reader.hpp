@@ -3415,6 +3415,11 @@ struct CacheMetadata {
   bool saved_state = false;
   ObjectGraph objects;
 };
+struct CacheDocumentName {
+  // Some third-party NWD writers store a filename as the complete
+  // LcOpDBCache payload instead of a versioned cache metadata record.
+  std::string name;
+};
 struct SpatialNode {
   uint32_t type = 0; // 0 null, 1 shape, 2 static leaf, 3 static group, 4 single
                      // leaf, 5 dynamic group
@@ -3566,8 +3571,8 @@ using ProductValue = std::variant<
     Grids, SceneStatistics, SceneProperties, ToolState, GraphicsSystemState,
     ExternalReferenceTable, FileDatabase, HyperlinkOverrides,
     GeometryCompression, FileSerial, NodeOverrides, PublishInformation,
-    CacheMetadata, TextureSpaceOverrides, SpatialHierarchy, PresenterData,
-    PresenterLights>;
+    CacheMetadata, CacheDocumentName, TextureSpaceOverrides, SpatialHierarchy,
+    PresenterData, PresenterLights>;
 struct ProductBlock {
   ProductStatus status = ProductStatus::not_handled;
   uint64_t decoded_bytes = 0, consumed_bytes = 0;

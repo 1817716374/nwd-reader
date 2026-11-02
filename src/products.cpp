@@ -1,10 +1,68 @@
 #include "internal.hpp"
 #include "geometry_stream.hpp"
 #include "blowfish.hpp"
+#include <cctype>
 namespace nwd {
 namespace {
 using namespace detail;
 using Unsupported = UnsupportedLayout;
+bool valid_utf8(const std::vector<uint8_t> &bytes) {
+  size_t i = 0;
+  while (i < bytes.size()) {
+    const auto a = bytes[i++];
+    if (a < 0x80)
+      continue;
+    if (a >= 0xc2 && a <= 0xdf) {
+      if (i >= bytes.size() || (bytes[i++] & 0xc0) != 0x80)
+        return false;
+      continue;
+    }
+    if (a >= 0xe0 && a <= 0xef) {
+      if (i + 1 >= bytes.size())
+        return false;
+      const auto b = bytes[i++], c = bytes[i++];
+      if ((c & 0xc0) != 0x80 ||
+          (a == 0xe0 ? b < 0xa0 || b > 0xbf
+           : a == 0xed ? b < 0x80 || b > 0x9f
+                       : (b & 0xc0) != 0x80))
+        return false;
+      continue;
+    }
+    if (a >= 0xf0 && a <= 0xf4) {
+      if (i + 2 >= bytes.size())
+        return false;
+      const auto b = bytes[i++], c = bytes[i++], d = bytes[i++];
+      if ((c & 0xc0) != 0x80 || (d & 0xc0) != 0x80 ||
+          (a == 0xf0 ? b < 0x90 || b > 0xbf
+           : a == 0xf4 ? b < 0x80 || b > 0x8f
+                       : (b & 0xc0) != 0x80))
+        return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+bool cache_document_name(const std::vector<uint8_t> &bytes) {
+  if (bytes.size() < 5 || bytes.size() > 4096 || !valid_utf8(bytes))
+    return false;
+  for (uint8_t c : bytes)
+    if (c < 0x20 || c == 0x7f || c == '/' || c == '\\')
+      return false;
+  auto ends_with_ascii_case_insensitive = [&](std::string_view suffix) {
+    if (bytes.size() < suffix.size())
+      return false;
+    const auto start = bytes.size() - suffix.size();
+    for (size_t i = 0; i < suffix.size(); ++i) {
+      auto c = static_cast<unsigned char>(bytes[start + i]);
+      if (std::tolower(c) != std::tolower(static_cast<unsigned char>(suffix[i])))
+        return false;
+    }
+    return true;
+  };
+  return ends_with_ascii_case_insensitive(".nwd") ||
+         ends_with_ascii_case_insensitive(".nwc");
+}
 uint32_t count(Cursor &r, uint64_t limit) {
   auto n = r.u32();
   require(n <= limit && n <= (r.data.size() - r.pos) / 4,
@@ -1326,6 +1384,14 @@ ProductData Document::read_products() const {
       return;
     }
     b.decoded_bytes = bytes.size();
+    if (kind == "LcOpDBCache" && cache_document_name(bytes)) {
+      b.value = CacheDocumentName{
+          std::string(reinterpret_cast<const char *>(bytes.data()),
+                      bytes.size())};
+      b.consumed_bytes = bytes.size();
+      b.status = ProductStatus::decoded;
+      return;
+    }
     detail::Cursor r(bytes, c.name);
     try {
       const bool implicit_node_map =
