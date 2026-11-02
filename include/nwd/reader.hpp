@@ -129,8 +129,8 @@ std::optional<MetadataDistantLightFields>
 metadata_distant_light_fields(const Object &) noexcept;
 // Native point/spot/distant-light state preserved as serialized values and
 // decoded flags. These types store on in integers[0] and the eye/shadow word
-in flags. Point/spot layouts are accepted only with their verified 16/21
-numeric-value counts.
+// in flags. Point/spot layouts are accepted only with their verified 16/21
+// numeric-value counts.
 struct MetadataLightStateFields {
   uint32_t on_value = 0, state_word = 0, unknown_state_bits = 0;
   bool on = false, eye = false, cast_shadow = false;
