@@ -3743,10 +3743,31 @@ struct NwfTransformOverride {
   // overrides.
   std::vector<double> values;
 };
+// One sheet-scoped NWF payload context. Chunk IDs index the owning
+// Document::chunks() directory; selector IDs remain local to this context.
+struct NwfContext {
+  std::string name_space;
+  Id scene_set_chunk = none, path_map_chunk = none;
+  std::vector<Id> appearance_chunks, transform_chunks, texture_space_chunks;
+  ObjectGraph option_values;
+  std::vector<NwfReference> references;
+  uint32_t linear_units = 0, angular_units = 0, path_map_kind = 0,
+           path_map_flags = 0;
+  std::array<double, 3> up{}, front{}, north{};
+  std::vector<NwfPath> paths;
+  Model appearance_values;
+  std::vector<AppearanceSelection> appearance_overrides;
+  std::vector<NwfTransformOverride> transform_overrides;
+  std::vector<NwfTextureSpace> texture_spaces;
+  Id global_asset = none;
+  std::vector<std::string> unparsed_core;
+};
 struct NwfData {
   std::string path_map_namespace;  // directory prefix owning the implicit map
   std::vector<bool> parsed_chunks; // Document directory coverage; standalone
                                    // decoders leave empty
+  Id scene_set_chunk = none, path_map_chunk = none;
+  std::vector<Id> appearance_chunks, transform_chunks, texture_space_chunks;
   ObjectGraph option_values;
   std::vector<NwfReference> references;
   uint32_t linear_units = 0, angular_units = 0, path_map_kind = 0,
@@ -3762,6 +3783,9 @@ struct NwfData {
   std::string saved_filename, xref_json;
   std::vector<std::pair<std::string, std::string>> path_remaps;
   std::vector<std::string> unparsed_core;
+  // Other sheet namespaces in directory order. The legacy fields above hold
+  // the default context ("cache" when present, otherwise the first context).
+  std::vector<NwfContext> additional_contexts;
 };
 NwfData decode_nwf_scene_set(std::span<const uint8_t>, uint32_t version,
                              Options options = {});

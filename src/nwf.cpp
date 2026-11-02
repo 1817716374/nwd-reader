@@ -396,41 +396,192 @@ void decode_nwf_texture_spaces(NwfData &out, std::span<const uint8_t> bytes,
   r.exact();
   out.texture_spaces = std::move(records);
 }
+namespace {
+struct NwfSceneContextIndex {
+  std::string name_space;
+  size_t scene_set = 0;
+  std::vector<size_t> duplicate_scene_sets;
+};
+struct NwfScopedChunkIndexes {
+  std::optional<size_t> path_map;
+  std::vector<size_t> duplicate_path_maps;
+  std::vector<size_t> appearances, transforms, texture_spaces;
+};
+std::optional<std::string> nwf_chunk_namespace(std::string_view name,
+                                              std::string_view leaf) {
+  if (name == leaf)
+    return std::string{};
+  if (name.size() <= leaf.size() ||
+      name.substr(name.size() - leaf.size()) != leaf ||
+      name[name.size() - leaf.size() - 1] != '\\')
+    return std::nullopt;
+  return std::string(name.substr(0, name.size() - leaf.size() - 1));
+}
+NwfContext move_nwf_context(NwfData &&source) {
+  NwfContext out;
+  out.name_space = std::move(source.path_map_namespace);
+  out.scene_set_chunk = source.scene_set_chunk;
+  out.path_map_chunk = source.path_map_chunk;
+  out.appearance_chunks = std::move(source.appearance_chunks);
+  out.transform_chunks = std::move(source.transform_chunks);
+  out.texture_space_chunks = std::move(source.texture_space_chunks);
+  out.option_values = std::move(source.option_values);
+  out.references = std::move(source.references);
+  out.linear_units = source.linear_units;
+  out.angular_units = source.angular_units;
+  out.path_map_kind = source.path_map_kind;
+  out.path_map_flags = source.path_map_flags;
+  out.up = source.up;
+  out.front = source.front;
+  out.north = source.north;
+  out.paths = std::move(source.paths);
+  out.appearance_values = std::move(source.appearance_values);
+  out.appearance_overrides = std::move(source.appearance_overrides);
+  out.transform_overrides = std::move(source.transform_overrides);
+  out.texture_spaces = std::move(source.texture_spaces);
+  out.global_asset = source.global_asset;
+  out.unparsed_core = std::move(source.unparsed_core);
+  return out;
+}
+void validate_nwf_context(const NwfData &context) {
+  for (const auto &a : context.appearance_overrides)
+    for (auto p : a.paths)
+      require(p == none || p < context.paths.size(),
+              "appearance override outside NWF path map");
+  for (const auto &t : context.transform_overrides)
+    require(t.path == 0 || t.path < context.paths.size(),
+            "transform override outside NWF path map");
+}
+} // namespace
 NwfData Document::read_nwf() const {
-  NwfData out;
-  bool found = false;
-  for (size_t i = 0; i < chunks().size(); ++i)
-    if (chunks()[i].name.ends_with("LcOpNwfSceneSet")) {
-      require(!found, "multiple NWF scene sets unsupported");
-      out = decode_nwf_scene_set(read_chunk(i), version(), options());
-      found = true;
-    }
-  require(found, "not an NWF scene set");
-  out.parsed_chunks.resize(chunks().size());
-  for (size_t i = 0; i < chunks().size(); ++i)
-    if (chunks()[i].name.ends_with("LcOpNwfSceneSet"))
-      out.parsed_chunks[i] = true;
-  // Resolve selectors independently of directory order.
-  bool have_path_map = false;
-  for (size_t i = 0; i < chunks().size(); ++i)
-    if (chunks()[i].name.ends_with("LcOpNwfPathMap")) {
-      require(!have_path_map, "multiple NWF path maps need separate contexts");
-      have_path_map = true;
-      const auto &name = chunks()[i].name;
-      auto split = name.rfind('\\');
-      out.path_map_namespace = split == name.npos ? "" : name.substr(0, split);
-      decode_nwf_path_map(out, read_chunk(i));
-      out.parsed_chunks[i] = true;
-    }
+  require(chunks().size() < none, "NWF chunk directory identity limit");
+  std::vector<NwfSceneContextIndex> contexts;
+  std::unordered_map<std::string, size_t> by_namespace;
   for (size_t i = 0; i < chunks().size(); ++i) {
-    auto name = chunks()[i].name;
-    if (name.ends_with("LcOpShadFragMaterialElement"))
-      read_nwf_appearances(out, read_chunk(i), version(), options());
-    else if (name.ends_with("LcOpShadFragTransformElement2"))
-      decode_nwf_transforms(out, read_chunk(i));
-    else if (name.ends_with("LcOpTextureSpaceElement")) {
-      decode_nwf_texture_spaces(out, read_chunk(i), version());
-    } else if (name == "LcOpXRefTable") {
+    const auto name_space =
+        nwf_chunk_namespace(chunks()[i].name, "LcOpNwfSceneSet");
+    if (!name_space)
+      continue;
+    const auto [it, inserted] =
+        by_namespace.emplace(*name_space, contexts.size());
+    if (inserted)
+      contexts.push_back({*name_space, i, {}});
+    else
+      contexts[it->second].duplicate_scene_sets.push_back(i);
+  }
+  require(!contexts.empty(), "not an NWF scene set");
+
+  std::unordered_map<std::string, NwfScopedChunkIndexes> scoped_chunks;
+  for (const auto &context : contexts)
+    scoped_chunks.try_emplace(context.name_space);
+  for (size_t i = 0; i < chunks().size(); ++i) {
+    const auto &name = chunks()[i].name;
+    auto add = [&](std::string_view leaf, auto accept) {
+      const auto name_space = nwf_chunk_namespace(name, leaf);
+      if (!name_space)
+        return;
+      const auto it = scoped_chunks.find(*name_space);
+      if (it != scoped_chunks.end())
+        accept(it->second);
+    };
+    add("LcOpNwfPathMap", [&](auto &index) {
+      if (index.path_map)
+        index.duplicate_path_maps.push_back(i);
+      else
+        index.path_map = i;
+    });
+    add("LcOpShadFragMaterialElement",
+        [&](auto &index) { index.appearances.push_back(i); });
+    add("LcOpShadFragTransformElement2",
+        [&](auto &index) { index.transforms.push_back(i); });
+    add("LcOpTextureSpaceElement",
+        [&](auto &index) { index.texture_spaces.push_back(i); });
+  }
+
+  // The ordinary saved project is the cache namespace. Sheet-scoped contexts
+  // remain available separately and keep their selector IDs local.
+  size_t primary = 0;
+  for (size_t i = 0; i < contexts.size(); ++i)
+    if (contexts[i].name_space == "cache") {
+      primary = i;
+      break;
+    }
+  auto parse_context = [&](size_t context_index) {
+    const auto &index = contexts.at(context_index);
+    const auto &scoped = scoped_chunks.at(index.name_space);
+    NwfData data = decode_nwf_scene_set(read_chunk(index.scene_set), version(),
+                                        options());
+    data.path_map_namespace = index.name_space;
+    data.scene_set_chunk = static_cast<Id>(index.scene_set);
+    for (size_t duplicate : index.duplicate_scene_sets)
+      data.unparsed_core.push_back("duplicate SceneSet at chunk " +
+                                   std::to_string(duplicate) +
+                                   " in namespace '" + index.name_space +
+                                   "'; native first-match chunk selected");
+
+    if (!scoped.duplicate_path_maps.empty())
+      data.unparsed_core.push_back(
+          "duplicate PathMap in namespace '" + index.name_space +
+          "'; native first-match chunk selected at chunk " +
+          std::to_string(scoped.duplicate_path_maps.front()));
+    if (scoped.path_map) {
+      data.path_map_chunk = static_cast<Id>(*scoped.path_map);
+      decode_nwf_path_map(data, read_chunk(*scoped.path_map));
+    }
+    for (const auto i : scoped.appearances) {
+      read_nwf_appearances(data, read_chunk(i), version(), options());
+      data.appearance_chunks.push_back(static_cast<Id>(i));
+    }
+    for (const auto i : scoped.transforms) {
+      decode_nwf_transforms(data, read_chunk(i));
+      data.transform_chunks.push_back(static_cast<Id>(i));
+    }
+    for (const auto i : scoped.texture_spaces) {
+      decode_nwf_texture_spaces(data, read_chunk(i), version());
+      data.texture_space_chunks.push_back(static_cast<Id>(i));
+    }
+    validate_nwf_context(data);
+    return data;
+  };
+
+  NwfData out = parse_context(primary);
+  out.parsed_chunks.assign(chunks().size(), false);
+  out.parsed_chunks[out.scene_set_chunk] = true;
+  if (out.path_map_chunk != none)
+    out.parsed_chunks[out.path_map_chunk] = true;
+  for (const auto id : out.appearance_chunks)
+    out.parsed_chunks[id] = true;
+  for (const auto id : out.transform_chunks)
+    out.parsed_chunks[id] = true;
+  for (const auto id : out.texture_space_chunks)
+    out.parsed_chunks[id] = true;
+  for (size_t i = 0; i < contexts.size(); ++i) {
+    if (i == primary)
+      continue;
+    auto context = parse_context(i);
+    out.parsed_chunks[context.scene_set_chunk] = true;
+    if (context.path_map_chunk != none)
+      out.parsed_chunks[context.path_map_chunk] = true;
+    for (const auto id : context.appearance_chunks)
+      out.parsed_chunks[id] = true;
+    for (const auto id : context.transform_chunks)
+      out.parsed_chunks[id] = true;
+    for (const auto id : context.texture_space_chunks)
+      out.parsed_chunks[id] = true;
+    out.additional_contexts.push_back(move_nwf_context(std::move(context)));
+  }
+
+  // The file-level XRef table is independent of the sheet namespace. Match
+  // native FindChunk's first exact-name lookup and leave duplicates visible.
+  bool have_xref = false;
+  for (size_t i = 0; i < chunks().size(); ++i)
+    if (chunks()[i].name == "LcOpXRefTable") {
+      if (have_xref) {
+        out.unparsed_core.push_back(
+            "duplicate root XRefTable; native first-match chunk selected");
+        continue;
+      }
+      have_xref = true;
       auto b = read_chunk(i);
       Cursor r(b);
       auto table = read_xref_table(r, options());
@@ -438,17 +589,8 @@ NwfData Document::read_nwf() const {
       out.xref_json = std::move(table.json);
       out.saved_filename = std::move(table.saved_filename);
       out.path_remaps = std::move(table.path_remaps);
-    } else
-      continue;
-    out.parsed_chunks[i] = true;
-  }
-  for (const auto &a : out.appearance_overrides)
-    for (auto p : a.paths)
-      require(p == none || p < out.paths.size(),
-              "appearance override outside NWF path map");
-  for (const auto &t : out.transform_overrides)
-    require(t.path == 0 || t.path < out.paths.size(),
-            "transform override outside NWF path map");
+      out.parsed_chunks[i] = true;
+    }
   return out;
 }
 } // namespace nwd
