@@ -612,11 +612,13 @@ Scene Document::read_scene() const {
             out.chunks.begin(), out.chunks.end(),
             [&](const Chunk &chunk) { return chunk.name == shared_name; });
         auto page_context = geometry_context;
-        if (page_context)
-          page_context->use_shared_nodes = use_shared;
+        if (!page_context)
+          page_context.emplace();
+        page_context->version = version();
+        page_context->schemas = out.schemas;
+        page_context->use_shared_nodes = use_shared;
         read_geometry(m, impl_->file, c, impl_->options,
-                      page_context ? &*page_context : nullptr, version(),
-                      use_shared);
+                      &*page_context, version(), use_shared);
       }
       size_t external_count = 0;
       for (auto &g : m.geometries)
