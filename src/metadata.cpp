@@ -1646,6 +1646,20 @@ metadata_distant_light_fields(const Object &object) noexcept {
   return result;
 }
 
+std::optional<MetadataLightStateFields>
+metadata_light_state_fields(const Object &object) noexcept {
+  if (object.type != 27 || object.integers.empty())
+    return std::nullopt;
+  MetadataLightStateFields result;
+  result.on_value = object.integers.front();
+  result.state_word = object.flags;
+  result.on = result.on_value != 0;
+  result.eye = (result.state_word & 1u) != 0;
+  result.cast_shadow = (result.state_word & 2u) != 0;
+  result.unknown_state_bits = result.state_word & ~3u;
+  return result;
+}
+
 std::optional<MetadataMaterialFields>
 metadata_material_fields(const Object &object) noexcept {
   if (object.type != 31 || object.numbers.size() != 14)

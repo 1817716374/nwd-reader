@@ -108,6 +108,15 @@ struct MetadataDistantLightFields {
 // other types or counts; Object::numbers retains the original order.
 std::optional<MetadataDistantLightFields>
 metadata_distant_light_fields(const Object &) noexcept;
+// Native distant-light state retained in its serialized form and decoded.
+// Type 27 stores on in integers[0] and the eye/shadow word in flags.
+struct MetadataLightStateFields {
+  uint32_t on_value = 0, state_word = 0, unknown_state_bits = 0;
+  bool on = false, eye = false, cast_shadow = false;
+};
+// Decodes the native type-27 state layout; other light types are not verified.
+std::optional<MetadataLightStateFields>
+metadata_light_state_fields(const Object &) noexcept;
 // Named numeric fields from the verified LcOaExMaterial serializer.
 struct MetadataMaterialFields {
   std::array<double, 3> ambient_color{}, diffuse_color{}, specular_color{},

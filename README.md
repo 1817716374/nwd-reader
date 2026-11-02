@@ -248,6 +248,7 @@ cmake --build build-examples --config Release --parallel
 | `Model` / `ModelIndex` | 模型几何、实例、属性、结构路径及查询索引 |
 | `metadata_type_name(type, version)` | 查询已验证的元数据类名；版本 103、431、448 提供对应的类名表，省略版本时只返回跨代际确认的名称 |
 | `metadata_distant_light_fields(object)` | 以命名字段读取 12 项定向光数据：环境色、漫反射色、高光色和方向向量 |
+| `metadata_light_state_fields(object)` | 读取 type 27 定向光的原始启用值、eye/投影阴影状态位和未知位 |
 | `metadata_material_fields(object)` | 以命名字段读取 14 项扩展材质数据：四种颜色、光泽度和透明度 |
 | `metadata_protein_material_asset_reference(object)` | 读取 type 200 属性保存的 Protein 资产图引用，保留 graph/object 身份和空引用；不据此判定外观是否激活 |
 | `metadata_protein_material_asset_candidates(model)` | 关联 type 200 的 type 182/185 资产引用、拥有者和层级路径；type 182 按精确图/对象身份匹配，type 185 返回全部精确 JSON 内容候选 |
